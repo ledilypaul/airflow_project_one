@@ -1,6 +1,6 @@
-import sys
-sys.path.append("..")
+import os,sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from pipeline.IMDBExtractor import main
 
-from IMDBExtractor import main
-main()
+main("../../Spark/data/", ".csv")

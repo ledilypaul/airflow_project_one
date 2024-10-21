@@ -1,15 +1,18 @@
+import sys
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from pipeline.IMDBExtractor import main
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from datetime import datetime
-from pipeline.IMDBExtractor import main
 
 PATH = "../../Spark/data/"
 FILE_FORMAT = "csv"
 
 args = {
-    'owner' : 'airflow'
-    # "start_date" : datetime(2024,10,16)
+    'owner' : 'airflow',
+    "start_date" : datetime(2024,10,21)
 }
 
 
