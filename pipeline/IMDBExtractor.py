@@ -6,6 +6,7 @@ from pyspark.sql import SparkSession
 class IMDBExtractor:
     def __init__(self):
         self.spark = SparkSession.builder.appName('Extractor').getOrCreate()
+            
 
     def list_files(self, path):
         return os.listdir(path)
@@ -15,7 +16,7 @@ class IMDBExtractor:
         for file in files:
             if os.path.getsize(path+"/"+file) == 0:
                 raise ValueError("File {file} is empty")
-            if file.lower().startwith("imbd") and file.lower().endswith("csv"):
+            if file.lower().startswith("imdb") and file.lower().endswith("csv"):
                 valid_files.append(file)            
         return valid_files
 
@@ -53,6 +54,9 @@ def main(path, file_format):
     valid_files = extractor.check_integrity_files(files,path)
     for file in valid_files:
         print(file)
+    return valid_files
 
 
+if __name__ == "__main__":
+    main("../../Spark/data/", ".csv")
      
