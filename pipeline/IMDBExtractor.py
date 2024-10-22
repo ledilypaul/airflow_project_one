@@ -21,7 +21,8 @@ class IMDBExtractor:
         return valid_files
 
     def create_schema(self):
-        with open('../config_file.json') as f:
+        config_path = os.path.join(os.path.dirname(__file__), 'config_file.json') #Use of the absoluth path
+        with open(config_path) as f:
             file = json.load(f)
         column_types = file["column_type"]
         type_mapping = {
@@ -45,10 +46,10 @@ class IMDBExtractor:
                             .option("escape","\"") \
                             .option("schema", self.create_schema())\
                             .csv(file)
-        return df
+            return df
 
 
-def main(path, file_format):
+def get_files(path):
     extractor = IMDBExtractor()
     files = extractor.list_files(path)
     valid_files = extractor.check_integrity_files(files,path)
@@ -56,7 +57,14 @@ def main(path, file_format):
         print(file)
     return valid_files
 
+def process_files(files,path):
+    extractor = IMDBExtractor()
+    files_df = []
+    for file in files:
+        files_df.append((file,extractor.read_data(path+file,"csv")))
+    print(files_df)
+    return files_df
 
-if __name__ == "__main__":
-    main("../../Spark/data/", ".csv")
+# if __name__ == "__main__":
+#     main("../../Spark/data/", ".csv")
      
