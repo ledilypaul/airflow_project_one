@@ -62,9 +62,5 @@ def process_files(files,path):
     files_df = []
     for file in files:
         files_df.append((file,extractor.read_data(path+file,"csv")))
-    print(files_df)
     return files_df
 
-# if __name__ == "__main__":
-#     main("../../Spark/data/", ".csv")
-     
