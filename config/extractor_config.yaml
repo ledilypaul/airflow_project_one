@@ -1,0 +1,25 @@
+---
+extractor_config:
+  source_directories:
+    - '../../Spark/data/'
+    - 'path2'
+  files_extensions:
+    - '.csv'
+    - '.json'
+    - '.parquet'
+  include_files:
+    - '*IMDB*'
+  exclude_files:
+    - 'file1_*.csv'
+    - '*file2_*.csv'
+  column_types:
+    - 'int'
+    - 'string'
+    - 'float'
+    - 'date'
+    - 'boolean'
+    - 'array'
+    - 'map'
+    - 'struct'
+  config_files:
+    - imdb : 'imdb_config.yaml'
