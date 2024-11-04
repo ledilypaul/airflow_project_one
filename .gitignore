@@ -3,3 +3,5 @@ airflow.cfg
 dags/test.py
 start_env.sh
 start_env.scpt
+.vscode/settings.json
+.gitignore
