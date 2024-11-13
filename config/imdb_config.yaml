@@ -1,4 +1,9 @@
 imdb_config:
+  file_options:
+      header: True
+      inferSchema: True
+      delimiter: ","
+  header: True
   columns_type:
     id: int
     title: string

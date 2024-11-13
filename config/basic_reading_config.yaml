@@ -1,0 +1,5 @@
+basic_reading_config:
+  file_options:
+  header: True
+  inferSchema: True
+  delimer: ","
