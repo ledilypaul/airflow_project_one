@@ -3,3 +3,8 @@ basic_reading_config:
   header: True
   inferSchema: True
   delimer: ","
+
+parquet_reader:
+  - compression: snappy
+  - partition_column: date
+  - infer_schema: false
