@@ -34,4 +34,5 @@ class BaseFileReader:
         # print("extension file : {}".format(str(extension_file)))
         reader_instance = ReaderFactory.get_reader(file_config,extension_file)
         df = reader_instance.read(file_path,file_config)
+        return df
         # print(df.head(1))

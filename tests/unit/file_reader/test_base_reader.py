@@ -1,36 +1,63 @@
 import os
-import pytest 
+import pytest, shutil
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 from pipeline.file_reader.base_reader import BaseFileReader
 from pyspark.sql import SparkSession
 
 @pytest.fixture
 def base_reader():
+    """Fixture pour initialiser un lecteur de base."""
     return BaseFileReader()
 
-@patch("pipeline.file_reader.base_reader.os.listdir")
-@patch("pipeline.file_reader.base_reader.yaml.safe_load")
-def test_read_files(mock_get_config, mock_get_reader, base_reader):
-    # Mock the configuration returned
-    mock_file_config = {"file_options": {"header": True, "inferSchema": True}}
-    mock_get_config.return_value = mock_file_config
+@pytest.fixture
+def config_dir(tmp_path):
+    """Fixture pour créer un dossier temporaire de configuration avec des fichiers."""
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
 
-    # Mock the reader instance
-    mock_reader_instance = MagicMock()
-    mock_reader_instance.read.return_value = MagicMock()
-    mock_get_reader.return_value = mock_reader_instance
+    # Créer des fichiers de configuration
+    specific_config = config_dir / "example_config.yaml"
+    specific_config.write_text("""
+config_name: "sample_config"
+header: true
+inferSchema: true
+delimiter: ","
+""")
 
-    # Test reading a file
-    mock_file_path = "data/imdb.csv"
-    base_reader.read_files(mock_file_path)
+    default_config = config_dir / "basic_reading_config.yaml"
+    default_config.write_text("""
+config_name: "basic_reading_config"
+header: true
+inferSchema: false
+delimiter: ","
+""")
+    
+    return config_dir
 
-    # Assert that config file and reader are used correctly
-    mock_get_config.assert_called_once_with(mock_file_path)
-    mock_get_reader.assert_called_once_with(mock_file_config, "csv")
-    mock_reader_instance.read.assert_called_once_with(mock_file_path, mock_file_config)
+@pytest.fixture
+def test_file(tmp_path):
+    test_file = tmp_path / "file1.csv"
+    test_file.write_text("col1,col2\n1,2\n3,4")
+    return test_file
 
-@patch("pipeline.file_reader.base_reader.SparkSession.builder.getOrCreate")
-def test_spark_initialization(mock_spark):
-    # Test Spark session is initialized during BaseFileReader creation
-    BaseFileReader()
-    mock_spark.assert_called_once()
+def test_get_config_file_specific(base_reader, config_dir):
+    reader = base_reader
+    # Modifiez le répertoire courant pour le test 
+    os.chdir(config_dir.parent)
+    config_content = base_reader.get_config_file("example_file.csv")
+    assert config_content['header'] == True
+    assert config_content['config_name'] == "sample_config"
+    
+def test_get_config_file(base_reader, config_dir):
+    reader = base_reader
+    os.chdir(config_dir.parent)
+    config_content = reader.get_config_file("file1")
+    assert config_content['header'] == True
+    assert config_content['config_name'] == "basic_reading_config"
+
+def test_read_files(base_reader,config_dir,test_file):
+    reader = base_reader
+    os.chdir(config_dir.parent)
+    df = reader.read_files(str(test_file))
+    assert df.count() == 2 # Nombre de lignes
