@@ -2,13 +2,16 @@
 extractor_config:
   source_directories:
     - '../../Spark/data/'
-    - 'path2'
+    - '../../file_reader/'
   files_extensions:
-    - '.csv'
-    - '.json'
-    - '.parquet'
+    # - '.csv'
+    # - '.json'
+    # - '.parquet'
+    - '.xlsx'
   include_files:
-    - '*IMDB*'
+    # - '*IMDB*'
+    # - '*creditcard*'
+    - '*person*'
   exclude_files:
     - 'file1_*.csv'
     - '*file2_*.csv'
