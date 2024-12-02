@@ -8,3 +8,8 @@ parquet_reader:
   - compression: snappy
   - partition_column: date
   - infer_schema: false
+
+excel_reader:
+  - infer_schema: false
+  - header: True
+  - dataAddress : "sheet_name"

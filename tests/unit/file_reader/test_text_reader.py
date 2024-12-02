@@ -1,6 +1,6 @@
 import pytest
 from pyspark.sql import SparkSession
-from pipeline.file_reader.csv_reader import CSVReader
+from pipeline.file_reader.text_reader import TextReader
 from pathlib import Path
 
 @pytest.fixture(scope="module") 
@@ -8,8 +8,8 @@ def spark():
     return SparkSession.builder.appName("pytest").master("local[*]").getOrCreate()
 
 @pytest.fixture
-def csv_reader(spark):
-    return CSVReader()
+def text_reader(spark):
+    return TextReader()
 
 @pytest.fixture
 def config_dir(tmp_path):
@@ -28,11 +28,11 @@ delimiter: ","
 
 @pytest.fixture
 def test_file(tmp_path):
-    test_file = tmp_path / "file1.csv"
+    test_file = tmp_path / "file1.txt"
     test_file.write_text("col1,col2\n1,2\n3,4")
     return test_file
 
-def test_csv_reader_with_schema(csv_reader, test_file):
+def test_text_reader_with_schema(text_reader, test_file):
     config = {
         "header" : True,
         "inferSchema" : True,
@@ -42,22 +42,5 @@ def test_csv_reader_with_schema(csv_reader, test_file):
             "col2" : int
         }
     }
-    df = csv_reader.read(str(test_file), config)
-    assert df.count() == 2
-    assert len(df.columns) == 2
-    assert df.columns == ["col1", "col2"]
-    assert df.dtypes == [("col1", "int"), ("col2", "int")]
-
-def test_csv_reader_without_schema(csv_reader,test_file):
-    config = {
-        "header" : True,
-        "inferSchema" : True,
-        "delimiter" : ","
-    }
-    df = csv_reader.read(str(test_file), config)
-    assert df.count() == 2
-    assert len(df.columns) == 2
-    assert df.columns == ["col1", "col2"]
-    
-if __name__ == "__main__": 
-    pytest.main()
+    df = text_reader.read(str(test_file), config)
+    assert df.count() == 4

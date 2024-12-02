@@ -5,11 +5,13 @@ extractor_config:
     - '../../file_reader/'
   files_extensions:
     # - '.csv'
-    - '.json'
-    - '.parquet'
+    # - '.json'
+    # - '.parquet'
+    - '.xlsx'
   include_files:
     # - '*IMDB*'
-    - '*creditcard*'
+    # - '*creditcard*'
+    - '*person*'
   exclude_files:
     - 'file1_*.csv'
     - '*file2_*.csv'

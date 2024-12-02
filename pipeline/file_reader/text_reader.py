@@ -15,13 +15,9 @@ class TextReader(BaseFileReader):
             ])
             return self.spark.read.text(
                 file_path,
-                header=header,
-                schema=schema,
-                sep=delimiter
+                lineSep=delimiter
             )
         return self.spark.read.text(
                 file_path,
-                header=header,
-                inferSchema=infer_schema,
-                sep=delimiter
+                lineSep=delimiter
             )
