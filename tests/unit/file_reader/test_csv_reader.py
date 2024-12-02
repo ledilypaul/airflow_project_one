@@ -46,6 +46,7 @@ def test_csv_reader_with_schema(csv_reader, test_file):
     assert df.count() == 2
     assert len(df.columns) == 2
     assert df.columns == ["col1", "col2"]
+    assert df.dtypes == [("col1", "int"), ("col2", "int")]
 
 def test_csv_reader_without_schema(csv_reader,test_file):
     config = {
@@ -57,5 +58,6 @@ def test_csv_reader_without_schema(csv_reader,test_file):
     assert df.count() == 2
     assert len(df.columns) == 2
     assert df.columns == ["col1", "col2"]
+    
 if __name__ == "__main__": 
     pytest.main()

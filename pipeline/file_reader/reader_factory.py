@@ -5,9 +5,14 @@ class ReaderFactory:
     def get_reader(config, file_extension):
         from .csv_reader import CSVReader
         from .parquet_reader import ParquetReader
+        from .excel_reader import ExcelReader
+        from .text_reader import TextReader
         reader_classes = {
             'csv' : CSVReader,
-            'parquet' : ParquetReader
+            'parquet' : ParquetReader,
+            'xls' : ExcelReader,
+            'xlsx' : ExcelReader,
+            'txt' : TextReader
         }
         reader_class = reader_classes.get(file_extension)
         if not reader_class:
