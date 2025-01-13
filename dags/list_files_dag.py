@@ -1,53 +1,47 @@
-import sys
-import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from pipeline.IMDBExtractor import get_files,process_files
+import sys,os
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from datetime import datetime,timedelta
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from pipeline.extractor.extractor import Extractor
+from pipeline.extractor.extractor import Extractor
+from utils.db_connection import db_connection
+config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
+extractor = Extractor(config_path=config_path) 
 
-PATH = "../../Spark/data/"
-FILE_FORMAT = "csv"
+def list_files_task(**kwargs): 
+    """
+    List files in the source directory and store the list in XCom.
 
-args = {
+    Args:
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        None
+    """
+    ti = kwargs['ti'] 
+    files = extractor.list_files() 
+    ti.xcom_push(key='file_list',value=files)
+
+# def insert_files_to_db(**context):
+#     file_data = context['ti'].xcom_pull(key='file_list')
+#     if file_data
+
+default_args = {
     'owner' : 'airflow',
-    "start_date" : datetime(2024,10,21)
+    'depends_on_past' : False,
+    'retries' : 2,
+    'start_date' : datetime(2024,12,18)
 }
 
-def list_files_tasks(path, **kwargs):
-    return get_files(path)
-
-def process_files_task(path, **kwargs):
-    ti = kwargs['ti']
-    
-    valid_files = ti.xcom_pull(task_ids='list_IMDB_files')
-    print("result process files = " + str(process_files(valid_files, path)))    
-    return "valid_files"
-    # if valid_files is None:
-    #     raise ValueError("No valid files were found!")
-    # return process_files(valid_files, path)
-
-
 with DAG(
-    dag_id='process_files_dag',
-    default_args=args,
-    schedule_interval= '@daily'
+    dag_id="list_files_dag",
+    default_args=default_args,
+    schedule_interval="@daily"
 ) as dag:
     list_task = PythonOperator(
-        task_id = "list_IMDB_files",
-        python_callable=list_files_tasks,
-        op_kwargs={'path':PATH},
-        provide_context=True,
-        execution_timeout=timedelta(seconds=60),
-        retries=1
+        task_id = "list_files",
+        python_callable=list_files_task
     )
     
-    process_task = PythonOperator(
-        task_id = "process_IMDB_files",
-        python_callable =process_files_task,
-        provide_context=True,
-        op_kwargs={'path': PATH}
-    )
-    
-    list_task >> process_task #Fixed dependance between task

@@ -13,6 +13,6 @@ def main_test():
     files = ext.list_files()
     for file in files:
         print(file)
-        df = reader.read_files(file)
+        # df = reader.read_files(file)
         # print(df)
 main_test()
