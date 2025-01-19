@@ -1,9 +1,9 @@
 import sys,os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from datetime import datetime,timedelta
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from pipeline.extractor.extractor import Extractor
 from pipeline.extractor.extractor import Extractor
 from utils.db_connection import db_connection
@@ -23,6 +23,7 @@ def list_files_task(**kwargs):
     ti = kwargs['ti'] 
     files = extractor.list_files() 
     ti.xcom_push(key='file_list',value=files)
+    return files
 
 # def insert_files_to_db(**context):
 #     file_data = context['ti'].xcom_pull(key='file_list')
@@ -31,17 +32,27 @@ def list_files_task(**kwargs):
 default_args = {
     'owner' : 'airflow',
     'depends_on_past' : False,
-    'retries' : 2,
-    'start_date' : datetime(2024,12,18)
+    'start_date' : datetime(2024,12,18),
+    'email_on_failure' : False,
+    'email_on_retry' : False,
+    'retries' : 0,
+    'retry_delay' : timedelta(minutes=5)
 }
 
-with DAG(
-    dag_id="list_files_dag",
+dag = DAG(
+    'list_files_dag',
     default_args=default_args,
-    schedule_interval="@daily"
-) as dag:
-    list_task = PythonOperator(
-        task_id = "list_files",
-        python_callable=list_files_task
-    )
+    description='List files in the source directory',
+    schedule_interval=timedelta(days=1),
+)
+list_files = PythonOperator(
+    task_id='list_files_task',
+    provide_context=True,
+    python_callable=list_files_task,
+    dag=dag,
+)
+
+list_files
+    
+
     
