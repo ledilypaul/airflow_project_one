@@ -32,7 +32,8 @@ def process_files_task(path, **kwargs):
 with DAG(
     dag_id='process_files_dag',
     default_args=args,
-    schedule_interval= '@daily'
+    schedule_interval= '@daily',
+    catchup=False,
 ) as dag:
     list_task = PythonOperator(
         task_id = "list_IMDB_files",
