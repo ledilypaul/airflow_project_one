@@ -13,7 +13,8 @@ with DAG(
     default_args=default_args,
     description="c'est le premier dag test",
     start_date=datetime(2024,10,18,10),
-    schedule_interval='@daily'
+    schedule_interval='@daily',
+    catchup=False,
 ) as dag:
     task1 = BashOperator(
         task_id='first_task',

@@ -44,6 +44,7 @@ dag = DAG(
     default_args=default_args,
     description='List files in the source directory',
     schedule_interval=timedelta(days=1),
+    catchup=False # Set to False to disable historical DAG runs
 )
 list_files = PythonOperator(
     task_id='list_files_task',

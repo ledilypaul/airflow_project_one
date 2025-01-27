@@ -46,6 +46,7 @@ dag = DAG(
     default_args=default_args,
     description='A simple DAG to read files',
     schedule_interval=timedelta(days=1),
+    catchup=False, # Set to False to disable historical DAG runs
 )
 
 read_file = PythonOperator(
