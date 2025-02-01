@@ -5,5 +5,9 @@ CREATE TABLE file_list (
     last_modified TIMESTAMP,
     status VARCHAR(255),
     dag_run_id VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- Nouvelle colonne pour suivre l'historique
 );
+
+-- Assurer l’unicité d’un fichier par version de son chemin
+CREATE INDEX idx_file_path ON file_list (file_path);

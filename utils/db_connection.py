@@ -11,7 +11,7 @@ def db_connection():
         )
         return conn
     except Exception as e:
-        raise Exception("Error during connection attempt = {e}")
+        raise Exception(f"Error during connection attempt = {e}")
     
 def close_connection(conn):
     if conn:

@@ -51,7 +51,6 @@ dag = DAG(
 
 read_file = PythonOperator(
     task_id='read_file_task',
-    provide_context=True,
     python_callable=read_file_task,
     dag=dag,
 )

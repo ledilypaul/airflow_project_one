@@ -5,8 +5,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from datetime import datetime,timedelta
 from pipeline.extractor.extractor import Extractor
-from pipeline.extractor.extractor import Extractor
-from utils.db_connection import db_connection
+from utils.functions_utils import insert_into_file_list
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
 extractor = Extractor(config_path=config_path) 
 
@@ -22,13 +21,19 @@ def list_files_task(**kwargs):
     """
     ti = kwargs['ti'] 
     files = extractor.list_files() 
-    ti.xcom_push(key='file_list',value=files)
+    # ti.xcom_push(key='file_list',value=files)
     return files
 
-# def insert_files_to_db(**context):
-#     file_data = context['ti'].xcom_pull(key='file_list')
-#     if file_data
-
+def insert_files_to_db(**kwargs):
+    file_list = kwargs['ti'].xcom_pull(task_ids='list_files_task')  # Récupération de la liste des fichiers depuis les XComs
+    if not file_list:
+        raise ValueError('No files found in Xcoms')
+    
+    for file in file_list:
+        print(f"Inserting {file} into the database")
+        data = [file.split("/"[-1]), file, datetime.fromtimestamp(os.path.getmtime(file))]
+        insert_into_file_list(data)
+        
 default_args = {
     'owner' : 'airflow',
     'depends_on_past' : False,
@@ -48,12 +53,18 @@ dag = DAG(
 )
 list_files = PythonOperator(
     task_id='list_files_task',
-    provide_context=True,
     python_callable=list_files_task,
     dag=dag,
 )
 
-list_files
+insert_files = PythonOperator(
+    task_id='insert_files_to_db',
+    provide_context=True,
+    python_callable=insert_files_to_db,
+    dag=dag,
+)
+
+list_files >> insert_files
     
 
     
