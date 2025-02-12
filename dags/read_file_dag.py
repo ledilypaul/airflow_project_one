@@ -6,7 +6,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from pipeline.extractor.extractor import Extractor
 from pipeline.file_reader.base_reader import BaseFileReader
 from utils.db_connection import db_connection
-
+from utils.functions_utils import list_file_from_db
 # Configuration du chemin du fichier de configuration
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
 reader = BaseFileReader()
@@ -21,15 +21,14 @@ def read_file_task(**kwargs):
     Returns:
         None
     """
-    ti = kwargs['ti']
-    file_list = ti.xcom_pull(key='list_files_dag', task_ids='list_files_task')
+    file_list = list_file_from_db()
     if not file_list:
-        raise ValueError("No files found in XCom")
+        raise ValueError("No files in table file_list")
 
     for file in file_list:
-        content = reader.read_file(file)
+        content = reader.read_files(file[2])
         # Process the content as needed
-        print(f"Read content from {file}: {content}")
+        print(f"Read content from {file[1]}: {content}")
 
 default_args = {
     'owner': 'airflow',
