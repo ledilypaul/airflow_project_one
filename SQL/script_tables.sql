@@ -6,7 +6,7 @@ CREATE TABLE file_list (
     status VARCHAR(255),
     dag_run_id VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- Nouvelle colonne pour suivre l'historique
+    ingested_at DATE DEFAULT CURRENT_DATE
 );
 
 -- Assurer l’unicité d’un fichier par version de son chemin

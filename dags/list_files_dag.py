@@ -19,7 +19,6 @@ def list_files_task(**kwargs):
     Returns:
         None
     """
-    ti = kwargs['ti'] 
     files = extractor.list_files() 
     # ti.xcom_push(key='file_list',value=files)
     return files
