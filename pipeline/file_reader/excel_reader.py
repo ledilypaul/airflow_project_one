@@ -1,7 +1,7 @@
 from .base_reader import BaseFileReader
 from pyspark.sql import SparkSession
 import pyspark.pandas as ps
-
+import polars as pl
 class ExcelReader(BaseFileReader):
     # def __init__(self,spark):
     #     if "com.crealytics.spark.excel" not in spark.conf.get("spark.jars.packages",""):
@@ -17,9 +17,10 @@ class ExcelReader(BaseFileReader):
     #                 df_reader = df_reader.option(key,value)
     #     return df_reader.load(file_path)
     def read(self, file_path, file_config):
-        if file_config:
-            df_reader = ps.read_excel(file_path,inferSchema=file_config.get("inferSchema", False),header=file_config.get("header", True),sheet_name=file_config.get("dataAddress", None))
-            for item in file_config.get("excel_reader", []):
-                for key, value in item.items():
-                    df_reader = df_reader.option(key, value)
-        return df_reader
+        try:
+            file_config = file_config.get("excel_reader", {}) if file_config else {}
+            df_reader = pl.read_excel(file_path)#,**file_config
+            return df_reader
+        except Exception as e:
+            print(f"Error reading file {file_path}")
+            # return None
