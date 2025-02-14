@@ -11,5 +11,6 @@ dfs = process_files(get_files("../../Spark/data/"),"../../Spark/data/")
 
 res = list_file_from_db()
 reader = BaseFileReader()
+print(res)
 for r in res:
     print(reader.read_files(r[2]))
