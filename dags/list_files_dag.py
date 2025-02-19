@@ -1,53 +1,69 @@
-import sys
-import os
+import sys,os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from pipeline.IMDBExtractor import get_files,process_files
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from datetime import datetime,timedelta
+from pipeline.extractor.extractor import Extractor
+from utils.functions_utils import insert_into_file_list
+config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
+extractor = Extractor(config_path=config_path) 
 
-PATH = "../../Spark/data/"
-FILE_FORMAT = "csv"
+def list_files_task(**kwargs): 
+    """
+    List files in the source directory and store the list in XCom.
 
-args = {
+    Args:
+        **kwargs: Additional keyword arguments.
+
+    Returns:
+        None
+    """
+    files = extractor.list_files() 
+    # ti.xcom_push(key='file_list',value=files)
+    return files
+
+def insert_files_to_db(**kwargs):
+    file_list = kwargs['ti'].xcom_pull(task_ids='list_files_task')  # Récupération de la liste des fichiers depuis les XComs
+    if not file_list:
+        raise ValueError('No files found in Xcoms')
+    
+    for file in file_list:
+        print(f"Inserting {file} into the database")
+        data = [file.split("/"[-1]), file, datetime.fromtimestamp(os.path.getmtime(file))]
+        insert_into_file_list(data)
+        
+default_args = {
     'owner' : 'airflow',
-    "start_date" : datetime(2024,10,21)
+    'depends_on_past' : False,
+    'start_date' : datetime(2024,12,18),
+    'email_on_failure' : False,
+    'email_on_retry' : False,
+    'retries' : 0,
+    'retry_delay' : timedelta(minutes=5)
 }
 
-def list_files_tasks(path, **kwargs):
-    return get_files(path)
+dag = DAG(
+    'list_files_dag',
+    default_args=default_args,
+    description='List files in the source directory',
+    schedule_interval=timedelta(days=1),
+    catchup=False # Set to False to disable historical DAG runs
+)
+list_files = PythonOperator(
+    task_id='list_files_task',
+    python_callable=list_files_task,
+    dag=dag,
+)
 
-def process_files_task(path, **kwargs):
-    ti = kwargs['ti']
-    
-    valid_files = ti.xcom_pull(task_ids='list_IMDB_files')
-    print("result process files = " + str(process_files(valid_files, path)))    
-    return "valid_files"
-    # if valid_files is None:
-    #     raise ValueError("No valid files were found!")
-    # return process_files(valid_files, path)
+insert_files = PythonOperator(
+    task_id='insert_files_to_db',
+    provide_context=True,
+    python_callable=insert_files_to_db,
+    dag=dag,
+)
 
+list_files >> insert_files
+    
 
-with DAG(
-    dag_id='process_files_dag',
-    default_args=args,
-    schedule_interval= '@daily'
-) as dag:
-    list_task = PythonOperator(
-        task_id = "list_IMDB_files",
-        python_callable=list_files_tasks,
-        op_kwargs={'path':PATH},
-        provide_context=True,
-        execution_timeout=timedelta(seconds=60),
-        retries=1
-    )
     
-    process_task = PythonOperator(
-        task_id = "process_IMDB_files",
-        python_callable =process_files_task,
-        provide_context=True,
-        op_kwargs={'path': PATH}
-    )
-    
-    list_task >> process_task #Fixed dependance between task
