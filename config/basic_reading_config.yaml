@@ -10,6 +10,5 @@ parquet_reader:
   - infer_schema: false
 
 excel_reader:
-  - infer_schema: false
-  - header: True
-  - dataAddress : "sheet_name"
+  infer_schema: false
+  header: True
