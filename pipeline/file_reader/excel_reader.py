@@ -22,5 +22,4 @@ class ExcelReader(BaseFileReader):
             df_reader = pl.read_excel(file_path)#,**file_config
             return df_reader
         except Exception as e:
-            print(f"Error reading file {file_path}")
-            # return None
+            print(f"Error reading file {file_path}, error: {e}")
