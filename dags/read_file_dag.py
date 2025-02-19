@@ -25,10 +25,11 @@ def read_file_task(**kwargs):
     if not file_list:
         raise ValueError("No files in table file_list")
 
+    print("file_list\n", file_list)
     for file in file_list:
         content = reader.read_files(file[2])
         # Process the content as needed
-        print(f"Read content from {file[1]}: {content}")
+        print(f"Read content from {file}: {str(content)}")
 
 default_args = {
     'owner': 'airflow',
