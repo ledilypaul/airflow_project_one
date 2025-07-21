@@ -10,7 +10,7 @@ def base_reader():
     """Fixture pour initialiser un lecteur de base."""
     return BaseFileReader()
 
-@pytest.fixture
+@pytest.fixturepi
 def config_dir(tmp_path):
     """Fixture pour créer un dossier temporaire de configuration avec des fichiers."""
     config_dir = tmp_path / "config"
@@ -56,8 +56,7 @@ def test_get_config_file(base_reader, config_dir):
     assert config_content['header'] == True
     assert config_content['config_name'] == "basic_reading_config"
 
-def test_read_files(base_reader,config_dir,test_file):
-    reader = base_reader
-    os.chdir(config_dir.parent)
-    df = reader.read_files(str(test_file))
-    assert df.count() == 2 # Nombre de lignes
+def test_read_files(base_reader,config_dir,test_file,monkeypatch):
+    monkeypatch.chdir(config_dir.parent)
+    df = base_reader.read_files(str(test_file))
+    assert df.count() == 2 

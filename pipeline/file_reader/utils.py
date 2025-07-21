@@ -1,20 +1,40 @@
-from pyspark.sql.types import StructType, StructField, IntegerType, StringType, FloatType, BooleanType, DateType
-def get_spark_type(col_type):
+from pyspark.sql.types import (
+    StringType,
+    IntegerType,
+    FloatType,
+    DoubleType,
+    BooleanType,
+    DateType,
+    TimestampType
+)
+
+def get_spark_type(col_type: str):
     """
-    Mappe les types de colonnes spécifiés dans le YAML vers les types Spark.
-    
+    Mappe les types YAML vers les types Spark.
+
     Args:
-        col_type (str): Type de colonne spécifié dans le YAML.
-    
+        col_type (str): Type de colonne spécifié dans le fichier YAML (ex: "string", "int").
+
     Returns:
-        DataType: Type de données Spark correspondant.
+        pyspark.sql.types.DataType: Type de données Spark correspondant.
+
+    Raises:
+        ValueError: Si le type spécifié n'est pas reconnu.
     """
     type_mapping = {
-        "int": IntegerType(),
         "string": StringType(),
+        "int": IntegerType(),
+        "integer": IntegerType(),
         "float": FloatType(),
+        "double": DoubleType(),
         "boolean": BooleanType(),
         "date": DateType(),
-        # Ajoute d'autres types si nécessaire
+        "timestamp": TimestampType(),
     }
-    return type_mapping.get(col_type, StringType())  # Par défaut : StringType
+
+    normalized_type = col_type.strip().lower()
+    
+    if normalized_type not in type_mapping:
+        raise ValueError(f"[get_spark_type] Type non reconnu dans YAML : '{col_type}'")
+
+    return type_mapping[normalized_type]
