@@ -4,10 +4,8 @@ from pyspark.sql import SparkSession
 from .reader_factory import ReaderFactory
 
 class BaseFileReader:
-    def __init__(self):  
-        self.spark = SparkSession.builder \
-            .appName("DataReader") \
-            .getOrCreate()
+    def __init__(self, spark: SparkSession):  
+        self.spark = spark
 
 
     def get_config_file(self,file_name: str):
@@ -31,8 +29,6 @@ class BaseFileReader:
     def read_files(self, file_path: str):
         file_config = self.get_config_file(file_path)
         extension_file = file_path.split(".")[-1].lower()
-        reader_instance = ReaderFactory.get_reader(file_config,extension_file)
-        # reader_instance = ReaderFactory.get_reader(file_config,extension_file,self.spark)
+        reader_instance = ReaderFactory.get_reader(file_config,extension_file,self.spark)
         df = reader_instance.read(file_path,file_config)
         return df
-        # print(df.head(1))

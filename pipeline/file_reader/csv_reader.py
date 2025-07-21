@@ -1,13 +1,16 @@
-from .base_reader import BaseFileReader
 from .utils import get_spark_type
-from pyspark.sql.types import StructType, StructField, IntegerType, StringType, FloatType
-
-class CSVReader(BaseFileReader):
+from pyspark.sql.types import StructType, StructField
+from pyspark.sql import SparkSession
+class CSVReader:
+    def __init__(self,spark : SparkSession):
+        self.spark = spark
+        
     def read(self,file_path,file_config):
         header =file_config.get("header", True)
         infer_schema = file_config.get("inferSchema", True)
         delimiter = file_config.get("delimiter", ",")
         columns_type = file_config.get("columns_type")
+        
         if columns_type:
             schema = StructType([
             StructField(name, get_spark_type(col_type),True)
@@ -18,10 +21,10 @@ class CSVReader(BaseFileReader):
                 header=header,
                 schema=schema,
                 sep=delimiter
-            ).limit(20)
+            )
         return self.spark.read.csv(
                 file_path,
                 header=header,
                 inferSchema=infer_schema,
                 sep=delimiter
-            ).limit(20)
+            )
