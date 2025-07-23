@@ -1,28 +1,17 @@
----
 extractor_config:
   source_directories:
-    - '../../Spark/data/'
-    - '../../file_reader/'
+    # - "../../Spark/data/"
+    - "../../file_reader/"
   files_extensions:
-    # - '.csv'
+    - ".csv"
     # - '.json'
     # - '.parquet'
-    - '.xlsx'
+    - ".xlsx"
   include_files:
-    # - '*IMDB*'
-    # - '*creditcard*'
-    - '*person*'
+    - "*IMDB*"
+    - "*creditcard*"
+    - "*person*"
+    - "**"
   exclude_files:
-    - 'file1_*.csv'
-    - '*file2_*.csv'
-  column_types:
-    - 'int'
-    - 'string'
-    - 'float'
-    - 'date'
-    - 'boolean'
-    - 'array'
-    - 'map'
-    - 'struct'
-  config_files:
-    - imdb : 'imdb_config.yaml'
+    - "file1_*.csv"
+    - "*file2_*.csv"

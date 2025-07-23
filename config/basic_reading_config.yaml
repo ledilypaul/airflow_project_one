@@ -1,14 +1,23 @@
-basic_reading_config:
-  file_options:
-  header: True
-  inferSchema: True
-  delimer: ","
+default_format: csv
 
-parquet_reader:
-  - compression: snappy
-  - partition_column: date
-  - infer_schema: false
+csv:
+  format: csv
+  reader_options:
+    header: true
+    inferSchema: true
+    delimiter: ","
 
-excel_reader:
-  infer_schema: false
-  header: True
+excel:
+  format: excel
+  reader_options:
+    header: true
+    inferSchema: true
+    # dataAddress: "'Sheet1'!A1"
+    treatEmptyValuesAsNulls: true
+  columns_type: {}
+
+parquet:
+  format: parquet
+  reader_options:
+    inferSchema: true
+  columns_type: {}
