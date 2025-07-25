@@ -3,9 +3,9 @@ extractor_config:
     # - "../../Spark/data/"
     - "../../file_reader/"
   files_extensions:
-    - ".csv"
+    # - ".csv"
     # - '.json'
-    # - '.parquet'
+    - ".parquet"
     - ".xlsx"
   include_files:
     - "*IMDB*"

@@ -10,7 +10,7 @@ def spark():
 
 @pytest.fixture
 def parquet_reader(spark):
-    return ParquetReader()
+    return ParquetReader(spark)
 
 
 @pytest.fixture
@@ -22,14 +22,6 @@ def test_parquet_file(tmp_path,spark):
     df.write.parquet(str(test_file))
     return test_file
 
-def test_parquet_reader_with_option(parquet_reader,test_parquet_file):
-    config = {
-        parquet_reader : {
-            "compression": "snappy",
-            "partition_column": "date",
-            "infer_schema": "false" 
-    }
-    }
-        
-    result = parquet_reader.read(str(test_parquet_file),config)
+def test_parquet_reader(parquet_reader,test_parquet_file):        
+    result = parquet_reader.read(str(test_parquet_file),{})
     assert result.count() == 2
