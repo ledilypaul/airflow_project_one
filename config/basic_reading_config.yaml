@@ -7,17 +7,23 @@ csv:
     inferSchema: true
     delimiter: ","
 
-excel:
-  format: excel
+txt:
+  format: txt
   reader_options:
     header: true
-    inferSchema: true
+    infer_schema: True
+    delimiter: ","
+
+xlsx:
+  format: xlsx
+  reader_options:
+    header: 1
+    # inferSchema: true
+    dtype: str
     # dataAddress: "'Sheet1'!A1"
-    treatEmptyValuesAsNulls: true
+    # treatEmptyValuesAsNulls: true
   columns_type: {}
 
 parquet:
   format: parquet
   reader_options:
-    inferSchema: true
-  columns_type: {}

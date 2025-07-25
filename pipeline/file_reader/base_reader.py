@@ -16,7 +16,6 @@ class BaseFileReader:
     def get_config_file(self, file_name: str):
         file_basename = os.path.basename(file_name).lower()
         file_extension = file_name.split(".")[-1].lower()
-
         # Search for a specific config file 
         for config_file in os.listdir(self.config_path):
             if config_file.endswith(".yaml") and config_file.split("_")[0] in file_basename:
@@ -27,7 +26,6 @@ class BaseFileReader:
         default_config_path = self.config_path / "basic_reading_config.yaml"
         with open(default_config_path, 'r') as f:
             all_defaults = yaml.safe_load(f)
-
         # Search for specific section to the extension
         if file_extension in all_defaults:
             return all_defaults[file_extension]
