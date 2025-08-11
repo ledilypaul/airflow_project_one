@@ -4,7 +4,12 @@ version = "0.1.0"
 description = ""
 authors = ["ledilypaul <paul.ledily@hotmail.fr>"]
 readme = "README.md"
-package-mode = false
+packages = [
+    { include = "pipeline" },
+    { include = "utils" },
+    { include = "sandbox" },
+    { include = "utils"}
+]
 
 [tool.poetry.dependencies]
 python = "^3.12"
