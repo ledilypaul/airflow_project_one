@@ -2,6 +2,7 @@ import os
 import yaml
 from pyspark.sql import SparkSession
 from .reader_factory import ReaderFactory
+from utils.path_utils import normalize_spark_path
 from pathlib import Path
 
 class BaseFileReader:
@@ -38,6 +39,7 @@ class BaseFileReader:
         raise ValueError(f"Aucune configuration valide trouvée pour le fichier : {file_name}")
 
     def read_files(self, file_path: str):
+        file_path = normalize_spark_path(file_path)
         file_config = self.get_config_file(file_path)
         extension_file = file_path.split(".")[-1].lower()
         reader_instance = ReaderFactory.get_reader(file_config, extension_file, self.spark)
