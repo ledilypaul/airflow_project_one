@@ -13,8 +13,8 @@ extractor_config:
     - "*IMDB*"
     - "*creditcard*"
     - "*person*"
-    - "**"
-    - "orders"
+    # - "**"
+    - "orders_*"
   exclude_files:
     - "file1_*.csv"
     - "*file2_*.csv"
