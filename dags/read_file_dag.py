@@ -7,9 +7,11 @@ from pipeline.extractor.extractor import Extractor
 from pipeline.file_reader.base_reader import BaseFileReader
 from utils.db_connection import db_connection
 from utils.functions_utils import list_file_from_db
+from utils.spark_session import get_spark_session
 # Configuration du chemin du fichier de configuration
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
-reader = BaseFileReader()
+spark = get_spark_session()
+reader = BaseFileReader(spark)
 
 def read_file_task(**kwargs):
     """
@@ -45,7 +47,7 @@ dag = DAG(
     'read_file_dag',
     default_args=default_args,
     description='A simple DAG to read files',
-    schedule_interval=timedelta(days=1),
+    # schedule_interval=timedelta(days=1),
     catchup=False, # Set to False to disable historical DAG runs
 )
 
