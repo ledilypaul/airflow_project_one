@@ -10,8 +10,7 @@ from utils.functions_utils import list_file_from_db
 from utils.spark_session import get_spark_session
 # Configuration du chemin du fichier de configuration
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
-spark = get_spark_session()
-reader = BaseFileReader(spark)
+
 
 def read_file_task(**kwargs):
     """
@@ -23,6 +22,8 @@ def read_file_task(**kwargs):
     Returns:
         None
     """
+    spark = get_spark_session()
+    reader = BaseFileReader(spark)
     file_list = list_file_from_db()
     if not file_list:
         raise ValueError("No files in table file_list")
