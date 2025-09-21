@@ -1,50 +1,64 @@
-format: csv
+source:
+  name: imdb_movies
+  table_name: movies
+  format: csv
+  path : /data/imdb/
 
-reader_options:
-  header: true
-  inferSchema: true
-  delimiter: ","
+reader:
+  reader_name: csv_reader
+  reader_options:
+    header: true
+    inferSchema: true
+    delimiter: ","
+    encoding: "UTF-8"
+    columns_type:
+      id: int
+      title: string
+      vote_average: float
+      vote_count: int
+      status: string
+      release_date: date
+      revenue: float
+      runtime: int
+      adult: boolean
+      backdrop_path: string
+      budget: int
+      homepage: string
+      imdb_db: string
+      original_language: string
+      original_title: string
+      overview: string
+      popularity: float
+      poster_path: string
+      tagline: string
+      production_companies: string
+      production_countries: string
+      spoken_languages: string
+      keywords: string
+      release_year: int
+      Director: string
+      AverageRating: float
+      Poster_Link: string
+      Certificate: string
+      IMDB_Rating: float
+      Metascore: float
+      Star1: string
+      Star2: string
+      Star3: string
+      Star4: string
+      Writer: string
+      Director_of_Photography: string
+      Producer: string
+      Music_Composer: string
+      genre_list: array
+      Cast_list: string
+      overview_sentiment: string
+      all_combined_keywords: string
 
-columns_type:
-  id: int
-  title: string
-  vote_average: float
-  vote_count: int
-  status: string
-  release_date: date
-  revenue: float
-  runtime: int
-  adult: boolean
-  backdrop_path: string
-  budget: int
-  homepage: string
-  imdb_db: string
-  original_language: string
-  original_title: string
-  overview: string
-  popularity: float
-  poster_path: string
-  tagline: string
-  production_companies: string
-  production_countries: string
-  spoken_languages: string
-  keywords: string
-  release_year: int
-  Director: string
-  AverageRating: float
-  Poster_Link: string
-  Certificate: string
-  IMDB_Rating: float
-  Metascore: float
-  Star1: string
-  Star2: string
-  Star3: string
-  Star4: string
-  Writer: string
-  Director_of_Photography: string
-  Producer: string
-  Music_Composer: string
-  genre_list: array
-  Cast_list: string
-  overview_sentiment: string
-  all_combined_keywords: string
+storage:
+  format: parquet
+  mode: append
+  source_file_path: "raw/"
+  staging_file_path: "staging/"
+
+  

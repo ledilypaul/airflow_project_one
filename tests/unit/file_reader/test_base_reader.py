@@ -72,7 +72,7 @@ def test_get_config_file_default(base_reader, config_dir):
     assert config_content['reader_options']['header'] == True
 
 
-def test_read_files(base_reader,config_dir,test_file,monkeypatch):
+def test_read_file(base_reader,config_dir,test_file,monkeypatch):
     monkeypatch.chdir(config_dir.parent)
     dummy_df = base_reader.spark.createDataFrame([
         ("Alice", 1),
@@ -83,5 +83,5 @@ def test_read_files(base_reader,config_dir,test_file,monkeypatch):
     dummy_reader.read.return_value = dummy_df
 
     with patch("pipeline.file_reader.reader_factory.ReaderFactory.get_reader", return_value=dummy_reader):
-        df = base_reader.read_files(str(test_file))
+        df = base_reader.read_file(str(test_file))
         assert df.count() == 2

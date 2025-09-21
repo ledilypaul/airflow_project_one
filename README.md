@@ -179,3 +179,8 @@ airflow_project_one/
 ├── tests/               # Tests unitaires
 ├── airflow.cfg          # Configuration Airflow
 └── pyproject.toml       # Dépendances Poetry
+
+Avec docker 
+docker compose run airflow-webserver airflow db init
+
+docker compose up -d

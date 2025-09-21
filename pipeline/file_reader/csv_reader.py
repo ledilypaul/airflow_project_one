@@ -6,11 +6,10 @@ class CSVReader:
         self.spark = spark
         
     def read(self,file_path,file_config):
-        options = file_config.get("reader_options", {})
+        options = file_config.get("reader", {}).get("reader_options", {})
         header =options.get("header", True)
         infer_schema = options.get("inferSchema", True)
-        delimiter = options.get("delimiter", ",")
-        
+        delimiter = options.get("delimiter", ",")        
         columns_type = options.get("columns_type")
         
         if columns_type:

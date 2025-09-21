@@ -1,0 +1,19 @@
+source:
+  name: orders
+  table_name: orders
+  format: csv
+  path : ../data/
+
+reader:
+  reader_name: csv_reader
+  reader_options:
+    header: true
+    inferSchema: true
+    delimiter: ","
+    encoding: "UTF-8"
+    
+storage:
+  format: parquet
+  mode: append
+  source_file_path: "raw/"
+  staging_file_path: "staging/"
