@@ -17,7 +17,7 @@ class BaseFileReader:
     def get_config_file(self, file_name: str):
         file_basename = os.path.basename(file_name).lower()
         file_extension = file_name.split(".")[-1].lower()
-        # Search for a specific config file 
+        # Search for a specific config file
         for config_file in os.listdir(self.config_path):
             if config_file.endswith(".yaml") and config_file.split("_")[0] in file_basename:
                 with open(self.config_path / config_file, 'r') as f:
@@ -38,9 +38,9 @@ class BaseFileReader:
 
         raise ValueError(f"Aucune configuration valide trouvée pour le fichier : {file_name}")
 
-    def read_files(self, file_path: str):
+    def read_file(self, file_path: str):
         file_path = normalize_spark_path(file_path)
         file_config = self.get_config_file(file_path)
-        extension_file = file_path.split(".")[-1].lower()
+        extension_file = file_config["source"]["format"]
         reader_instance = ReaderFactory.get_reader(file_config, extension_file, self.spark)
         return reader_instance.read(file_path, file_config)

@@ -11,6 +11,22 @@ from utils.spark_session import get_spark_session
 # Configuration du chemin du fichier de configuration
 config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
 
+def list_file_task(**kwargs):
+    raw_file_list = list_file_from_db()
+    if not raw_file_list:
+        raise ValueError("No files in file list")
+    file_list = [
+        {
+            "id": file[0],
+            "name": file[1],
+            "path": file[2],
+            "created_at": str(file[3]),  
+            "processed_at": str(file[6]),
+            "process_date": str(file[7])
+        }
+        for file in raw_file_list
+    ] #Convert into dict to be able to pass through xcom
+    kwargs['ti'].xcom_push(key='file_list', value=file_list)
 
 def read_file_task(**kwargs):
     """
@@ -24,15 +40,13 @@ def read_file_task(**kwargs):
     """
     spark = get_spark_session()
     reader = BaseFileReader(spark)
-    file_list = list_file_from_db()
-    if not file_list:
-        raise ValueError("No files in table file_list")
+    file_list = kwargs['ti'].xcom_pull(key='file_list', task_ids='list_file_task')
 
-    print("file_list\n", file_list)
     for file in file_list:
-        content = reader.read_files(file[2])
+        content = reader.read_file(file["path"])
         # Process the content as needed
         print(f"Read content from {file}: {str(content)}")
+        content.show(truncate=False)  # Affiche les lignes dans les logs Airflow
 
 default_args = {
     'owner': 'airflow',
@@ -52,10 +66,16 @@ dag = DAG(
     catchup=False, # Set to False to disable historical DAG runs
 )
 
+list_file = PythonOperator(
+    task_id='list_file_task',
+    python_callable=list_file_task,
+    dag=dag,
+)
+
 read_file = PythonOperator(
     task_id='read_file_task',
     python_callable=read_file_task,
     dag=dag,
 )
 
-read_file
+list_file >> read_file
