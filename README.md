@@ -1,186 +1,131 @@
 # airflow_project_one
 
-Mac : 
-    source ../../virtual_env/airflow_env/bin/activate
+## 📌 Prerequisites
 
-    ## Obsolète
-    export AIRFLOW_HOME=/Users/paulledily/Documents/Project/Work/Python/airflow_project/airflow_project_one
-    airflow webserver -p 8282
+- Python **3.12**
+- **Poetry** for dependency management
+- **Apache Airflow ≥ 3.0.0**
+- A dedicated virtual environment (**recommended**)
 
-    export AIRFLOW_HOME=/Users/paulledily/Documents/Project/Work/Python/airflow_project/airflow_project_one
-    airflow scheduler
- 
-## New 
-Mac
-export AIRFLOW_HOME=/Users/paulledily/Documents/Project/Work/Python/airflow_project/airflow_project_one
+---
 
-Windows
-export AIRFLOW_HOME=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
+## 🚀 Installation
 
-airflow standalone
+### 1️⃣ Clone the repository
 
-Only work in a local env
-
-
-Specification to add in airflow.cfg :
-
-# Variable: AIRFLOW__CORE__LOAD_EXAMPLES
-#
-load_examples = False
-
-# Variable: AIRFLOW__CORE__PLUGINS_FOLDER
-#
-plugins_folder = /mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/plugins
-
-
-# export AIRFLOW__CORE__DAGS_FOLDER=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/dags
-# export PYTHONPATH=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
-export AIRFLOW_HOME=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
-
-airflow config get-value core dags_folder
-airflow config get-value core airflow_home
-
-Airflow 3.0.0 comes with Simple auth manager by default. You can not create users using 'airflow users create' when using simple auth manager.
-
-Run 'pip install apache-airflow-providers-fab' to install fab auth manager and set the below variable in airflow.cfg file to enable fab auth manager.
-
-auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-
-After you set this, you should be able to create users using 'airflow users create' command.
-
-(.venv) ledilypaul@PC-Pol:/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one$ export AIRFLOW_HOME=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/dags
-(.venv) ledilypaul@PC-Pol:/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one$ airflow db migrate
-
-airflow config get-value core dags_folder
-airflow config get-value core airflow_home
-
-airflow_project_one
-📌 Prérequis
-
-    Python 3.12
-
-    Poetry pour la gestion des dépendances
-
-    Apache Airflow (≥ 3.0.0)
-
-    Environnement virtuel dédié
-
-🚀 Installation
-1️⃣ Cloner le projet
-
-git clone <url-du-repo>
+```bash
+git clone https://github.com/ledilypaul/airflow_project_one.git
 cd airflow_project_one
+```
 
-2️⃣ Créer et activer l’environnement virtuel
+## ⚙️ Airflow Configuration
 
-MacOS :
+### 1️⃣ Set the AIRFLOW_HOME environment variable
 
-python3 -m venv .venv
-source .venv/bin/activate
+## Mac
+export AIRFLOW_HOME=path/airflow_project_one
 
-Windows (WSL ou PowerShell) :
-
-python -m venv .venv
-source .venv/bin/activate
-
-3️⃣ Installer les dépendances
-
-poetry install
-
-⚙️ Configuration Airflow
-1️⃣ Définir AIRFLOW_HOME
-
-MacOS :
-
-export AIRFLOW_HOME=/Users/paulledily/Documents/Project/Work/Python/airflow_project/airflow_project_one
-
-Windows (WSL) :
-
+## Windows (WSL)
 export AIRFLOW_HOME=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
 
-    💡 Tu peux mettre cette commande dans ~/.bashrc ou ~/.zshrc pour éviter de la retaper à chaque fois.
+Add this line to your ~/.bashrc or ~/.zshrc to persist it.
 
-2️⃣ Empêcher le chargement des DAGs d’exemple
+### 2️⃣ Specification to add in airflow.cfg :
 
-Dans le fichier airflow.cfg (ou via variables d’environnement) :
-
+#### Disable exampls Dags
+```bash
 [core]
 load_examples = False
-
-3️⃣ Spécifier les dossiers personnalisés
-
-Toujours dans airflow.cfg :
-
+```
+#### Specify custom folders
+```bash
 [core]
-plugins_folder = /mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/plugins
-dags_folder = /mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/dags
+plugins_folder = path/airflow_project_one/plugins
+dags_folder = path/airflow_project_one/dags
+```
 
-Ou en variables d’environnement :
+Or via environment variables:
+```bash
+export AIRFLOW__CORE__PLUGINS_FOLDER=path/airflow_project_one/plugins
+export AIRFLOW__CORE__DAGS_FOLDER=path/airflow_project_one/dags
+```
 
-export AIRFLOW__CORE__PLUGINS_FOLDER=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/plugins
-export AIRFLOW__CORE__DAGS_FOLDER=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one/dags
-
-4️⃣ Ajouter le projet au PYTHONPATH
-
-Pour que tes DAGs puissent importer tes modules :
-
+#### Add the project to PYTHONPATH
+```bash
 export PYTHONPATH=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
+```
+This allows your DAGs to import internal modules.
 
-▶️ Lancer Airflow
-Initialiser ou migrer la base
+## Run Airflow
 
+Initialize or migrate the database:
+```bash
 airflow db migrate
+```
 
-Démarrer Airflow en standalone
-
+Start Airflow:
+```bash
 airflow standalone
+```
+Accessible at: http://localhost:8080
 
-Airflow sera disponible par défaut sur http://localhost:8080.
-🔑 Gestion des utilisateurs (Airflow ≥ 3.0.0)
+## 🔑 User Management (Airflow ≥ 3.0.0)
 
-Airflow 3.0.0 utilise par défaut Simple Auth Manager qui ne permet pas de créer d’utilisateurs avec :
-
+Airflow 3.0.0 uses Simple Auth Manager by default.
+It does not allow creating users via:
+```bash
 airflow users create ...
+```
 
-Pour activer FAB Auth Manager (qui permet de créer des utilisateurs via CLI) :
+To enable FAB Auth Manager:
 
-    Installer le provider :
-
+### 1️⃣ Install the provider
+```bash
 pip install apache-airflow-providers-fab
+```
 
-    Dans airflow.cfg :
+### 2️⃣ Update airflow.cfg
 
+```ini
 [core]
 auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+```
 
-    Créer un utilisateur :
-
+### 3️⃣ Create a user
+```bash
 airflow users create \
     --username admin \
-    --firstname Paul \
-    --lastname Ledily \
+    --firstname Marty \
+    --lastname McFly \
     --role Admin \
-    --email paul.ledily@hotmail.fr \
-    --password <ton_mot_de_passe>
+    --email marty.mcfly@hotmail.us \
+    --password <your_password>
+```
 
-🛠 Vérifier la configuration
-
+#### Verify configuration
+```bash
 airflow config get-value core dags_folder
 airflow config get-value core airflow_home
+```
 
-📂 Structure du projet
-
+## 📂 Project structure
 airflow_project_one/
-├── dags/                # Contient les DAGs Airflow
-├── pipeline/            # Code de traitement des données
-├── utils/               # Fonctions utilitaires
-├── config/              # Fichiers de configuration YAML / JSON
-├── sandbox/             # Scripts de test
-├── tests/               # Tests unitaires
-├── airflow.cfg          # Configuration Airflow
-└── pyproject.toml       # Dépendances Poetry
+├── dags/                # Airflow DAGs
+├── pipeline/            # Data extraction / transformation logic
+├── utils/               # Utility functions
+├── config/              # JSON / YAML config
+├── sandbox/             # Test scripts
+├── tests/               # Unit tests
+├── airflow.cfg          # Airflow configuration
+└── pyproject.toml       # Poetry dependencies
 
-Avec docker 
+## 🐳 Running with Docker
+Initialize the database:
+```bash
 docker compose run airflow-webserver airflow db init
+```
 
+Start services:
+```bash
 docker compose up -d
+```
