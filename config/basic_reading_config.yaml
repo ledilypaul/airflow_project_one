@@ -1,0 +1,29 @@
+default_format: csv
+
+csv:
+  format: csv
+  reader_options:
+    header: true
+    inferSchema: true
+    delimiter: ","
+
+txt:
+  format: txt
+  reader_options:
+    header: true
+    infer_schema: True
+    delimiter: ","
+
+xlsx:
+  format: xlsx
+  reader_options:
+    header: 1
+    # inferSchema: true
+    dtype: str
+    # dataAddress: "'Sheet1'!A1"
+    # treatEmptyValuesAsNulls: true
+  columns_type: {}
+
+parquet:
+  format: parquet
+  reader_options:
