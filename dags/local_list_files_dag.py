@@ -1,62 +1,77 @@
 import sys
 import os
 from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from pipeline.extractor.extractor import Extractor
-from utils.functions_utils import insert_into_file_list
+from pathlib import Path
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-config_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'config', 'extractor_config.yaml'))
-extractor = Extractor(config_path=config_path)
+from airflow.decorators import dag, task
 
-def list_files_task(**kwargs): 
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(PROJECT_ROOT))
+
+CONFIG_PATH = str(PROJECT_ROOT / "config" / "extractor_config.yaml")
+
+DEFAULT_ARGS  = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+
+@dag(
+    dag_id="list_files_dag",
+    description="List files in the source directory and persist metadata",
+    default_args=DEFAULT_ARGS,
+    start_date=datetime(2025, 12, 18),
+    schedule=None,  # ou "0 * * * *" pour toutes les heures
+    catchup=False,
+    tags=["extraction", "file-listing"],
+)
+
+def list_files_task(): 
     """
     List files in the source directory and store the list in XCom.
     """
-    files = extractor.list_files() 
-    return files
+    @task
+    def list_files() -> list[str]:
+        """List empty with Extractor (instantaite during Execution)."""
+        from pipeline.extractor.extractor import Extractor
+        extractor = Extractor(config_path=CONFIG_PATH)
+        files = extractor.list_files()
+        if not files:
+            # Renvoyer une liste vide est OK ; lever une exception
+            # uniquement si l'absence de fichiers est anormale
+            return []
+        return files
 
-def insert_files_to_db(**kwargs):
-    ti = kwargs['ti']
-    file_list = ti.xcom_pull(task_ids='list_files_task')
+    @task
+    def insert_files(file_list = list[str]) -> int:
+        """Insert metadata of every file in base"""
+        from utils.functions_utils import insert_into_file_list
+        
+        if not file_list:
+            raise ValueError('No files found in Xcoms')
+            return 0
+        
+        inserted = 0
+        for filepath in file_list:
+            try:
+                filename = os.path.basename(filepath)
+                mod_time = datetime.fromtimestamp(os.path.getmtime(filepath))     
+                insert_into_file_list([filename, filepath, mod_time])
+                inserted += 1
+            except FileNotFoundError:
+                print(f"Can't find file, skip: {filepath}")
+            except Exception as e:
+                print(f"Insertion Error {filepath}: {e}")
+                raise 
     
-    if not file_list:
-        raise ValueError('No files found in Xcoms')
+        print(f"{inserted}/{len(file_list)} files inserted")
+        return inserted
     
-    for file in file_list:
-        print(f"Inserting {file} into the database")
-        filename = file.split("/")[-1]  # Correction: parenthèse fermante manquante
-        filepath = file
-        mod_time = datetime.fromtimestamp(os.path.getmtime(file))
-        data = [filename, filepath, mod_time]
-        insert_into_file_list(data)
+    insert_files(list_files())
 
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2024, 12, 18),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 0,
-    'retry_delay': timedelta(minutes=5)
-}
-
-with DAG(
-    'list_files_dag',
-    default_args=default_args,
-    description='List files in the source directory',
-    catchup=False
-) as dag:
-    
-    list_files = PythonOperator(
-        task_id='list_files_task',
-        python_callable=list_files_task
-    )
-    
-    insert_files = PythonOperator(
-        task_id='insert_files_to_db',
-        python_callable=insert_files_to_db  # Le contexte est automatiquement passé
-    )
-    
-    list_files >> insert_files
+list_files_task()
