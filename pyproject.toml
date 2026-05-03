@@ -8,7 +8,6 @@ packages = [
     { include = "pipeline" },
     { include = "utils" },
     { include = "sandbox" },
-    { include = "utils"}
 ]
 
 [tool.poetry.dependencies]
