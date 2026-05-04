@@ -1,8 +1,8 @@
 extractor_config:
   source_directories:
-    # - "../../Spark/data/"
-    - "../../file_reader/"
-    - "../data/"
+    # Mettre ici les chemins absolus (ou relatifs au dossier de lancement) vers vos données.
+    # Exemple local : "/home/user/data/" ou "./data/"
+    - "./data/"
 
   files_extensions:
     - ".csv"
