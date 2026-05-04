@@ -74,16 +74,11 @@ def test_fill_na_replaces_nulls(spark):
 # remove_duplicates  ← BUG documenté
 # ---------------------------------------------------------------------------
 
-def test_remove_duplicates_bug(simple_df):
-    """
-    BUG: BaseProcessor.remove_duplicates() calls self.df.dropDuplicates()
-    without reassigning the result, so duplicates are NOT removed.
-    Fix: change to  self.df = self.df.dropDuplicates()
-    When the bug is fixed, update assertion to count() == 3.
-    """
+def test_remove_duplicates(simple_df):
+    # simple_df: ("Alice",30), ("Bob",25), ("Alice",30), (None,None) → 4 rows
+    # After dedup: 3 distinct rows
     result = BaseProcessor(simple_df).remove_duplicates().df
-    # Current (buggy) behaviour: count stays at 4 instead of 3
-    assert result.count() == 4
+    assert result.count() == 3
 
 
 # ---------------------------------------------------------------------------

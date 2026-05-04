@@ -18,7 +18,7 @@ class BaseProcessor:
         return self
     
     def remove_duplicates(self):
-        self.df.dropDuplicates()
+        self.df = self.df.dropDuplicates()
         return self
     
     def cast_column(self, column_name, new_type):

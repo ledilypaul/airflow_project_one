@@ -137,7 +137,7 @@ default_args = {
 }
 
 with DAG(
-    dag_id='list_files_dag',
+    dag_id='list_files_dag_classic',
     default_args=default_args,
     description='List files in the source directory and persist metadata',
     schedule=None,  # Manuel uniquement. Mettre un cron pour exécution périodique.
