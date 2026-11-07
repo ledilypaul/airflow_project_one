@@ -1,6 +1,4 @@
 import os
-import sys
-from pathlib import Path
 
 # Airflow minimal setup for DAG tests (no real DB needed)
 os.environ.setdefault("AIRFLOW__CORE__UNIT_TEST_MODE", "True")
@@ -9,7 +7,6 @@ os.environ.setdefault("AIRFLOW__DATABASE__SQL_ALCHEMY_CONN", "sqlite:////tmp/tes
 # via this config/env var instead (must be set before any airflow.* import).
 os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
 
-# Ensure project root is importable (same logic as the DAGs themselves)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# airflow-project-one est installé en mode éditable (`uv sync`), donc
+# `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
+# sys.path (voir CLAUDE.md, M5) — pas besoin d'ajouter la racine du projet ici.
