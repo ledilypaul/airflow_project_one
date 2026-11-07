@@ -3,3 +3,13 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv/
+logs/*
+
+.env
+.env.*
+airflow.cfg
+airflow.db
+logs/
+*.generated
+.venv/
