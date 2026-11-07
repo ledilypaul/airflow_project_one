@@ -1,0 +1,22 @@
+# Hooks exécutés avant chaque commit. Installation : `uv run pre-commit install`
+# (pre-commit est en dépendance dev, cf. pyproject.toml, groupe `dev`).
+#
+# Reproduit localement les vérifications documentées dans CLAUDE.md :
+#   uv run ruff check . && uv run ruff format --check .
+#   uv lock --check
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.4 # garder aligné avec la version de ruff dans pyproject.toml (groupe dev)
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: uv-lock-check
+        name: uv lock --check
+        description: "Vérifie que uv.lock est synchronisé avec pyproject.toml"
+        entry: uv lock --check
+        language: system
+        files: ^(pyproject\.toml|uv\.lock)$
+        pass_filenames: false

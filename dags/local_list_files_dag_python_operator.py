@@ -60,7 +60,6 @@ BONNES PRATIQUES APPLIQUÉES ICI
 """
 
 import os
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -68,13 +67,16 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 
 # --- Configuration des chemins (constantes top-level OK : pas d'I/O) ---
+# airflow-project-one est installé en mode éditable (`uv sync`), donc
+# `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
+# sys.path (voir CLAUDE.md, M5).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
 
 CONFIG_PATH = str(PROJECT_ROOT / "config" / "extractor_config.yaml")
 
 
 # --- Callables des tasks ---
+
 
 def list_files_task(**kwargs):
     """
@@ -98,8 +100,8 @@ def insert_files_to_db(**kwargs):
     # Import local : même raison que ci-dessus
     from utils.functions_utils import insert_into_file_list
 
-    ti = kwargs['ti']
-    file_list = ti.xcom_pull(task_ids='list_files_task')
+    ti = kwargs["ti"]
+    file_list = ti.xcom_pull(task_ids="list_files_task")
 
     if not file_list:
         print("Aucun fichier à insérer.")
@@ -127,31 +129,30 @@ def insert_files_to_db(**kwargs):
 # --- Définition du DAG ---
 
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2024, 12, 18),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,  # 1 retry par défaut : absorbe les glitches transitoires
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 12, 18),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,  # 1 retry par défaut : absorbe les glitches transitoires
+    "retry_delay": timedelta(minutes=5),
 }
 
 with DAG(
-    dag_id='list_files_dag_classic',
+    dag_id="list_files_dag_classic",
     default_args=default_args,
-    description='List files in the source directory and persist metadata',
+    description="List files in the source directory and persist metadata",
     schedule=None,  # Manuel uniquement. Mettre un cron pour exécution périodique.
     catchup=False,
-    tags=['extraction', 'file-listing', 'python-operator'],
+    tags=["extraction", "file-listing", "python-operator"],
 ) as dag:
-
     list_files = PythonOperator(
-        task_id='list_files_task',
+        task_id="list_files_task",
         python_callable=list_files_task,
     )
 
     insert_files = PythonOperator(
-        task_id='insert_files_to_db',
+        task_id="insert_files_to_db",
         python_callable=insert_files_to_db,
         # Note : pas besoin de provide_context=True en Airflow 2.x,
         # le contexte (ti, dag_run, etc.) est passé automatiquement via **kwargs.

@@ -7,16 +7,17 @@ Run manually:
 Run via Airflow:
     BashOperator → spark-submit pipeline/jobs/read_files_job.py
 """
+
 import logging
 import sys
-from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.append(str(PROJECT_ROOT))
-
+# airflow-project-one est installé en mode éditable (`uv sync`), donc
+# `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
+# sys.path, que ce job soit lancé via `uv run spark-submit ...` ou via le
+# BashOperator d'Airflow (voir CLAUDE.md, M5).
+from pipeline.file_reader.base_reader import BaseFileReader
 from utils.functions_utils import list_file_from_db
 from utils.spark_session import get_spark_session
-from pipeline.file_reader.base_reader import BaseFileReader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger(__name__)
