@@ -17,7 +17,7 @@ txt:
 xlsx:
   format: xlsx
   reader_options:
-    header: 1
+    header: 0
     # inferSchema: true
     dtype: str
     # dataAddress: "'Sheet1'!A1"

@@ -1,13 +1,14 @@
 import logging
 import os
-import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.decorators import dag, task
 
+# airflow-project-one est installé en mode éditable (`uv sync`), donc
+# `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
+# sys.path (voir CLAUDE.md, M5).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
 
 CONFIG_PATH = str(PROJECT_ROOT / "config" / "extractor_config.yaml")
 
@@ -37,6 +38,7 @@ def list_files_dag():
     @task
     def list_files() -> list[str]:
         from pipeline.extractor.extractor import Extractor
+
         extractor = Extractor(config_path=CONFIG_PATH)
         files = extractor.list_files()
         log.info("Found %d files to process", len(files))
@@ -45,6 +47,7 @@ def list_files_dag():
     @task
     def insert_files(file_list: list[str]) -> int:
         from airflow.operators.python import get_current_context
+
         from utils.functions_utils import insert_into_file_list
 
         if not file_list:
