@@ -1,21 +1,59 @@
-[tool.poetry]
+[project]
 name = "airflow-project-one"
 version = "0.1.0"
-description = ""
-authors = ["ledilypaul <paul.ledily@hotmail.fr>"]
+description = "Pipeline d'ingestion de fichiers orchestré par Airflow 3 et exécuté par Spark"
 readme = "README.md"
-packages = [
-    { include = "pipeline" },
-    { include = "utils" },
-    { include = "sandbox" },
+authors = [{ name = "ledilypaul", email = "paul.ledily@hotmail.fr" }]
+requires-python = ">=3.12,<3.14"
+
+# Code métier (pipeline/, utils/, storage/) : ce dont le job Spark a besoin pour tourner seul.
+dependencies = [
+    "pyspark>=4.0,<4.4",
+    "pyyaml>=6.0",
+    "pandas>=2.2,<3",     # pandas 3 casse pyspark.pandas (vérifié avec PySpark 4.3.0)
+    "pyarrow>=15",
+    "polars>=1.0",
+    "openpyxl>=3.1",        # requis par read_excel (pandas / pandas-on-Spark)
+    "sqlalchemy>=2.0,<2.1",
+    "psycopg2-binary>=2.9",
+    "python-dotenv>=1.0",
 ]
 
-[tool.poetry.dependencies]
-python = "^3.12"
-pyspark = "^3.5.4"
-pyyaml = "^6.0.2"
-pytest = "^8.4.1"
+[dependency-groups]
+# Orchestration : séparé pour pouvoir construire une image Spark sans Airflow.
+airflow = [
+    "apache-airflow==3.3.2",
+    "apache-airflow-providers-standard>=1.19",
+    "apache-airflow-providers-postgres>=7.0",
+    "apache-airflow-providers-apache-spark>=6.3",
+]
+dev = [
+    "pytest>=8.4",
+    "pytest-cov>=6.0",
+    "ruff>=0.14",
+    "pre-commit>=4.0",
+]
+
+[tool.uv]
+# `uv sync` installe tout par défaut ; `uv sync --no-group airflow` pour un environnement Spark seul.
+default-groups = ["dev", "airflow"]
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Le projet est installé en mode éditable dans .venv : `import pipeline.*` fonctionne
+# sans PYTHONPATH ni bidouille de sys.path (constat M5).
+packages = ["pipeline", "utils", "storage"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["sandbox", "*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
