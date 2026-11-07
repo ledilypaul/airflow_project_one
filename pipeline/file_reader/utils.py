@@ -1,12 +1,14 @@
 from pyspark.sql.types import (
-    StringType,
-    IntegerType,
-    FloatType,
-    DoubleType,
+    ArrayType,
     BooleanType,
     DateType,
-    TimestampType
+    DoubleType,
+    FloatType,
+    IntegerType,
+    StringType,
+    TimestampType,
 )
+
 
 def get_spark_type(col_type: str):
     """
@@ -30,10 +32,11 @@ def get_spark_type(col_type: str):
         "boolean": BooleanType(),
         "date": DateType(),
         "timestamp": TimestampType(),
+        "array": ArrayType(StringType()),
     }
 
     normalized_type = col_type.strip().lower()
-    
+
     if normalized_type not in type_mapping:
         raise ValueError(f"[get_spark_type] Type non reconnu dans YAML : '{col_type}'")
 
