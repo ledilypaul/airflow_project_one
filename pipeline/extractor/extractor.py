@@ -1,13 +1,15 @@
-from pathlib import Path
-import yaml
 import fnmatch
+from pathlib import Path
+
+import yaml
+
 
 class Extractor:
     def __init__(self, config_path: str):
-        with open(config_path, 'r') as file:
+        with open(config_path) as file:
             config = yaml.safe_load(file)
         self.config = config.get("extractor_config", {})
-    
+
     def list_files(self):
         files = []
         for directory in self.config.get("source_directories", []):
@@ -20,20 +22,22 @@ class Extractor:
                 # Apply inclusions
                 include_patterns = self.config.get("include_files", ["*"])
                 matches = [
-                    f for f in matches
+                    f
+                    for f in matches
                     if any(fnmatch.fnmatch(f.name, pattern) for pattern in include_patterns)
                 ]
 
                 # Apply exclusions
                 exclude_patterns = self.config.get("exclude_files", [])
                 matches = [
-                    f for f in matches
+                    f
+                    for f in matches
                     if not any(fnmatch.fnmatch(f.name, pattern) for pattern in exclude_patterns)
                 ]
 
                 files.extend(matches)
         return [str(f) for f in files]
-    
+
     def check_integrity_files(self, files):
         valid_files = []
         for file in files:

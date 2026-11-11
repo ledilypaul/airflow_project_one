@@ -1,5 +1,6 @@
 from pathlib import Path
 
+
 def normalize_spark_path(path_str: str) -> str:
     """
     Normalise un chemin pour Spark :

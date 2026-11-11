@@ -3,6 +3,7 @@
 Cherche ruff d'abord dans le .venv du projet (créé par `uv sync`), puis dans le PATH.
 Ne bloque jamais : si ruff est introuvable ou échoue, le hook sort en 0 sans rien faire.
 """
+
 import json
 import os
 import shutil
@@ -13,7 +14,11 @@ from pathlib import Path
 
 def find_ruff() -> str | None:
     project = Path(os.environ.get("CLAUDE_PROJECT_DIR", "."))
-    for candidate in (project / ".venv" / "bin" / "ruff", project / ".venv" / "Scripts" / "ruff.exe"):
+    candidates = (
+        project / ".venv" / "bin" / "ruff",
+        project / ".venv" / "Scripts" / "ruff.exe",
+    )
+    for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
     return shutil.which("ruff")

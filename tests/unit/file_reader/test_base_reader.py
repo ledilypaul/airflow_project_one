@@ -69,14 +69,14 @@ def test_get_config_file_specific(base_reader, config_dir):
     # Modifiez le répertoire courant pour le test
     os.chdir(config_dir.parent)
     config_content = base_reader.get_config_file("example_file.csv")
-    assert config_content["reader_options"]["header"] == True
+    assert config_content["reader_options"]["header"] is True
     assert config_content["config_name"] == "sample_config"
 
 
 def test_get_config_file_default(base_reader, config_dir):
     os.chdir(config_dir.parent)
     config_content = base_reader.get_config_file("file1.csv")
-    assert config_content["reader_options"]["header"] == True
+    assert config_content["reader_options"]["header"] is True
 
 
 def test_read_file(base_reader, config_dir, test_file, monkeypatch):

@@ -7,6 +7,6 @@ with DAG(
     dag_id="test_dag",
     start_date=datetime(2025, 8, 1),
     # schedule_interval=None,
-    catchup=False
+    catchup=False,
 ) as dag:
     EmptyOperator(task_id="start")

@@ -14,7 +14,9 @@ def insert_into_file_list(data, dag_run_id: str = None):
         engine = db_connection()
         with engine.begin() as conn:
             query = text("""
-                INSERT INTO file_list (file_name, file_path, last_modified, ingested_at, dag_run_id, status)
+                INSERT INTO file_list (
+                    file_name, file_path, last_modified, ingested_at, dag_run_id, status
+                )
                 VALUES (:file_name, :file_path, :last_modified, :ingested_at, :dag_run_id, :status)
             """)
             conn.execute(
@@ -45,7 +47,9 @@ def list_file_from_db(run_id: str):
         engine = db_connection()
         with engine.begin() as conn:
             query = text("""
-                SELECT id, file_name, file_path, last_modified, status, dag_run_id, created_at, ingested_at
+                SELECT
+                    id, file_name, file_path, last_modified,
+                    status, dag_run_id, created_at, ingested_at
                 FROM file_list
                 WHERE dag_run_id = :run_id
             """)

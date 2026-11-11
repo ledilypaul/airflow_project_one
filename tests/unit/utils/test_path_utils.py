@@ -2,22 +2,27 @@
 Unit tests for utils/path_utils.py.
 Pure Python — no Spark or DB needed.
 """
-import pytest
-from utils.path_utils import normalize_spark_path
 
+import pytest
+
+from utils.path_utils import normalize_spark_path
 
 # ---------------------------------------------------------------------------
 # Distributed protocols → untouched
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("path", [
-    "hdfs://namenode:9000/data/file.csv",
-    "s3://my-bucket/prefix/file.parquet",
-    "gs://gcs-bucket/file.csv",
-    "dbfs:/mnt/data/file.parquet",
-    "abfss://container@account.dfs.core.windows.net/path",
-    "adl://account.azuredatalakestore.net/path",
-])
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "hdfs://namenode:9000/data/file.csv",
+        "s3://my-bucket/prefix/file.parquet",
+        "gs://gcs-bucket/file.csv",
+        "dbfs:/mnt/data/file.parquet",
+        "abfss://container@account.dfs.core.windows.net/path",
+        "adl://account.azuredatalakestore.net/path",
+    ],
+)
 def test_distributed_paths_are_unchanged(path):
     assert normalize_spark_path(path) == path
 
@@ -25,6 +30,7 @@ def test_distributed_paths_are_unchanged(path):
 # ---------------------------------------------------------------------------
 # Local paths → get file:// prefix
 # ---------------------------------------------------------------------------
+
 
 def test_local_absolute_path_gets_file_prefix():
     result = normalize_spark_path("/data/files/orders.csv")
@@ -55,6 +61,7 @@ def test_tilde_path_is_expanded():
 # ---------------------------------------------------------------------------
 # Idempotency edge-case (documents known limitation)
 # ---------------------------------------------------------------------------
+
 
 def test_file_protocol_not_idempotent():
     """

@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
 
+
 class BaseWriter(ABC):
     """Generic interface for writers (Postgres, Hive, HDFS, etc.)"""
+
     @abstractmethod
     def write(self, data, target, **kwargs):
         """
