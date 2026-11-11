@@ -6,18 +6,43 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from utils.db_connection import db_connection
 
+try:
+    # Only needed by insert_into_file_list()'s default (engine=None) path,
+    # which is exercised exclusively from Airflow task code (see module
+    # docstring-level note in CLAUDE.md / P1-2). list_file_from_db() and
+    # update_file_status() below never touch this: they keep using
+    # db_connection() (.env) because pipeline/jobs/read_files_job.py must be
+    # importable in a Spark-only environment (`uv sync --no-group airflow`)
+    # that has no `apache-airflow-providers-postgres` installed at all.
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+except ImportError:  # pragma: no cover - exercised only in the Spark-only env
+    PostgresHook = None
+
 log = logging.getLogger(__name__)
 
+# Airflow Connection id to create manually (UI/CLI) with the real
+# credentials; this is just a reference name, not a hardcoded secret.
+FILE_LIST_POSTGRES_CONN_ID = "file_list_db"
 
-def insert_into_file_list(data, dag_run_id: str = None):
+
+def insert_into_file_list(data, dag_run_id: str = None, engine=None):
     try:
-        engine = db_connection()
+        if engine is None:
+            if PostgresHook is None:  # pragma: no cover - Spark-only env
+                raise RuntimeError(
+                    "apache-airflow-providers-postgres is not installed; "
+                    "pass an explicit engine or install the 'airflow' dependency group."
+                )
+            engine = PostgresHook(
+                postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID
+            ).get_sqlalchemy_engine()
         with engine.begin() as conn:
             query = text("""
                 INSERT INTO file_list (
                     file_name, file_path, last_modified, ingested_at, dag_run_id, status
                 )
                 VALUES (:file_name, :file_path, :last_modified, :ingested_at, :dag_run_id, :status)
+                ON CONFLICT (file_path, dag_run_id) DO NOTHING
             """)
             conn.execute(
                 query,

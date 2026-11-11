@@ -24,10 +24,19 @@ def _make_engine_mock(fetchall_return=None):
 # ---------------------------------------------------------------------------
 
 
+def _patch_postgres_hook(mock_engine):
+    """Patch utils.functions_utils.PostgresHook so that building it (when no
+    explicit `engine` is passed to insert_into_file_list) returns mock_engine
+    via .get_sqlalchemy_engine(), without touching real Airflow Connections."""
+    mock_hook_cls = MagicMock()
+    mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
+    return patch("utils.functions_utils.PostgresHook", mock_hook_cls)
+
+
 def test_insert_calls_execute():
     mock_engine, mock_conn = _make_engine_mock()
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
 
         insert_into_file_list(["orders.csv", "/data/orders.csv", "2024-01-01"])
@@ -40,7 +49,7 @@ def test_insert_calls_execute():
 def test_insert_passes_correct_values():
     mock_engine, mock_conn = _make_engine_mock()
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
 
         insert_into_file_list(["file.csv", "/path/file.csv", "2024-06-15"])
@@ -54,7 +63,7 @@ def test_insert_passes_correct_values():
 def test_insert_sets_dag_run_id():
     mock_engine, mock_conn = _make_engine_mock()
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
 
         insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"], dag_run_id="run_20240101")
@@ -66,7 +75,7 @@ def test_insert_sets_dag_run_id():
 def test_insert_dag_run_id_defaults_to_empty_string():
     mock_engine, mock_conn = _make_engine_mock()
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
 
         insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
@@ -79,11 +88,57 @@ def test_insert_sqlalchemy_error_is_raised():
     mock_engine, mock_conn = _make_engine_mock()
     mock_conn.execute.side_effect = SQLAlchemyError("connection refused")
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
 
         with pytest.raises(SQLAlchemyError):
             insert_into_file_list(["file.csv", "/path/file.csv", "2024-01-01"])
+
+
+# ---------------------------------------------------------------------------
+# P1-2 — insert_into_file_list: PostgresHook, reused engine, ON CONFLICT
+# ---------------------------------------------------------------------------
+
+
+def test_p1_2_insert_uses_postgres_hook_with_correct_conn_id():
+    mock_engine, _ = _make_engine_mock()
+    mock_hook_cls = MagicMock()
+    mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
+
+    with patch("utils.functions_utils.PostgresHook", mock_hook_cls):
+        from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+    mock_hook_cls.assert_called_once_with(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+    assert FILE_LIST_POSTGRES_CONN_ID == "file_list_db"
+
+
+def test_p1_2_insert_reuses_passed_engine_without_building_hook():
+    mock_engine, mock_conn = _make_engine_mock()
+    mock_hook_cls = MagicMock()
+
+    with patch("utils.functions_utils.PostgresHook", mock_hook_cls):
+        from utils.functions_utils import insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"], engine=mock_engine)
+
+    mock_hook_cls.assert_not_called()
+    mock_conn.execute.assert_called_once()
+
+
+def test_p1_2_insert_query_has_on_conflict_do_nothing():
+    mock_engine, mock_conn = _make_engine_mock()
+
+    with _patch_postgres_hook(mock_engine):
+        from utils.functions_utils import insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+    query = str(mock_conn.execute.call_args[0][0])
+    assert "ON CONFLICT" in query
+    assert "DO NOTHING" in query
+    assert "ON CONFLICT (file_path, dag_run_id)" in query
 
 
 # ---------------------------------------------------------------------------
