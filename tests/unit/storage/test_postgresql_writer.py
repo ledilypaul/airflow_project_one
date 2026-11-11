@@ -2,10 +2,11 @@
 Unit tests for storage/postgresql_writer.py.
 DB and Spark connections are mocked.
 """
-import pytest
-import pandas as pd
-from unittest.mock import patch, MagicMock
 
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
 
 MOCK_JDBC_RETURN = (
     "jdbc:postgresql://localhost:5432/testdb",
@@ -15,9 +16,12 @@ MOCK_JDBC_RETURN = (
 
 @pytest.fixture
 def writer():
-    with patch("storage.postgresql_writer.db_connection", return_value=MagicMock()), \
-         patch("storage.postgresql_writer.jdbc_connection_props", return_value=MOCK_JDBC_RETURN):
+    with (
+        patch("storage.postgresql_writer.db_connection", return_value=MagicMock()),
+        patch("storage.postgresql_writer.jdbc_connection_props", return_value=MOCK_JDBC_RETURN),
+    ):
         from storage.postgresql_writer import PostgresWriter
+
         return PostgresWriter()
 
 
@@ -25,8 +29,10 @@ def writer():
 # Spark DataFrame → JDBC
 # ---------------------------------------------------------------------------
 
+
 def test_write_spark_dataframe_uses_jdbc(writer):
     from pyspark.sql import DataFrame as SparkDF
+
     mock_df = MagicMock()
     mock_df.__class__ = SparkDF
 
@@ -42,6 +48,7 @@ def test_write_spark_dataframe_uses_jdbc(writer):
 
 def test_write_spark_dataframe_overwrite_mode(writer):
     from pyspark.sql import DataFrame as SparkDF
+
     mock_df = MagicMock()
     mock_df.__class__ = SparkDF
 
@@ -58,6 +65,7 @@ def test_write_spark_dataframe_overwrite_mode(writer):
 # ---------------------------------------------------------------------------
 # Pandas DataFrame → SQLAlchemy (to_sql)
 # ---------------------------------------------------------------------------
+
 
 def test_write_pandas_dataframe_uses_to_sql(writer):
     mock_df = MagicMock(spec=pd.DataFrame)
@@ -88,6 +96,7 @@ def test_write_pandas_overwrite_maps_to_replace(writer):
 # ---------------------------------------------------------------------------
 # Unsupported type → TypeError
 # ---------------------------------------------------------------------------
+
 
 def test_write_unsupported_type_raises_type_error(writer):
     with pytest.raises(TypeError, match="only supports Spark or Pandas DataFrame"):
