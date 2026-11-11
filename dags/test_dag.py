@@ -1,6 +1,7 @@
-from airflow import DAG
-from airflow.providers.standard.operators.empty import EmptyOperator
 from datetime import datetime
+
+from airflow.providers.standard.operators.empty import EmptyOperator
+from airflow.sdk import DAG
 
 with DAG(
     dag_id="test_dag",

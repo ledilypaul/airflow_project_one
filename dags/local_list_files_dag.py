@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from airflow.decorators import dag, task
+from airflow.sdk import dag, task
 
 # airflow-project-one est installé en mode éditable (`uv sync`), donc
 # `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
@@ -46,7 +46,7 @@ def list_files_dag():
 
     @task
     def insert_files(file_list: list[str]) -> int:
-        from airflow.operators.python import get_current_context
+        from airflow.sdk import get_current_context
 
         from utils.functions_utils import insert_into_file_list
 
