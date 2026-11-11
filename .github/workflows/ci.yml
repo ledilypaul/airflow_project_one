@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    name: Lint, tests & DAG import check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      # Lancé avant `uv sync` : `uv sync` sans `--locked`/`--frozen` régénère
+      # silencieusement un uv.lock périmé, ce qui masquerait une incohérence
+      # avec pyproject.toml. On vérifie donc le lock tel que committé d'abord.
+      - name: Check that uv.lock is up to date with pyproject.toml
+        run: uv lock --check
+
+      - name: Install dependencies (runtime + airflow + dev groups)
+        run: uv sync
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      # tests/unit/dags/test_dags.py::test_no_import_errors charge tous les
+      # DAGs via DagBag et vérifie dagbag.import_errors == {} ; c'est la
+      # vérification "chargement des DAGs sans erreur d'import" demandée par
+      # P0-5, pas besoin d'une étape dédiée en plus de la suite pytest.
+      - name: Run test suite (includes DAG import check)
+        run: uv run pytest tests/ -q
