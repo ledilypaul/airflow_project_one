@@ -63,8 +63,8 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import DAG
 
 # --- Configuration des chemins (constantes top-level OK : pas d'I/O) ---
 # airflow-project-one est installé en mode éditable (`uv sync`), donc

@@ -75,7 +75,7 @@ def test_read_file_dag_task_ids(dagbag):
 
 def test_read_file_dag_uses_bash_operator(dagbag):
     """The Spark task must be a BashOperator (not a PythonOperator)."""
-    from airflow.operators.bash import BashOperator
+    from airflow.providers.standard.operators.bash import BashOperator
 
     dag = dagbag.dags["read_file_dag"]
     task = dag.get_task("spark_read_files")
@@ -140,6 +140,36 @@ def test_p1_3_read_file_dag_passes_run_id_param(dagbag):
     task = dag.get_task("spark_read_files")
     assert "--run-id" in task.bash_command
     assert "run_id" in dag.params
+
+
+def test_p1_1_no_deprecated_airflow_imports():
+    """C-1 follow-up: static, warning-mechanism-independent guard for P1-1.
+
+    The `filterwarnings` rule in pyproject.toml is a defence in depth but
+    depends on which warning category Airflow happens to raise for a given
+    deprecated import (it has changed once already: UserWarning/
+    DeprecationWarning do not actually fire for
+    `airflow.utils.deprecation_tools.DeprecatedImportWarning`, see C-1). This
+    test checks the DAG source text directly, so it still catches a
+    regression even if Airflow changes warning categories again.
+    """
+    forbidden_patterns = (
+        "from airflow.decorators import",
+        "from airflow.operators.bash import",
+        "from airflow.operators.python import",
+        "from airflow import DAG",
+    )
+    dag_files = sorted(Path(DAGS_FOLDER).glob("*.py"))
+    assert dag_files, f"no DAG files found under {DAGS_FOLDER}"
+
+    violations = []
+    for dag_file in dag_files:
+        source = dag_file.read_text(encoding="utf-8")
+        for pattern in forbidden_patterns:
+            if pattern in source:
+                violations.append(f"{dag_file.name}: {pattern!r}")
+
+    assert not violations, "deprecated Airflow 2 import(s) found:\n" + "\n".join(violations)
 
 
 def test_c1_run_id_param_has_no_default_and_rejects_null(dagbag):

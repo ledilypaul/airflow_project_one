@@ -8,9 +8,8 @@ Airflow orchestre, Spark s'exécute dans son propre processus séparé.
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from airflow.decorators import dag
-from airflow.operators.bash import BashOperator
-from airflow.sdk import Param
+from airflow.providers.standard.operators.bash import BashOperator
+from airflow.sdk import Param, dag
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JOB_PATH = PROJECT_ROOT / "pipeline" / "jobs" / "read_files_job.py"

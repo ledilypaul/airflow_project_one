@@ -49,6 +49,16 @@ packages = ["pipeline", "utils", "storage"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # Airflow deprecation warnings (imports) must fail the test run.
+    "error::airflow.exceptions.RemovedInAirflow4Warning",
+    "error::airflow.exceptions.AirflowProviderDeprecationWarning",
+    # airflow.decorators/operators shims (e.g. `from airflow.decorators import dag`,
+    # `from airflow.operators.bash import BashOperator`) emit
+    # airflow.utils.deprecation_tools.DeprecatedImportWarning, which subclasses
+    # FutureWarning — NOT UserWarning/DeprecationWarning (C-1).
+    "error::airflow.utils.deprecation_tools.DeprecatedImportWarning",
+]
 
 [tool.ruff]
 target-version = "py312"
