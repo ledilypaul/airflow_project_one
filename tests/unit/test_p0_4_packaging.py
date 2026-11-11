@@ -138,7 +138,7 @@ def test_p0_4_read_files_job_imports_without_editable_install_on_syspath():
     )
 
     result = subprocess.run(
-        [sys.executable, "-S", str(READ_FILES_JOB)],
+        [sys.executable, "-S", str(READ_FILES_JOB), "--run-id", "run_test"],
         cwd="/tmp",
         env={"PYTHONPATH": site_packages},
         capture_output=True,

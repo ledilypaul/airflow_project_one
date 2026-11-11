@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from airflow.models import DagBag
+from airflow.sdk.exceptions import ParamValidationError
 
 DAGS_FOLDER = str(Path(__file__).resolve().parent.parent.parent.parent / "dags")
 
@@ -127,3 +128,30 @@ def test_p0_3_dag_has_no_schedule_interval_attribute_access(dagbag):
     dag = dagbag.dags["read_file_dag"]
     assert not hasattr(dag, "schedule_interval")
     assert dag.schedule is None
+
+
+# ---------------------------------------------------------------------------
+# P1-3 — idempotence: read_file_dag must scope spark-submit to a run_id
+# ---------------------------------------------------------------------------
+
+
+def test_p1_3_read_file_dag_passes_run_id_param(dagbag):
+    dag = dagbag.dags["read_file_dag"]
+    task = dag.get_task("spark_read_files")
+    assert "--run-id" in task.bash_command
+    assert "run_id" in dag.params
+
+
+def test_c1_run_id_param_has_no_default_and_rejects_null(dagbag):
+    """C-1 (defence in depth): the `run_id` Param must not accept "null"/None
+    implicitly — triggering the DAG without an explicit run_id must be
+    flagged by the Airflow UI/validation, not silently resolve to None (which
+    the Spark job would otherwise stringify to the literal "None")."""
+    dag = dagbag.dags["read_file_dag"]
+    run_id_param = dag.params.get_param("run_id")
+
+    assert run_id_param.schema.get("type") != ["null", "string"]
+    assert "null" not in (run_id_param.schema.get("type") or [])
+
+    with pytest.raises(ParamValidationError):
+        run_id_param.resolve()
