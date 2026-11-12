@@ -38,16 +38,26 @@ def _mock_reader(side_effects=None):
 # ---------------------------------------------------------------------------
 
 
-def test_main_no_files_exits_0():
+def test_p1_4_main_no_rows_for_run_id_exits_3(caplog):
+    """P1-4 / C-3 (was `test_main_no_files_exits_0`): the invariant changed.
+
+    Since P1-6 an empty listing skips the insertion task, and since P1-4 the
+    insertion task skips too when no file could be recorded: a `file_list`
+    asset event, hence a read_file_dag run, therefore always implies at least
+    one row for its source run id. Zero rows now signals an anomaly (typo in a
+    manual `run_id`, purged data...) and must not end as a green no-op: exit 3,
+    distinct from 0=success, 1=file failure(s), 2=missing run_id."""
     with (
         patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=[]),
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
+        caplog.at_level("ERROR", logger="pipeline.jobs.read_files_job"),
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
 
-        assert exc.value.code == 0
+        assert exc.value.code == 3
         mock_spark.assert_not_called()
+    assert f"no file_list rows for run_id={RUN_ID!r}" in caplog.text
 
 
 # ---------------------------------------------------------------------------

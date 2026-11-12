@@ -64,7 +64,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.providers.standard.operators.python import PythonOperator
-from airflow.sdk import DAG
+from airflow.sdk import DAG, Asset
+
+# Même nom dans chaque fichier DAG : Airflow associe les Assets par nom/URI, pas
+# par identité d'objet. Pas d'import depuis un module partagé `dags.*`, qui ne
+# se résout qu'avec la racine du projet sur sys.path (C-1).
+FILE_LIST_ASSET = Asset(name="file_list")
 
 # --- Configuration des chemins (constantes top-level OK : pas d'I/O) ---
 # airflow-project-one est installé en mode éditable (`uv sync`), donc
@@ -125,6 +130,9 @@ def insert_files_to_db(**kwargs):
     # fichier ci-dessous, plutôt qu'un PostgresHook/engine par ligne (M3).
     engine = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
 
+    # Fichiers traités sans erreur : insérés, ou déjà présents pour ce run
+    # (retry : ON CONFLICT DO NOTHING n'insère rien mais ne lève pas).
+    # Volontairement pas un rowcount SQL.
     inserted = 0
     for filepath in file_list:
         try:
@@ -140,7 +148,13 @@ def insert_files_to_db(**kwargs):
             print(f"Erreur insertion {filepath}: {e}")
             raise
 
-    print(f"{inserted}/{len(file_list)} fichiers insérés.")
+    if inserted == 0:
+        # Tous les fichiers listés ont disparu avant l'insertion : aucune ligne
+        # pour ce run, donc pas d'événement d'Asset (C-3).
+        raise AirflowSkipException(
+            f"0/{len(file_list)} listed files could be recorded (all vanished), nothing to process"
+        )
+    print(f"{inserted}/{len(file_list)} fichiers enregistrés.")
     return inserted
 
 
@@ -172,6 +186,10 @@ with DAG(
     insert_files = PythonOperator(
         task_id="insert_files_to_db",
         python_callable=insert_files_to_db,
+        # Émet l'Asset `file_list` en cas de succès uniquement, ce qui planifie
+        # read_file_dag (P1-4). Une task skipped (liste vide, P1-6, ou aucun
+        # fichier enregistré, C-3) n'émet rien : événement => au moins 1 ligne.
+        outlets=[FILE_LIST_ASSET],
         # Note : pas besoin de provide_context=True en Airflow 2.x,
         # le contexte (ti, dag_run, etc.) est passé automatiquement via **kwargs.
     )
