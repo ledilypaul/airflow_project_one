@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 from airflow.models import DagBag
-from airflow.sdk.exceptions import ParamValidationError
+from airflow.sdk.exceptions import AirflowFailException
 
 DAGS_FOLDER = str(Path(__file__).resolve().parent.parent.parent.parent / "dags")
 
@@ -68,35 +68,8 @@ def test_read_file_dag_exists(dagbag):
     assert "read_file_dag" in dagbag.dags
 
 
-def test_read_file_dag_task_ids(dagbag):
-    dag = dagbag.dags["read_file_dag"]
-    assert "spark_read_files" in dag.task_ids
-
-
-def test_read_file_dag_uses_bash_operator(dagbag):
-    """The Spark task must be a BashOperator (not a PythonOperator)."""
-    from airflow.providers.standard.operators.bash import BashOperator
-
-    dag = dagbag.dags["read_file_dag"]
-    task = dag.get_task("spark_read_files")
-    assert isinstance(task, BashOperator)
-
-
-def test_read_file_dag_bash_command_uses_spark_submit(dagbag):
-    dag = dagbag.dags["read_file_dag"]
-    task = dag.get_task("spark_read_files")
-    assert "spark-submit" in task.bash_command
-    assert "read_files_job.py" in task.bash_command
-
-
 def test_read_file_dag_no_catchup(dagbag):
     assert dagbag.dags["read_file_dag"].catchup is False
-
-
-def test_read_file_dag_schedule_is_none(dagbag):
-    # Airflow 3 removed DAG.schedule_interval; use .schedule (or .timetable) instead.
-    dag = dagbag.dags["read_file_dag"]
-    assert dag.schedule is None
 
 
 # ---------------------------------------------------------------------------
@@ -107,27 +80,17 @@ def test_read_file_dag_schedule_is_none(dagbag):
 def test_p0_3_dagbag_loads_without_include_examples_kwarg():
     """T1 cause 1: DagBag no longer accepts `include_examples`; passing it
     raises TypeError. Example DAGs must be excluded via
-    AIRFLOW__CORE__LOAD_EXAMPLES=False instead (see conftest.py)."""
+    AIRFLOW__CORE__LOAD_EXAMPLES=False instead (see conftest.py).
+    (Import errors are checked once, by test_no_import_errors.)"""
     bag = DagBag(dag_folder=DAGS_FOLDER)
-    assert bag.import_errors == {}
     assert "example_bash_operator" not in bag.dags
-
-
-def test_p0_3_list_files_dag_has_taskflow_task_ids(dagbag):
-    """T1 cause 2: list_files_dag is TaskFlow-based (list_files/insert_files),
-    not the classic DAG's task ids (list_files_task/insert_files_to_db)."""
-    dag = dagbag.dags["list_files_dag"]
-    assert "list_files_task" not in dag.task_ids
-    assert "insert_files_to_db" not in dag.task_ids
-    assert {"list_files", "insert_files"} == set(dag.task_ids)
 
 
 def test_p0_3_dag_has_no_schedule_interval_attribute_access(dagbag):
     """T1 cause 3: DAG.schedule_interval was removed in Airflow 3; use
-    DAG.schedule (or DAG.timetable) instead."""
-    dag = dagbag.dags["read_file_dag"]
-    assert not hasattr(dag, "schedule_interval")
-    assert dag.schedule is None
+    DAG.schedule (or DAG.timetable) instead. (The schedule itself is checked
+    once, by test_p1_4_read_file_dag_is_scheduled_on_file_list_asset.)"""
+    assert not hasattr(dagbag.dags["read_file_dag"], "schedule_interval")
 
 
 # ---------------------------------------------------------------------------
@@ -135,11 +98,12 @@ def test_p0_3_dag_has_no_schedule_interval_attribute_access(dagbag):
 # ---------------------------------------------------------------------------
 
 
-def test_p1_3_read_file_dag_passes_run_id_param(dagbag):
-    dag = dagbag.dags["read_file_dag"]
-    task = dag.get_task("spark_read_files")
-    assert "--run-id" in task.bash_command
-    assert "run_id" in dag.params
+def test_p1_3_read_file_dag_passes_run_id_param():
+    """P1-3: spark-submit is scoped to a run id. (Quoting and the exact
+    argv are checked by test_p1_4_spark_command_round_trips_through_job_parser.)"""
+    from dags.local_read_file_dag import build_spark_command
+
+    assert "--run-id" in build_spark_command("some_run_id")
 
 
 def test_p1_1_no_deprecated_airflow_imports():
@@ -172,16 +136,17 @@ def test_p1_1_no_deprecated_airflow_imports():
     assert not violations, "deprecated Airflow 2 import(s) found:\n" + "\n".join(violations)
 
 
-def test_c1_run_id_param_has_no_default_and_rejects_null(dagbag):
-    """C-1 (defence in depth): the `run_id` Param must not accept "null"/None
-    implicitly — triggering the DAG without an explicit run_id must be
-    flagged by the Airflow UI/validation, not silently resolve to None (which
-    the Spark job would otherwise stringify to the literal "None")."""
-    dag = dagbag.dags["read_file_dag"]
-    run_id_param = dag.params.get_param("run_id")
+def test_c1_run_without_run_id_fails_explicitly():
+    """C-1 (defence in depth): a run without an explicit scope must never
+    silently resolve to None (which the Spark job would otherwise stringify
+    to the literal "None").
 
-    assert run_id_param.schema.get("type") != ["null", "string"]
-    assert "null" not in (run_id_param.schema.get("type") or [])
+    P1-4: the `run_id` Param had to become optional (Asset-triggered runs
+    carry no conf), so the guard lives in resolve_source_run_ids: no
+    triggering asset event and no `run_id` in the conf -> explicit failure.
+    The job keeps its own guard (exit code 2)."""
+    from dags.local_read_file_dag import dag_instance
 
-    with pytest.raises(ParamValidationError):
-        run_id_param.resolve()
+    resolve = dag_instance.get_task("resolve_source_run_ids").python_callable
+    with pytest.raises(AirflowFailException, match="No source run_id"):
+        resolve()

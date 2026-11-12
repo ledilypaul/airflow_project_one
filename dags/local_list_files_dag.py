@@ -3,7 +3,12 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from airflow.sdk import dag, task
+from airflow.sdk import Asset, dag, task
+
+# Same name in every DAG file: Airflow matches Assets by name/URI, not by object
+# identity. Not imported from a shared `dags.*` module, which only resolves with
+# the project root on sys.path (C-1).
+FILE_LIST_ASSET = Asset(name="file_list")
 
 # airflow-project-one est installé en mode éditable (`uv sync`), donc
 # `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
@@ -44,7 +49,10 @@ def list_files_dag():
         log.info("Found %d files to process", len(files))
         return files
 
-    @task
+    # Emits the `file_list` Asset on success only, which schedules
+    # read_file_dag (P1-4). A skipped run (empty listing, P1-6, or no file
+    # recorded, C-3) emits nothing: an event always implies >= 1 row.
+    @task(outlets=[FILE_LIST_ASSET])
     def insert_files(file_list: list[str]) -> int:
         from airflow.providers.postgres.hooks.postgres import PostgresHook
         from airflow.sdk import get_current_context
@@ -64,6 +72,9 @@ def list_files_dag():
         # below, instead of one PostgresHook/engine per inserted row (M3).
         engine = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
 
+        # Files handled without error: inserted, or already present for this
+        # run (retry: ON CONFLICT DO NOTHING inserts no new row but does not
+        # raise). Not a SQL rowcount, on purpose.
         inserted = 0
         for filepath in file_list:
             try:
@@ -79,7 +90,14 @@ def list_files_dag():
                 log.error("Insertion error for %s: %s", filepath, e)
                 raise
 
-        log.info("%d/%d files inserted", inserted, len(file_list))
+        if inserted == 0:
+            # Every listed file vanished before insertion: no row for this run,
+            # so no asset event (read_file_dag would find nothing, C-3).
+            raise AirflowSkipException(
+                f"0/{len(file_list)} listed files could be recorded (all vanished), "
+                "nothing to process"
+            )
+        log.info("%d/%d files recorded", inserted, len(file_list))
         return inserted
 
     insert_files(list_files())

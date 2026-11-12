@@ -11,6 +11,9 @@ Run with a bare/system/cluster `spark-submit` whose driver Python is not the
 project's venv (e.g. `ENV=prod` on YARN/Kubernetes where the interpreter
 isn't the one `uv sync` installed into): `pipeline.*` / `utils.*` won't be on
 sys.path in that case, so the fallback below adds the project root itself.
+
+Exit codes: 0 = every file processed, 1 = at least one file failed,
+2 = missing/invalid --run-id, 3 = no file_list row for that run id.
 """
 
 import argparse
@@ -51,8 +54,16 @@ def main(run_id: str):
 
     file_list = list_file_from_db(run_id)
     if not file_list:
-        log.info("No files to process for run_id=%s.", run_id)
-        sys.exit(0)
+        # P1-4 / C-3: a source run that emitted the `file_list` asset always
+        # has at least one row (empty listings and "every file vanished" both
+        # skip the insertion task, so no event). Zero rows is an anomaly
+        # (typo in a manual run_id, purged rows...), not a green no-op.
+        log.error(
+            "no file_list rows for run_id=%r: typo in the run_id or purged data? "
+            "Nothing was processed.",
+            run_id,
+        )
+        sys.exit(3)
 
     spark = get_spark_session("ReadFilesJob")
     try:
@@ -81,12 +92,20 @@ def main(run_id: str):
     sys.exit(1 if fail_count > 0 else 0)
 
 
-if __name__ == "__main__":
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the job's command line (`sys.argv[1:]` when `argv` is None).
+
+    read_file_dag passes the run id as a single `--run-id=<value>` argument,
+    so a run id starting with `-` is not mistaken for an option (P1-4 / C-4).
+    """
     parser = argparse.ArgumentParser(
         description="Read files listed in the DB for a given Airflow run_id."
     )
     parser.add_argument(
         "--run-id", required=True, help="dag_run_id of the list_files_dag run to process."
     )
-    args = parser.parse_args()
-    main(run_id=args.run_id)
+    return parser.parse_args(argv)
+
+
+if __name__ == "__main__":
+    main(run_id=parse_args().run_id)
