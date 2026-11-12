@@ -73,3 +73,86 @@ def test_check_integrity_files(config_file, temp_directory_with_files):
         f"Les fichiers listés {listed_files} ne correspondent pas "
         f"aux fichiers attendus {expected_files}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P1-6 / C-1 — a missing source directory must fail loudly, not look "empty".
+#
+# Since P1-6, an empty listing makes the insertion task skip (green run).
+# A configured directory that does not exist (typo, unmounted volume, other
+# working directory on the worker) must therefore raise instead of silently
+# producing [], otherwise a deployment failure turns into a green run.
+# ---------------------------------------------------------------------------
+
+
+def _make_extractor(tmp_path, source_directories, extensions=(".csv",)):
+    config_path = tmp_path / "extractor_config.yaml"
+    config_path.write_text(
+        yaml.dump(
+            {
+                "extractor_config": {
+                    "source_directories": [str(d) for d in source_directories],
+                    "files_extensions": list(extensions),
+                }
+            }
+        )
+    )
+    return Extractor(str(config_path))
+
+
+def test_p1_6_list_files_raises_on_missing_directory(tmp_path):
+    missing = tmp_path / "does_not_exist"
+    extractor = _make_extractor(tmp_path, [missing])
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        extractor.list_files()
+
+    message = str(exc_info.value)
+    assert str(missing) in message
+    assert str(missing.resolve()) in message
+
+
+def test_p1_6_list_files_reports_resolved_path_for_relative_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    extractor = _make_extractor(tmp_path, ["./no_such_data/"])
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        extractor.list_files()
+
+    message = str(exc_info.value)
+    assert "./no_such_data/" in message
+    assert str((tmp_path / "no_such_data").resolve()) in message
+
+
+def test_p1_6_list_files_reports_only_missing_directories(tmp_path):
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "file.csv").write_text("a,b\n1,2\n")
+    missing_1 = tmp_path / "missing_one"
+    missing_2 = tmp_path / "missing_two"
+    extractor = _make_extractor(tmp_path, [existing, missing_1, missing_2])
+
+    with pytest.raises(FileNotFoundError) as exc_info:
+        extractor.list_files()
+
+    message = str(exc_info.value)
+    assert str(missing_1) in message
+    assert str(missing_2) in message
+    assert str(existing) not in message.replace(str(missing_1), "").replace(str(missing_2), "")
+
+
+def test_p1_6_list_files_returns_empty_list_when_directory_has_no_match(tmp_path):
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    (existing / "notes.txt").write_text("not a csv")
+    extractor = _make_extractor(tmp_path, [existing])
+
+    assert extractor.list_files() == []
+
+
+def test_p1_6_list_files_returns_empty_list_for_empty_directory(tmp_path):
+    existing = tmp_path / "empty"
+    existing.mkdir()
+    extractor = _make_extractor(tmp_path, [existing])
+
+    assert extractor.list_files() == []

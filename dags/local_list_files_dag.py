@@ -48,12 +48,14 @@ def list_files_dag():
     def insert_files(file_list: list[str]) -> int:
         from airflow.providers.postgres.hooks.postgres import PostgresHook
         from airflow.sdk import get_current_context
+        from airflow.sdk.exceptions import AirflowSkipException
 
         from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
+        # "Nothing to process" is not an error: skip (no red run, no
+        # useless retry) rather than fail (M2 / P1-6).
         if not file_list:
-            log.warning("No files found, nothing to insert")
-            raise ValueError("No files found")
+            raise AirflowSkipException("No files found in source directories, nothing to insert")
 
         context = get_current_context()
         run_id = context["dag_run"].run_id
