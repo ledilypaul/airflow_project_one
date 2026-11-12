@@ -99,15 +99,17 @@ def insert_files_to_db(**kwargs):
     """
     # Import local : même raison que ci-dessus
     from airflow.providers.postgres.hooks.postgres import PostgresHook
+    from airflow.sdk.exceptions import AirflowSkipException
 
     from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
     ti = kwargs["ti"]
     file_list = ti.xcom_pull(task_ids="list_files_task")
 
+    # « Rien à traiter » n'est pas une erreur, mais ne doit pas non plus
+    # passer pour un succès silencieux : la task apparaît skipped (M2 / P1-6).
     if not file_list:
-        print("Aucun fichier à insérer.")
-        return 0
+        raise AirflowSkipException("No files found in source directories, nothing to insert")
 
     # Vrai run_id du DagRun courant : clé de contexte de premier niveau,
     # documentée pour un PythonOperator classique (équivalente à
