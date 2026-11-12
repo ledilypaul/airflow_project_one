@@ -98,7 +98,9 @@ def insert_files_to_db(**kwargs):
     en base de données. Récupère la liste via XCom.
     """
     # Import local : même raison que ci-dessus
-    from utils.functions_utils import insert_into_file_list
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+    from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
     ti = kwargs["ti"]
     file_list = ti.xcom_pull(task_ids="list_files_task")
@@ -107,12 +109,26 @@ def insert_files_to_db(**kwargs):
         print("Aucun fichier à insérer.")
         return 0
 
+    # Vrai run_id du DagRun courant : clé de contexte de premier niveau,
+    # documentée pour un PythonOperator classique (équivalente à
+    # dag_run.run_id, cf. templates-ref Airflow 3.3). Sans elle, toutes les
+    # lignes insérées par ce DAG partagent dag_run_id="" (défaut de
+    # insert_into_file_list), ce qui, combiné à l'index
+    # UNIQUE(file_path, dag_run_id) + ON CONFLICT DO NOTHING (P1-2),
+    # empêche silencieusement la ré-insertion d'un fichier déjà vu par un
+    # run classique antérieur.
+    run_id = kwargs["run_id"]
+
+    # Un seul engine construit pour toute la task, réutilisé pour chaque
+    # fichier ci-dessous, plutôt qu'un PostgresHook/engine par ligne (M3).
+    engine = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
+
     inserted = 0
     for filepath in file_list:
         try:
             filename = os.path.basename(filepath)
             mod_time = datetime.fromtimestamp(os.path.getmtime(filepath))
-            insert_into_file_list([filename, filepath, mod_time])
+            insert_into_file_list([filename, filepath, mod_time], dag_run_id=run_id, engine=engine)
             inserted += 1
         except FileNotFoundError:
             # Fichier supprimé entre le list et l'insert : on skip et on log

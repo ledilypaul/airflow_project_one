@@ -46,9 +46,10 @@ def list_files_dag():
 
     @task
     def insert_files(file_list: list[str]) -> int:
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
         from airflow.sdk import get_current_context
 
-        from utils.functions_utils import insert_into_file_list
+        from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
         if not file_list:
             log.warning("No files found, nothing to insert")
@@ -57,12 +58,18 @@ def list_files_dag():
         context = get_current_context()
         run_id = context["dag_run"].run_id
 
+        # One engine built once for the whole task, reused for every file
+        # below, instead of one PostgresHook/engine per inserted row (M3).
+        engine = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
+
         inserted = 0
         for filepath in file_list:
             try:
                 filename = os.path.basename(filepath)
                 mod_time = datetime.fromtimestamp(os.path.getmtime(filepath))
-                insert_into_file_list([filename, filepath, mod_time], dag_run_id=run_id)
+                insert_into_file_list(
+                    [filename, filepath, mod_time], dag_run_id=run_id, engine=engine
+                )
                 inserted += 1
             except FileNotFoundError:
                 log.warning("File not found, skipping: %s", filepath)

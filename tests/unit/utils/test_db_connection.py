@@ -18,6 +18,21 @@ DB_ENV = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _reset_engine_cache():
+    """P1-2: db_connection() now caches one Engine per URL at module scope.
+    Several tests in this file reuse the same DB_ENV (same URL) but patch
+    create_engine with a different MagicMock each time; without resetting
+    the cache between tests, a later test would transparently get the
+    Engine cached by an earlier test instead of calling its own patched
+    create_engine, and mock_create.assert_called_once() would fail."""
+    from utils.db_connection import _reset_engine_cache as reset
+
+    reset()
+    yield
+    reset()
+
+
 # ---------------------------------------------------------------------------
 # db_connection()
 # ---------------------------------------------------------------------------
@@ -49,6 +64,26 @@ def test_db_connection_url_format():
         url = mock_create.call_args[0][0]
         assert "postgresql+psycopg2://" in url
         assert "user:test_pw@localhost:5432/testdb" in url
+
+
+def test_p1_2_db_connection_is_reused_across_calls():
+    """M3: a single create_engine() call (one pooled Engine) must serve two
+    successive db_connection() calls made with the same environment,
+    instead of building a brand-new Engine per call."""
+    mock_engine = MagicMock()
+    with (
+        patch.dict(os.environ, DB_ENV),
+        patch("utils.db_connection.create_engine", return_value=mock_engine) as mock_create,
+    ):
+        from utils.db_connection import db_connection
+
+        engine_1 = db_connection()
+        engine_2 = db_connection()
+
+        mock_create.assert_called_once()
+        assert engine_1 is mock_engine
+        assert engine_2 is mock_engine
+        assert engine_1 is engine_2
 
 
 def test_db_connection_missing_env_raises():
