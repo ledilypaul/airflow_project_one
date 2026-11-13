@@ -2,10 +2,14 @@
 Unit tests for utils/functions_utils.py.
 """
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
+
+# Real location of PostgresHook, imported lazily by insert_into_file_list().
+POSTGRES_HOOK_PATH = "airflow.providers.postgres.hooks.postgres.PostgresHook"
 
 
 def _make_engine_mock(fetchall_return=None):
@@ -25,12 +29,16 @@ def _make_engine_mock(fetchall_return=None):
 
 
 def _patch_postgres_hook(mock_engine):
-    """Patch utils.functions_utils.PostgresHook so that building it (when no
+    """Patch PostgresHook at its real location so that building it (when no
     explicit `engine` is passed to insert_into_file_list) returns mock_engine
-    via .get_sqlalchemy_engine(), without touching real Airflow Connections."""
+    via .get_sqlalchemy_engine(), without touching real Airflow Connections.
+
+    utils.functions_utils imports PostgresHook lazily, inside the call (the
+    Spark job imports that module and must never import Airflow): patching
+    `utils.functions_utils.PostgresHook` would not exist anymore."""
     mock_hook_cls = MagicMock()
     mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
-    return patch("utils.functions_utils.PostgresHook", mock_hook_cls)
+    return patch(POSTGRES_HOOK_PATH, mock_hook_cls)
 
 
 def test_insert_calls_execute():
@@ -105,7 +113,7 @@ def test_p1_2_insert_uses_postgres_hook_with_correct_conn_id():
     mock_hook_cls = MagicMock()
     mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
 
-    with patch("utils.functions_utils.PostgresHook", mock_hook_cls):
+    with patch(POSTGRES_HOOK_PATH, mock_hook_cls):
         from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
         insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
@@ -118,7 +126,7 @@ def test_p1_2_insert_reuses_passed_engine_without_building_hook():
     mock_engine, mock_conn = _make_engine_mock()
     mock_hook_cls = MagicMock()
 
-    with patch("utils.functions_utils.PostgresHook", mock_hook_cls):
+    with patch(POSTGRES_HOOK_PATH, mock_hook_cls):
         from utils.functions_utils import insert_into_file_list
 
         insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"], engine=mock_engine)
@@ -279,3 +287,17 @@ def test_p1_3_update_file_status_sqlalchemy_error_is_raised():
 
         with pytest.raises(SQLAlchemyError):
             update_file_status(1, "failed", error_message="boom")
+
+
+def test_insert_without_engine_and_without_postgres_provider_raises_clear_error():
+    """Spark-only environment (`uv sync --no-group airflow`): the provider is
+    missing, so the default (engine=None) path must fail with an explicit
+    message instead of a bare ImportError."""
+    from utils.functions_utils import insert_into_file_list
+
+    # A None entry in sys.modules makes `import` raise ImportError.
+    with (
+        patch.dict(sys.modules, {"airflow.providers.postgres.hooks.postgres": None}),
+        pytest.raises(RuntimeError, match="apache-airflow-providers-postgres"),
+    ):
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])

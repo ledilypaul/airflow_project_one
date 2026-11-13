@@ -6,18 +6,6 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from utils.db_connection import db_connection
 
-try:
-    # Only needed by insert_into_file_list()'s default (engine=None) path,
-    # which is exercised exclusively from Airflow task code (see module
-    # docstring-level note in CLAUDE.md / P1-2). list_file_from_db() and
-    # update_file_status() below never touch this: they keep using
-    # db_connection() (.env) because pipeline/jobs/read_files_job.py must be
-    # importable in a Spark-only environment (`uv sync --no-group airflow`)
-    # that has no `apache-airflow-providers-postgres` installed at all.
-    from airflow.providers.postgres.hooks.postgres import PostgresHook
-except ImportError:  # pragma: no cover - exercised only in the Spark-only env
-    PostgresHook = None
-
 log = logging.getLogger(__name__)
 
 # Airflow Connection id to create manually (UI/CLI) with the real
@@ -25,17 +13,33 @@ log = logging.getLogger(__name__)
 FILE_LIST_POSTGRES_CONN_ID = "file_list_db"
 
 
+def _file_list_engine_from_airflow_connection():
+    """Build an engine from the `file_list_db` Airflow Connection.
+
+    `PostgresHook` is imported here, never at module level: this module is
+    also imported by the Spark job (pipeline/jobs/read_files_job.py), which
+    must never import Airflow. The job runs in the environment of an Airflow 3
+    task, where the Task SDK supervisor sets
+    `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=airflow-db-not-allowed:///`: importing
+    `airflow` there fails in `settings.initialize()` with a SQLAlchemy
+    `ArgumentError`. It must also stay importable in a Spark-only environment
+    (`uv sync --no-group airflow`) where the provider is not installed.
+    """
+    try:
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+    except ImportError as e:
+        raise RuntimeError(
+            "insert_into_file_list() without an explicit engine needs "
+            "apache-airflow-providers-postgres (install the 'airflow' dependency "
+            "group: `uv sync`), or pass engine=..."
+        ) from e
+    return PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
+
+
 def insert_into_file_list(data, dag_run_id: str = None, engine=None):
     try:
         if engine is None:
-            if PostgresHook is None:  # pragma: no cover - Spark-only env
-                raise RuntimeError(
-                    "apache-airflow-providers-postgres is not installed; "
-                    "pass an explicit engine or install the 'airflow' dependency group."
-                )
-            engine = PostgresHook(
-                postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID
-            ).get_sqlalchemy_engine()
+            engine = _file_list_engine_from_airflow_connection()
         with engine.begin() as conn:
             query = text("""
                 INSERT INTO file_list (

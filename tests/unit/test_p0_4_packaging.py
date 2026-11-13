@@ -137,10 +137,16 @@ def test_p0_4_read_files_job_imports_without_editable_install_on_syspath():
         p for p in sys.path if p.endswith("site-packages") and str(PROJECT_ROOT) in p
     )
 
+    # utils/db_connection.py calls load_dotenv(), which finds the project's
+    # .env from its own location whatever the cwd. Empty DB_* values keep
+    # this run hermetic: load_dotenv never overrides variables already set,
+    # so a developer's real .env and running Postgres cannot change the
+    # outcome.
+    db_vars_unset = dict.fromkeys(("DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME"), "")
     result = subprocess.run(
         [sys.executable, "-S", str(READ_FILES_JOB), "--run-id", "run_test"],
         cwd="/tmp",
-        env={"PYTHONPATH": site_packages},
+        env={"PYTHONPATH": site_packages, **db_vars_unset},
         capture_output=True,
         text=True,
         timeout=60,
