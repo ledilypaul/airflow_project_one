@@ -11,6 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DEFAULT_XLSX_CONFIG = PROJECT_ROOT / "config" / "defaults" / "xlsx.yaml"
 
 
+# P2-2: `storage` is mandatory in every reading config; these tests only read.
+STORAGE = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
+
+
 @pytest.fixture
 def excel_reader(spark):
     return ExcelReader(spark)
@@ -35,7 +39,10 @@ def test_b3_excel_reader_returns_native_spark_dataframe(excel_reader, test_excel
     native `pyspark.sql.DataFrame`.
     """
     config = SourceConfig.model_validate(
-        {"source": {"name": "test", "format": "xlsx", "patterns": ["*.xlsx"]}}
+        {
+            "source": {"name": "test", "format": "xlsx", "patterns": ["*.xlsx"]},
+            "storage": STORAGE,
+        }
     )
     df = excel_reader.read(str(test_excel_file), config)
 

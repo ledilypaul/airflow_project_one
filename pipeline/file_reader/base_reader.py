@@ -47,8 +47,12 @@ class BaseFileReader:
         """
         return self.registry.match(file_path)
 
-    def read_file(self, file_path: str) -> DataFrame:
-        config = self.get_config(file_path)
+    def read_file(self, file_path: str, config: SourceConfig | None = None) -> DataFrame:
+        """Lit `file_path` avec `config`, ou avec sa config résolue ici si
+        `config` est absent. Le job Spark résout la config une seule fois
+        et la passe : la même sert à la lecture et à l'écriture (P2-2 / C-8)."""
+        if config is None:
+            config = self.get_config(file_path)
         log.info("%s: source %r (format %s)", file_path, config.source.name, config.source.format)
         reader_instance = ReaderFactory.get_reader(config.source.format, self.spark)
         return reader_instance.read(normalize_spark_path(file_path), config)

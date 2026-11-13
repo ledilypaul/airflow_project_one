@@ -5,6 +5,9 @@ import yaml
 
 from pipeline.file_reader.base_reader import BaseFileReader
 
+# P2-2: `storage` is mandatory in every reading config; these tests only read.
+STORAGE = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
+
 
 @pytest.fixture
 def base_reader(spark, config_dir):
@@ -25,6 +28,7 @@ def config_dir(tmp_path):
             {
                 "source": {"name": "sample_config", "format": "csv", "patterns": ["example_*"]},
                 "reader": {"options": {"header": True, "inferSchema": True, "delimiter": ","}},
+                "storage": STORAGE,
             }
         )
     )
@@ -35,6 +39,7 @@ def config_dir(tmp_path):
             {
                 "source": {"name": "csv_config", "format": "csv", "patterns": ["*.csv"]},
                 "reader": {"options": {"header": True, "inferSchema": False, "delimiter": ","}},
+                "storage": STORAGE,
             }
         )
     )
@@ -47,6 +52,7 @@ def config_dir(tmp_path):
                     "patterns": ["*.parquet"],
                 },
                 "reader": {"options": {"mergeSchema": True}},
+                "storage": STORAGE,
             }
         )
     )
@@ -88,6 +94,20 @@ def test_read_file(base_reader, test_file):
         assert df.count() == 2
 
 
+def test_p2_2_read_file_uses_the_given_config_without_matching_again(base_reader, test_file):
+    """C-8: the job resolves the config once and reuses it for the read and
+    the write; `read_file` must not match the file a second time."""
+    config = base_reader.get_config(str(test_file))
+
+    with patch.object(
+        base_reader.registry, "match", side_effect=AssertionError("matched twice")
+    ) as match:
+        df = base_reader.read_file(str(test_file), config=config)
+
+    match.assert_not_called()
+    assert sorted(tuple(r) for r in df.collect()) == [("1", "2"), ("3", "4")]
+
+
 def test_b1_read_file_resolves_format_from_default_config(spark, tmp_path):
     """
     Regression test for B1 (docs/audit/2026-11-05-baseline.md): a file with
@@ -108,6 +128,7 @@ def test_b1_read_file_resolves_format_from_default_config(spark, tmp_path):
             {
                 "source": {"name": "default_csv", "format": "csv", "patterns": ["*.csv"]},
                 "reader": {"options": {"header": True, "inferSchema": True, "delimiter": ","}},
+                "storage": STORAGE,
             }
         )
     )
