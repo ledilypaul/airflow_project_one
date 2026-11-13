@@ -4,20 +4,9 @@ Requires a Spark session (local mode).
 """
 
 import pytest
-from pyspark.sql import SparkSession
 from pyspark.sql.types import IntegerType, StringType
 
 from pipeline.processor.base_processor import BaseProcessor
-
-
-@pytest.fixture(scope="module")
-def spark():
-    return (
-        SparkSession.builder.master("local[1]")
-        .appName("test_processor")
-        .config("spark.sql.shuffle.partitions", "1")
-        .getOrCreate()
-    )
 
 
 @pytest.fixture

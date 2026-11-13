@@ -12,10 +12,21 @@ project's venv (e.g. `ENV=prod` on YARN/Kubernetes where the interpreter
 isn't the one `uv sync` installed into): `pipeline.*` / `utils.*` won't be on
 sys.path in that case, so the fallback below adds the project root itself.
 
-Exit codes: 0 = every file processed, 1 = at least one file failed,
-2 = missing/invalid --run-id, 3 = no file_list row for that run id,
-4 = parent process gone (see `start_parent_watchdog`): the job stopped on its
-own, without updating any file_list status.
+Exit codes:
+    0 = every file processed;
+    1 = at least one file failed (its row is `failed`, with the error);
+    2 = missing/invalid --run-id (nothing queried, nothing written);
+    3 = no file_list row for that run id (nothing written);
+    4 = parent process gone (see `start_parent_watchdog`): the job stopped on
+        its own, without updating any file_list status;
+    5 = invalid reading config (`config/sources/`, `config/defaults/`): every
+        row of the run is `failed` with the config error, Spark never started.
+        Deterministic: a retry fails the same way until the YAML is fixed.
+
+Checks run in this order, cheapest and most fundamental first: the run id
+(2, no I/O), then its rows (3: without rows there is nothing to process nor
+to mark failed, and a wrong run id is the more fundamental error), then the
+reading configs (5, needs the rows to mark them), and only then Spark.
 """
 
 import argparse
@@ -34,12 +45,14 @@ from pathlib import Path
 # éditable n'existe pas pour cet interpréteur et l'import échoue. On ne
 # bidouille donc sys.path qu'en dernier recours, si l'import direct rate.
 try:
+    from pipeline.config import DEFAULT_CONFIG_ROOT, ConfigError, SourceRegistry
     from pipeline.file_reader.base_reader import BaseFileReader
     from utils.functions_utils import list_file_from_db, update_file_status
     from utils.spark_session import get_spark_session
 except ModuleNotFoundError:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
     sys.path.insert(0, str(PROJECT_ROOT))
+    from pipeline.config import DEFAULT_CONFIG_ROOT, ConfigError, SourceRegistry
     from pipeline.file_reader.base_reader import BaseFileReader
     from utils.functions_utils import list_file_from_db, update_file_status
     from utils.spark_session import get_spark_session
@@ -48,6 +61,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger(__name__)
 
 EXIT_PARENT_GONE = 4
+EXIT_INVALID_CONFIG = 5
+
+# Root of the reading configs (`sources/`, `defaults/`); a module attribute so
+# that tests can point it at a temporary directory.
+CONFIG_ROOT = DEFAULT_CONFIG_ROOT
 
 
 def start_parent_watchdog(interval: float = 1.0) -> threading.Thread:
@@ -115,9 +133,24 @@ def main(run_id: str):
         )
         sys.exit(3)
 
+    # P2-1 / C-2: load and validate every reading config before starting
+    # Spark. An invalid config is a deterministic error for the whole run, not
+    # a file error: mark every row `failed` with it and exit with a dedicated
+    # code, instead of leaving them `pending` behind an uncaught exception.
+    try:
+        registry = SourceRegistry.from_directory(CONFIG_ROOT)
+    except ConfigError as exc:
+        error_message = f"invalid reading config: {exc}"
+        log.error(
+            "%s\nNo file of run_id=%r was read; every row is marked failed.", error_message, run_id
+        )
+        for file in file_list:
+            update_file_status(file["id"], "failed", error_message=error_message)
+        sys.exit(EXIT_INVALID_CONFIG)
+
     spark = get_spark_session("ReadFilesJob")
     try:
-        reader = BaseFileReader(spark)
+        reader = BaseFileReader(spark, registry=registry)
 
         success_count = 0
         fail_count = 0

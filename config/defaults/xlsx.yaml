@@ -1,0 +1,13 @@
+# Défaut par extension (P2-1) : utilisé quand aucune config de
+# config/sources/ ne correspond au fichier. Modèle : pipeline/config/models.py.
+source:
+  name: default_xlsx
+  format: xlsx
+  patterns: ["*.xlsx"]
+
+reader:
+  # Options de pyspark.pandas.read_excel (pandas), pas des options Spark.
+  options:
+    # Index 0-based de la ligne d'en-tête : 1 sauterait la première ligne de données (C-NEW1).
+    header: 0
+    dtype: str

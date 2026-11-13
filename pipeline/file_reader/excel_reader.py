@@ -1,19 +1,27 @@
 import logging
 
-import pyspark.pandas as ps
 from pyspark.sql import DataFrame, SparkSession
 
-from .base_reader import BaseFileReader
+from pipeline.config import SourceConfig
 
 log = logging.getLogger(__name__)
 
 
-class ExcelReader(BaseFileReader):
-    def __init__(self, spark: SparkSession):
-        super().__init__(spark)
+class ExcelReader:
+    """Lit xlsx avec `pyspark.pandas.read_excel` : `reader.options` sont des
+    options pandas (`header: 0`, `dtype: str`...), validées au chargement.
 
-    def read(self, file_path: str, file_config: dict = None) -> DataFrame:
-        excel_options = file_config.get("reader_options", {}) if file_config else {}
+    `pyspark.pandas` est importé dans `read()`, pas en tête de module (C-5) :
+    ReaderFactory importe tous les readers, et lire un CSV ne doit pas exiger
+    un pandas et un pyarrow compatibles avec pandas-on-Spark."""
+
+    def __init__(self, spark: SparkSession):
+        self.spark = spark
+
+    def read(self, file_path: str, config: SourceConfig) -> DataFrame:
+        import pyspark.pandas as ps
+
+        excel_options = config.reader.options
         try:
             # pyspark.pandas.read_excel renvoie un DataFrame pandas-on-Spark,
             # qui n'a pas l'API pyspark.sql.DataFrame (ex: .show()) : on

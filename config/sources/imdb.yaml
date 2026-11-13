@@ -1,0 +1,74 @@
+# Config de lecture dédiée (P2-1). Modèle : pipeline/config/models.py.
+source:
+  name: imdb_movies
+  format: csv
+  # Motifs fnmatch sur le nom du fichier, insensibles à la casse
+  # (repris de extractor_config.yaml : include_files "*IMDB*"). Limité aux
+  # .csv : cette config décrit un CSV, un IMDB en .parquet ou .xlsx doit
+  # prendre son défaut par extension, pas être lu comme du CSV.
+  patterns: ["*imdb*.csv"]
+
+reader:
+  # Options Spark CSV, passées telles quelles (liste blanche :
+  # pipeline/config/reader_options.py).
+  options:
+    header: true
+    # Sans effet quand columns_type est déclaré (Spark applique le schéma).
+    inferSchema: true
+    delimiter: ","
+    encoding: "UTF-8"
+  # Schéma explicite, dans l'ordre des colonnes du fichier
+  # (types : pipeline/config/types.py, atomiques uniquement : la source CSV
+  # de Spark refuse les colonnes ARRAY, MAP ou STRUCT).
+  columns_type:
+    id: int
+    title: string
+    vote_average: float
+    vote_count: int
+    status: string
+    release_date: date
+    revenue: float
+    runtime: int
+    adult: boolean
+    backdrop_path: string
+    budget: int
+    homepage: string
+    imdb_db: string
+    original_language: string
+    original_title: string
+    overview: string
+    popularity: float
+    poster_path: string
+    tagline: string
+    production_companies: string
+    production_countries: string
+    spoken_languages: string
+    keywords: string
+    release_year: int
+    Director: string
+    AverageRating: float
+    Poster_Link: string
+    Certificate: string
+    IMDB_Rating: float
+    Metascore: float
+    Star1: string
+    Star2: string
+    Star3: string
+    Star4: string
+    Writer: string
+    Director_of_Photography: string
+    Producer: string
+    Music_Composer: string
+    # Liste de genres encodée dans le CSV : lue en texte, le découpage en
+    # liste relève d'une transformation ultérieure (C-1).
+    genre_list: string
+    Cast_list: string
+    overview_sentiment: string
+    all_combined_keywords: string
+
+storage:
+  table_name: movies
+  format: parquet
+  mode: overwrite
+  raw_path: "raw/"
+  staging_path: "staging/"

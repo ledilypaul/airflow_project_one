@@ -1,0 +1,13 @@
+# Défaut par extension (P2-1) : utilisé quand aucune config de
+# config/sources/ ne correspond au fichier. Modèle : pipeline/config/models.py.
+source:
+  name: default_txt
+  format: txt
+  patterns: ["*.txt"]
+
+reader:
+  options:
+    header: true
+    # Était écrit `infer_schema` (ignoré en silence, M4).
+    inferSchema: true
+    delimiter: ","

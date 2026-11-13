@@ -1,18 +1,14 @@
 from pathlib import Path
 
 import pytest
-import yaml
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame
 
+from pipeline.config import SourceConfig, load_source_config
 from pipeline.file_reader.excel_reader import ExcelReader
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-BASIC_READING_CONFIG = PROJECT_ROOT / "config" / "basic_reading_config.yaml"
-
-
-@pytest.fixture(scope="module")
-def spark():
-    return SparkSession.builder.appName("pytest").master("local[*]").getOrCreate()
+# Was the `xlsx:` section of config/basic_reading_config.yaml before P2-1.
+DEFAULT_XLSX_CONFIG = PROJECT_ROOT / "config" / "defaults" / "xlsx.yaml"
 
 
 @pytest.fixture
@@ -38,7 +34,10 @@ def test_b3_excel_reader_returns_native_spark_dataframe(excel_reader, test_excel
     `content.show(...)` on whatever a reader returns. It must now return a
     native `pyspark.sql.DataFrame`.
     """
-    df = excel_reader.read(str(test_excel_file), {"reader_options": {}})
+    config = SourceConfig.model_validate(
+        {"source": {"name": "test", "format": "xlsx", "patterns": ["*.xlsx"]}}
+    )
+    df = excel_reader.read(str(test_excel_file), config)
 
     assert isinstance(df, DataFrame)
     # .show() must not raise (this is exactly what read_files_job.py calls).
@@ -58,16 +57,14 @@ def test_c_new1_basic_reading_config_xlsx_header_preserves_all_rows(excel_reader
     `.show()` (pandas-on-Spark has no such method) before anyone could see
     the corrupted data; now that `.to_spark()` succeeds, a wrong `header`
     value would silently corrupt data instead of crashing. This test loads
-    the *actual* fallback config shape (`reader_options` at the top level of
-    the `xlsx:` block, as returned by `BaseFileReader.get_config_file()`),
-    not a simplified mock, so it would catch a regression of this config
-    value directly.
+    the *actual* fallback config (since P2-1: config/defaults/xlsx.yaml,
+    loaded and validated as `BaseFileReader` does), not a simplified mock,
+    so it would catch a regression of this config value directly.
     """
     pytest.importorskip("openpyxl")
     import pandas as pd
 
-    all_defaults = yaml.safe_load(BASIC_READING_CONFIG.read_text())
-    xlsx_config = all_defaults["xlsx"]
+    xlsx_config = load_source_config(DEFAULT_XLSX_CONFIG)
 
     test_file = tmp_path / "data.xlsx"
     pd.DataFrame(

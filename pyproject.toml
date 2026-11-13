@@ -17,6 +17,7 @@ dependencies = [
     "sqlalchemy>=2.0,<2.1",
     "psycopg2-binary>=2.9",
     "python-dotenv>=1.0",
+    "pydantic>=2.14,<3",    # validation des configs de lecture (P2-1), sans le groupe airflow
 ]
 
 [dependency-groups]
