@@ -6,20 +6,25 @@ Covers:
   - DAG files parse without the project root on sys.path (C-1): each DAG file
     declares the Asset itself, matched by Airflow on its *name*;
   - the producers' outlets and read_file_dag's Asset schedule, task topology,
-    `max_active_runs`, optional `run_id` Param and Spark task environment;
+    `max_active_runs`, optional `run_id` Param and Spark task environment
+    (P1-5: `env_vars` of SparkSubmitOperator, merged into the worker's);
   - resolve_source_run_ids: run ids taken from *all* triggering asset events
     (deduplicated, order kept), manual `dag_run.conf["run_id"]` fallback
     (stripped, read from the conf and not from the memoised Param: C-3, C-5),
     explicit failure when there is no scope at all;
-  - shell/argparse safety of the spark-submit command line (C-4).
+  - argparse safety of the spark-submit argv (C-4). P1-5: there is no shell
+    any more, the argv is built by the installed SparkSubmitHook; this
+    real-process round trip is the reference test for "the run id reaches the
+    job's parser intact" (P1-5 / C-5: duplicates removed).
 
 The end-to-end "no shell injection / no Jinja rendering" guarantee is covered
 by tests/integration/test_p1_4_read_file_dag_e2e.py (C-2).
 """
 
 import copy
+import json
 import os
-import shlex
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,7 +47,19 @@ def dagbag():
     return DagBag(dag_folder=str(DAGS_FOLDER))
 
 
+@pytest.fixture
+def spark_connection(monkeypatch):
+    """P1-5 / C-2: resolve_source_run_ids fails when the `spark_default`
+    Connection is missing (test_p1_5_spark_submit.py). Its tests here are
+    about run-id resolution, so they get one (env var form, no DB)."""
+    monkeypatch.setenv(
+        "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[*]"})
+    )
+
+
 def _resolve_callable():
+    """Run with the `spark_connection` fixture (applied to the whole
+    resolve_source_run_ids section below)."""
     from dags.local_read_file_dag import dag_instance
 
     return dag_instance.get_task("resolve_source_run_ids").python_callable
@@ -168,32 +185,66 @@ def test_p1_4_read_file_dag_dependencies_resolution_before_spark(dagbag):
 
 def test_p1_4_spark_task_is_mapped_over_the_run_ids(dagbag):
     """One spark_read_files instance per source run id (own exit code, retry
-    and status), mapped on bash_command through `.map(build_spark_command)`
-    (C-6: the command is built at expansion time on the worker that runs the
-    task, not frozen in an XCom by an extra task)."""
-    from airflow.providers.standard.operators.bash import BashOperator
+    and status), mapped through `.map(...)` on the output of
+    resolve_source_run_ids (C-6: the arguments are built at expansion time on
+    the worker that runs the task, not frozen in an XCom by an extra task).
+    P1-5: mapped on `application_args` of SparkSubmitOperator (operator class
+    and field are checked by test_p1_5_spark_submit.py)."""
     from airflow.sdk.definitions.mappedoperator import MappedOperator
     from airflow.sdk.definitions.xcom_arg import MapXComArg
 
     task = dagbag.dags["read_file_dag"].get_task("spark_read_files")
     assert isinstance(task, MappedOperator)
-    assert task.operator_class is BashOperator
-    assert set(task.expand_input.value) == {"bash_command"}
+    assert len(task.expand_input.value) == 1
 
-    mapped = task.expand_input.value["bash_command"]
+    (mapped,) = task.expand_input.value.values()
     assert isinstance(mapped, MapXComArg)
     assert mapped.arg.operator.task_id == "resolve_source_run_ids"
-    assert [f.__name__ for f in mapped.callables] == ["build_spark_command"]
+    assert [f.__name__ for f in mapped.callables] == ["build_application_args"]
 
 
-def test_p1_4_spark_task_inherits_worker_environment(dagbag):
-    """`env` without `append_env=True` *replaces* the whole subprocess
-    environment (PATH included): spark-submit would only be found through
-    bash's built-in default PATH, and JAVA_HOME/SPARK_HOME/ENV... would be
-    lost. PYTHONPATH must still point at the project root."""
+def test_p1_4_spark_task_inherits_worker_environment(dagbag, monkeypatch):
+    """The spark-submit subprocess must get the *whole* worker environment
+    (PATH, JAVA_HOME, SPARK_HOME, ENV...) plus PYTHONPATH pointing at the
+    project root: replacing the environment instead of extending it was the
+    P1-4 `append_env` bug.
+
+    P1-5: `env_vars` of SparkSubmitOperator. Checked on the *installed*
+    SparkSubmitHook with a local master: `submit()` must pass `os.environ`
+    updated with `env_vars` to Popen, not `env_vars` alone."""
+    from airflow.providers.apache.spark.hooks import spark_submit
+
     task = dagbag.dags["read_file_dag"].get_task("spark_read_files")
-    assert task.partial_kwargs["append_env"] is True
-    assert task.partial_kwargs["env"] == {"PYTHONPATH": str(PROJECT_ROOT)}
+    env_vars = task.partial_kwargs["env_vars"]
+    assert env_vars == {"PYTHONPATH": str(PROJECT_ROOT)}
+
+    monkeypatch.setenv(
+        "AIRFLOW_CONN_SPARK_P1_4_ENV", json.dumps({"conn_type": "spark", "host": "local[*]"})
+    )
+    monkeypatch.setenv("P1_4_WORKER_ONLY_VAR", "kept")
+    captured = {}
+
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            self.stdout = iter(())
+
+        def wait(self):
+            return 0
+
+    # `spark_submit.subprocess` is the global `subprocess` module: this
+    # replaces `subprocess.Popen` for the whole process (restored by
+    # monkeypatch at teardown), not only inside the hook. Nothing else spawns
+    # a process during `submit()`.
+    monkeypatch.setattr(spark_submit.subprocess, "Popen", FakePopen)
+    hook = spark_submit.SparkSubmitHook(conn_id="spark_p1_4_env", env_vars=env_vars)
+    hook.submit("job.py")
+
+    env = captured["env"]
+    assert env is not None
+    assert env["PYTHONPATH"] == str(PROJECT_ROOT)
+    assert env["PATH"] == os.environ["PATH"]
+    assert env["P1_4_WORKER_ONLY_VAR"] == "kept"
 
 
 def test_p1_4_read_file_dag_max_active_runs_is_1(dagbag):
@@ -224,6 +275,7 @@ def test_p1_4_run_id_param_is_optional(dagbag):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_single_event_returns_its_source_run_id():
     result = _resolve_callable()(
         triggering_asset_events=_events("manual__run_a"), dag_run=_dag_run({})
@@ -231,6 +283,7 @@ def test_p1_4_resolve_single_event_returns_its_source_run_id():
     assert result == ["manual__run_a"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_multiple_events_deduplicated_in_order():
     """Airflow may batch several listings into one consumer run: every
     source run must be processed, once, in event order."""
@@ -241,6 +294,7 @@ def test_p1_4_resolve_multiple_events_deduplicated_in_order():
     assert result == ["run_b", "run_a", "run_c"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_ignores_events_of_other_assets():
     result = _resolve_callable()(
         triggering_asset_events=_events("run_other", asset_name="some_other_asset"),
@@ -249,6 +303,7 @@ def test_p1_4_resolve_ignores_events_of_other_assets():
     assert result == ["manual_target"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_events_take_precedence_over_conf():
     result = _resolve_callable()(
         triggering_asset_events=_events("run_a"), dag_run=_dag_run({"run_id": "ignored"})
@@ -256,6 +311,7 @@ def test_p1_4_resolve_events_take_precedence_over_conf():
     assert result == ["run_a"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_skips_events_without_source_run_id():
     """An event created through the REST API has no source run: it cannot be
     scoped, so it is ignored (the other events are still processed)."""
@@ -265,6 +321,7 @@ def test_p1_4_resolve_skips_events_without_source_run_id():
     assert result == ["run_a"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 @pytest.mark.parametrize("events", [None, "empty"], ids=["no_accessor", "no_event"])
 def test_p1_4_resolve_manual_trigger_uses_conf_run_id(events):
     accessor = _events() if events == "empty" else None
@@ -274,6 +331,7 @@ def test_p1_4_resolve_manual_trigger_uses_conf_run_id(events):
     assert result == ["manual__run_x"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_manual_run_id_is_stripped():
     """C-3: `" manual__x\\n"` pasted in the trigger form must target
     `manual__x`, not a run id that matches no file_list row."""
@@ -283,6 +341,7 @@ def test_p1_4_resolve_manual_run_id_is_stripped():
     assert result == ["manual__x"]
 
 
+@pytest.mark.usefixtures("spark_connection")
 @pytest.mark.parametrize(
     "conf",
     [None, {}, {"run_id": None}, {"run_id": ""}, {"run_id": "   "}, {"run_id": " None "}],
@@ -293,6 +352,7 @@ def test_p1_4_resolve_blank_conf_run_id_is_treated_as_missing(conf):
         _resolve_callable()(triggering_asset_events=_events(), dag_run=_dag_run(conf))
 
 
+@pytest.mark.usefixtures("spark_connection")
 def test_p1_4_resolve_reads_conf_not_the_memoised_param(dagbag):
     """C-5: Param.resolve() memoises the value on the DAG's Param object, so
     in one process (chained `dag.test()`), a run without conf inherited the
@@ -311,12 +371,13 @@ def test_p1_4_resolve_reads_conf_not_the_memoised_param(dagbag):
 
 
 # ---------------------------------------------------------------------------
-# Shell / argparse safety of the spark-submit command line
+# Argparse safety of the spark-submit argv
 # ---------------------------------------------------------------------------
 
-# `{{ ... }}` (Jinja) is not listed: re-rendering is a property of the
-# operator, not of the command string; it is covered end to end by the
-# integration test (C-2).
+# The single list of hostile run ids (P1-5 / C-5: the P1-4 and P1-5 copies
+# were merged here, with their duplicate tests). Jinja markers are kept: the
+# argv must carry them verbatim; that the operator does not *render* them is
+# a property of the operator, covered end to end by the integration test.
 HOSTILE_RUN_IDS = [
     "x; rm -rf ~",
     "run with spaces",
@@ -329,19 +390,49 @@ HOSTILE_RUN_IDS = [
     "--run-id=other",
     "a=b",
     "trailing.sh",
+    "{{ 7*7 }}",
+    "{% raw %}x",
 ]
 
 
 @pytest.mark.parametrize("run_id", HOSTILE_RUN_IDS)
-def test_p1_4_spark_command_round_trips_through_job_parser(run_id):
-    """C-4: the command line, split as bash would, must reach the job's real
-    argparse parser with the run id intact. `--run-id -rf` used to be read as
-    an option (argparse usage error, exit 2): the run id is now passed as a
-    single `--run-id=<value>` argument."""
-    from dags.local_read_file_dag import JOB_PATH, build_spark_command
+def test_p1_4_spark_command_round_trips_through_job_parser(run_id, monkeypatch, tmp_path):
+    """C-4: the argv spark-submit receives must reach the job's real argparse
+    parser with the run id intact. `--run-id -rf` used to be read as an option
+    (argparse usage error, exit 2): the run id is passed as a single
+    `--run-id=<value>` argument.
+
+    P1-5: no shell any more. The argv is the one the installed SparkSubmitHook
+    hands to Popen (list form, no `bash -c`); a real process records the
+    arguments it actually received, so nothing in between can split or
+    expand them."""
+    from airflow.providers.apache.spark.hooks import spark_submit
+
+    from dags.local_read_file_dag import JOB_PATH, build_application_args
     from pipeline.jobs.read_files_job import parse_args
 
-    argv = shlex.split(build_spark_command(run_id))
+    monkeypatch.setenv(
+        "AIRFLOW_CONN_SPARK_P1_4_ARGV", json.dumps({"conn_type": "spark", "host": "local[*]"})
+    )
+    real_popen = subprocess.Popen
+    received = tmp_path / "argv.json"
 
-    assert argv == ["spark-submit", str(JOB_PATH), f"--run-id={run_id}"]
-    assert parse_args(argv[2:]).run_id == run_id
+    def recording_popen(cmd, **kwargs):
+        # Same argv, executed by a real process that records what it got.
+        script = "import json, sys; json.dump(sys.argv[2:], open(sys.argv[1], 'w'))"
+        return real_popen([sys.executable, "-c", script, str(received), *cmd], **kwargs)
+
+    # `spark_submit.subprocess` is the global `subprocess` module: this
+    # replaces `subprocess.Popen` for the whole process (restored by
+    # monkeypatch at teardown), not only inside the hook. `real_popen` was
+    # captured before, so the recording process itself is really started.
+    monkeypatch.setattr(spark_submit.subprocess, "Popen", recording_popen)
+    hook = spark_submit.SparkSubmitHook(
+        conn_id="spark_p1_4_argv", application_args=build_application_args(run_id)
+    )
+    hook.submit(str(JOB_PATH))
+
+    argv = json.loads(received.read_text())
+    assert argv[0] == "spark-submit"
+    assert argv[-2:] == [str(JOB_PATH), f"--run-id={run_id}"]
+    assert parse_args(argv[-1:]).run_id == run_id

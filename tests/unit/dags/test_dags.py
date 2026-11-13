@@ -4,6 +4,7 @@ Validates that DAGs load without errors and have the expected task topology.
 Uses Airflow's DagBag — no real database required.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -99,11 +100,12 @@ def test_p0_3_dag_has_no_schedule_interval_attribute_access(dagbag):
 
 
 def test_p1_3_read_file_dag_passes_run_id_param():
-    """P1-3: spark-submit is scoped to a run id. (Quoting and the exact
-    argv are checked by test_p1_4_spark_command_round_trips_through_job_parser.)"""
-    from dags.local_read_file_dag import build_spark_command
+    """P1-3: spark-submit is scoped to a run id. (The exact argv is checked by
+    test_p1_4_spark_command_round_trips_through_job_parser; P1-5: the run id
+    is an `application_args` entry of SparkSubmitOperator.)"""
+    from dags.local_read_file_dag import build_application_args
 
-    assert "--run-id" in build_spark_command("some_run_id")
+    assert build_application_args("some_run_id") == ["--run-id=some_run_id"]
 
 
 def test_p1_1_no_deprecated_airflow_imports():
@@ -136,7 +138,7 @@ def test_p1_1_no_deprecated_airflow_imports():
     assert not violations, "deprecated Airflow 2 import(s) found:\n" + "\n".join(violations)
 
 
-def test_c1_run_without_run_id_fails_explicitly():
+def test_c1_run_without_run_id_fails_explicitly(monkeypatch):
     """C-1 (defence in depth): a run without an explicit scope must never
     silently resolve to None (which the Spark job would otherwise stringify
     to the literal "None").
@@ -144,9 +146,15 @@ def test_c1_run_without_run_id_fails_explicitly():
     P1-4: the `run_id` Param had to become optional (Asset-triggered runs
     carry no conf), so the guard lives in resolve_source_run_ids: no
     triggering asset event and no `run_id` in the conf -> explicit failure.
-    The job keeps its own guard (exit code 2)."""
+    The job keeps its own guard (exit code 2).
+
+    P1-5 / C-2: resolve_source_run_ids first requires the `spark_default`
+    Connection, provided here so that the run-id guard is what fails."""
     from dags.local_read_file_dag import dag_instance
 
+    monkeypatch.setenv(
+        "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[*]"})
+    )
     resolve = dag_instance.get_task("resolve_source_run_ids").python_callable
     with pytest.raises(AirflowFailException, match="No source run_id"):
         resolve()
