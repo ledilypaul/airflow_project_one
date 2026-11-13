@@ -33,49 +33,49 @@ DAG tests (`tests/unit/dags/`) don't need a real Airflow metadata DB or schedule
 
 ### Running Airflow locally
 
-```bash
-export AIRFLOW_HOME="$(pwd)"
-export AIRFLOW__CORE__DAGS_FOLDER="$(pwd)/dags"
-uv run airflow db migrate
-uv run airflow standalone             # http://localhost:8080
-```
-
-`read_file_dag` runs `spark-submit` through `SparkSubmitOperator`, which needs a Spark Connection and a pool. Create both once per metadata DB (after `airflow db migrate`):
+The `Makefile` wraps the dev commands (`make` lists them). Quality targets mirror CI: `make check` = `uv lock --check`, then `make lint`, then `make test`.
 
 ```bash
-# Spark master for dev. Use --conn-host (or the JSON form below), not a URI:
-# `spark://local[*]` does not parse and the hook silently falls back to yarn.
-uv run airflow connections add spark_default --conn-type spark --conn-host 'local[*]'
-# or, without touching the DB:
-# export AIRFLOW_CONN_SPARK_DEFAULT='{"conn_type": "spark", "host": "local[*]"}'
-
-# Pools are versioned in deploy/airflow/pools.json (`spark`: 1 slot = Spark
-# applications run one at a time). Re-run after editing the file.
-uv run airflow pools import deploy/airflow/pools.json
+make db-up          # docker-compose Postgres on host port 5434 (+ Redis); checks the port first
+make airflow-init   # airflow db migrate + Connections spark_default/file_list_db + pools (idempotent)
+make airflow        # airflow standalone, http://localhost:8080
 ```
 
-- **Connection `spark_default`.** Its `host` is the `--master` (`local[*]`, `yarn`, `spark://host:7077`, `k8s://...`). The extras `deploy-mode`, `queue`, `namespace` and `spark-binary` (one of `spark-submit`, `spark2-submit`, `spark3-submit`, found on the worker's `PATH`) are optional. If the Connection is **missing**, the provider itself does not fail: it logs `Could not load connection string spark_default, defaulting to yarn` at INFO level and runs `spark-submit --master yarn`, which fails locally ("HADOOP_CONF_DIR or YARN_CONF_DIR must be set"). That is why `resolve_source_run_ids` checks the Connection first and fails the run with an explicit `AirflowFailException` when it is missing (it logs the Connection's `host` otherwise). `airflow connections create-default-connections` also creates a `spark_default` with `host=yarn` and `queue=root.default`. If you ran it, replace that Connection: `airflow connections delete spark_default`, then the `add` above (`add` refuses an existing `conn_id`). Outside `ENV=prod`, `utils/spark_session.py` forces `master("local[*]")` in the job itself, so in dev the Connection's master only decides how `spark-submit` launches the driver.
+The Airflow targets export `AIRFLOW_HOME=<project root>`, `AIRFLOW__CORE__DAGS_FOLDER=<project root>/dags` and `AIRFLOW__CORE__LOAD_EXAMPLES=False`. `AIRFLOW_HOME` must be the project root: when it is unset, Airflow silently reads `~/airflow/airflow.cfg`, i.e. another metadata DB and other settings. The metadata DB is then the SQLite file `./airflow.db` (gitignored), while the `file_list` table stays in the docker-compose Postgres. Running `airflow` by hand needs the same three variables. Both are overridable for a throwaway setup: `make airflow-init AIRFLOW_HOME=/tmp/af ENV_FILE=/tmp/dev.env`. The Makefile also drops `VIRTUAL_ENV` (an activated pyenv virtualenv makes `uv` warn that it does not match `.venv`).
+
+`make airflow-init` runs `scripts/dev_airflow_connections.py`, which creates or updates (never duplicates) two Connections:
+- `file_list_db` (postgres) from `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME`, read from `.env` (or `--env-file` / `ENV_FILE`; a variable already exported in the shell wins, as with `load_dotenv()`). The password goes through Airflow's ORM, never on a command line, and is never printed.
+- `spark_default` (spark, host `local[*]`). It must be created with that conn type and host, not as a URI: `spark://local[*]` does not parse. Without touching the DB, `AIRFLOW_CONN_SPARK_DEFAULT='{"conn_type": "spark", "host": "local[*]"}'` also works.
+
+Then it imports the pools versioned in `deploy/airflow/pools.json` (re-run it after editing the file). `read_file_dag` needs both the Spark Connection and the `spark` pool:
+
+- **Connection `spark_default`.** Its `host` is the `--master` (`local[*]`, `yarn`, `spark://host:7077`, `k8s://...`). The extras `deploy-mode`, `queue`, `namespace` and `spark-binary` (one of `spark-submit`, `spark2-submit`, `spark3-submit`, found on the worker's `PATH`) are optional. If the Connection is **missing**, the provider itself does not fail: it logs `Could not load connection string spark_default, defaulting to yarn` at INFO level and runs `spark-submit --master yarn`, which fails locally ("HADOOP_CONF_DIR or YARN_CONF_DIR must be set"). That is why `resolve_source_run_ids` checks the Connection first and fails the run with an explicit `AirflowFailException` when it is missing (it logs the Connection's `host` otherwise). `airflow connections create-default-connections` also creates a `spark_default` with `host=yarn` and `queue=root.default`: `make airflow-init` overwrites it (host `local[*]`, extras cleared). Outside `ENV=prod`, `utils/spark_session.py` forces `master("local[*]")` in the job itself, so in dev the Connection's master only decides how `spark-submit` launches the driver.
 - **Pool `spark`.** One slot locally: each `local[*]` application uses every core of the machine and starts its own driver JVM. Two at once just compete for the same CPU and RAM. Raise it to the number of applications your cluster can run side by side. A **missing pool is silent**: the DAG still parses (no DAG warning in the UI), `resolve_source_run_ids` succeeds, then `spark_read_files` stays in `scheduled` forever. The only traces are a scheduler log line (`Tasks using non-existent pool 'spark' will not be scheduled`) and the task instance's dependency details. The run stays stuck until `dagrun_timeout` (6 hours) fails it, and with `max_active_runs=1` the next `file_list` events pile up behind it meanwhile. `dag.test()` does not check pools: it is not blocked.
 - `spark-submit` must be on the worker's `PATH` (it is with `uv run`: PySpark ships it in `.venv/bin`).
 
-Airflow ≥3.0 uses the Simple Auth Manager by default, which has no `airflow users create`. To get FAB-based user management, install `apache-airflow-providers-fab` and set `auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager` under `[core]` in `airflow.cfg`.
+Airflow ≥3.0 uses the Simple Auth Manager by default, which has no `airflow users create` (`airflow standalone` prints the generated admin password and stores it in `simple_auth_manager_passwords.json.generated`). To get FAB-based user management, install `apache-airflow-providers-fab` and set `auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager` under `[core]` in `airflow.cfg`.
 
 ### Running the Spark job standalone (outside Airflow)
 
 ```bash
-uv run spark-submit pipeline/jobs/read_files_job.py
+make spark-job RUN_ID=<dag_run_id of a list_files_dag run>
+# = uv run spark-submit pipeline/jobs/read_files_job.py --run-id=<id>
 ```
+
+`--run-id` is required: the job reads the `file_list` rows of that run (exit code 3 when there are none). It connects through `.env` (`DB_*`), not through Airflow.
 
 ### Docker
 
 ```bash
-docker compose up -d   # starts only Postgres (host port 5433) and Redis — there is no Airflow service in the compose file yet
+make db-up     # docker compose up -d: Postgres on host port 5434, Redis on 6379
+make db-down   # docker compose down (keeps the postgres-data volume, no -v)
 ```
-In Airflow 3, `airflow db init` and `airflow webserver` no longer exist: use `airflow db migrate` and `airflow api-server`.
+
+The project's Postgres listens on host port **5434** (container `airflow_postgres`), so it can run next to another project's Postgres on 5433; set `DB_PORT=5434` in `.env`. `make db-up` first checks the port (`make db-port-check`): it fails, naming the container or process, if anything but `airflow_postgres` holds it. There is no Airflow service in the compose file yet. In Airflow 3, `airflow db init` and `airflow webserver` no longer exist: use `airflow db migrate` and `airflow api-server`.
 
 ### Database
 
-The `file_list` table (see `utils/SQL/script_tables.sql`) must exist in Postgres before running `list_files_dag`. `list_files_dag`'s insertion task (`insert_into_file_list`) goes through an Airflow Connection, `postgres_conn_id="file_list_db"` (create it via the Airflow UI/CLI before running the DAG), using `PostgresHook(...).get_sqlalchemy_engine()` built once per task run and reused for every file. `.env`/`DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT`/`DB_NAME` (`utils/db_connection.py`, `python-dotenv`) remain required for everything that does **not** go through Airflow: the Spark job (`pipeline/jobs/read_files_job.py`, which can run standalone without Airflow installed) and any standalone/script usage. `db_connection()` raises if any var is missing — there is no default/fallback — and caches one `Engine` per connection URL for the life of the process.
+The `file_list` table (see `utils/SQL/script_tables.sql`) must exist in Postgres before running `list_files_dag`. `list_files_dag`'s insertion task (`insert_into_file_list`) goes through the Airflow Connection `postgres_conn_id="file_list_db"` (created by `make airflow-init` from `.env`), using `PostgresHook(...).get_sqlalchemy_engine()` built once per task run and reused for every file. `.env`/`DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT`/`DB_NAME` (`utils/db_connection.py`, `python-dotenv`) remain required for everything that does **not** go through Airflow: the Spark job (`pipeline/jobs/read_files_job.py`, which can run standalone without Airflow installed) and any standalone/script usage. `db_connection()` raises if any var is missing — there is no default/fallback — and caches one `Engine` per connection URL for the life of the process.
 
 Set `ENV=prod` to switch Spark to cluster mode (YARN/K8s-managed master, adds the `spark-excel` package for xlsx support); otherwise Spark runs `local[*]` (see `utils/spark_session.py`).
 

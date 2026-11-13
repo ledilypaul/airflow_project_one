@@ -10,7 +10,15 @@ logs/*
 .env.*
 airflow.cfg
 airflow.db
+# SQLite side files of airflow.db (WAL/shared-memory while Airflow runs, rollback journal)
+airflow.db-*
 logs/
 *.generated
 .venv/
 simple_auth_manager_passwords.json.generated
+
+# Coverage (pytest-cov)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
