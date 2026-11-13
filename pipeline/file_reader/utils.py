@@ -1,43 +1,7 @@
-from pyspark.sql.types import (
-    ArrayType,
-    BooleanType,
-    DateType,
-    DoubleType,
-    FloatType,
-    IntegerType,
-    StringType,
-    TimestampType,
-)
+"""Réexportation, pour la compatibilité : les types de `reader.columns_type`
+vivent dans `pipeline/config/types.py` depuis P2-1 (C-7). Importer depuis
+`pipeline.config.types` dans le nouveau code."""
 
+from pipeline.config.types import SUPPORTED_COLUMN_TYPES, build_schema, get_spark_type
 
-def get_spark_type(col_type: str):
-    """
-    Mappe les types YAML vers les types Spark.
-
-    Args:
-        col_type (str): Type de colonne spécifié dans le fichier YAML (ex: "string", "int").
-
-    Returns:
-        pyspark.sql.types.DataType: Type de données Spark correspondant.
-
-    Raises:
-        ValueError: Si le type spécifié n'est pas reconnu.
-    """
-    type_mapping = {
-        "string": StringType(),
-        "int": IntegerType(),
-        "integer": IntegerType(),
-        "float": FloatType(),
-        "double": DoubleType(),
-        "boolean": BooleanType(),
-        "date": DateType(),
-        "timestamp": TimestampType(),
-        "array": ArrayType(StringType()),
-    }
-
-    normalized_type = col_type.strip().lower()
-
-    if normalized_type not in type_mapping:
-        raise ValueError(f"[get_spark_type] Type non reconnu dans YAML : '{col_type}'")
-
-    return type_mapping[normalized_type]
+__all__ = ["SUPPORTED_COLUMN_TYPES", "build_schema", "get_spark_type"]

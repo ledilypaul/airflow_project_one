@@ -21,9 +21,11 @@ paths:
 - Un nouveau format = un reader + une entrée dans `ReaderFactory` + un test.
 
 ## 2. Configuration
-- **Une seule forme** de config pour tous les readers. Tant que la migration n'est pas faite : quand tu touches un reader, vérifie quelle forme il lit (`reader.reader_options` vs `reader_options`) et teste les deux chemins (config dédiée et fallback `basic_reading_config.yaml`).
-- Tout type déclaré dans `columns_type` doit être supporté par `get_spark_type()` — un test doit construire le schéma de **chaque** YAML de `config/`.
-- Cible : config validée au chargement (Pydantic) et sélection par motif explicite, pas par sous-chaîne du nom de fichier.
+- **Une seule forme** de config pour tous les readers : le modèle Pydantic `SourceConfig` (`pipeline/config/models.py`, `source` / `reader` / `storage`, `extra="forbid"`), validé au chargement. Configs dédiées dans `config/sources/`, défauts par extension dans `config/defaults/`. Quand tu touches un reader, teste les deux chemins (config dédiée et défaut).
+- Sélection par motif explicite (`source.patterns`, fnmatch sur le nom du fichier, insensible à la casse) : une source dédiée décrit un format, ses motifs incluent donc l'extension. Deux sources dédiées qui correspondent au même fichier = erreur, jamais un choix arbitraire.
+- Les options du reader passent par une liste blanche propre au format (`pipeline/config/reader_options.py`) ; une option légitime refusée s'y ajoute avec sa source documentaire.
+- Tout type déclaré dans `columns_type` doit être supporté par `pipeline/config/types.py::get_spark_type()` (types atomiques uniquement : la source CSV de Spark refuse ARRAY, MAP et STRUCT). Le test paramétré de `tests/unit/config/` valide **chaque** YAML présent, et le test de lecture synthétique lit un vrai fichier avec chaque YAML csv/txt : une config qui se valide n'est pas forcément lisible.
+- `storage.mode` n'accepte que `overwrite` (idempotence) ; `append` est refusé.
 - Les options déclarées (ex. `encoding`) doivent être réellement transmises à Spark, sinon les retirer.
 
 ## 3. Performance
@@ -46,7 +48,7 @@ paths:
 - Connexion DB : une connexion/engine réutilisée, jamais une par ligne.
 
 ## 6. Tests
-- Fixture `SparkSession` partagée au scope `session`, `master("local[1]")`, UI désactivée.
+- Fixture `SparkSession` partagée au scope `session`, `master("local[1]")`, UI désactivée : `spark` dans `tests/unit/conftest.py`, à réutiliser plutôt que de redéfinir une session locale.
 - Fichiers de test minuscules générés dans `tmp_path`, jamais de dépendance à `data/`.
 - Chaque bug corrigé = un test de non-régression nommé d'après l'ID du backlog (`test_b1_fallback_config_without_source_key`).
 

@@ -1,0 +1,24 @@
+# Config de lecture dédiée (P2-1). Modèle : pipeline/config/models.py.
+source:
+  name: orders
+  format: csv
+  # Motifs fnmatch sur le nom du fichier, insensibles à la casse
+  # (repris de extractor_config.yaml : include_files "orders_*"). Limité aux
+  # .csv, comme le format déclaré ci-dessus.
+  patterns: ["orders_*.csv"]
+
+reader:
+  # Options Spark CSV, passées telles quelles (liste blanche :
+  # pipeline/config/reader_options.py).
+  options:
+    header: true
+    inferSchema: true
+    delimiter: ","
+    encoding: "UTF-8"
+
+storage:
+  table_name: orders
+  format: parquet
+  mode: overwrite
+  raw_path: "raw/"
+  staging_path: "staging/"

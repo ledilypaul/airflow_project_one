@@ -367,3 +367,75 @@ def test_c4_cli_accepts_run_id_argument_past_argparse():
     assert "unrecognized arguments" not in result.stderr
     assert "the following arguments are required" not in result.stderr
     assert "usage:" not in result.stderr.lower() or result.returncode != 2
+
+
+# ---------------------------------------------------------------------------
+# P2-1 / C-2 — an invalid reading config fails before Spark, with exit code 5
+# ---------------------------------------------------------------------------
+
+
+def test_p2_1_invalid_config_fails_before_spark_and_marks_rows_failed(tmp_path, monkeypatch):
+    """C-2: the registry used to be loaded by BaseFileReader, after
+    get_spark_session: a ConfigError then crossed main() uncaught, exited 1
+    (the code of "at least one file failed"), left every row `pending` and
+    had started Spark for nothing.
+
+    It is now loaded before Spark: on ConfigError every row of the run is
+    marked `failed` with the error, Spark never starts, and the job exits
+    with its own code, 5 (a deterministic config error, not a file error)."""
+    from pipeline.jobs import read_files_job
+
+    config_root = tmp_path / "config"
+    (config_root / "defaults").mkdir(parents=True)
+    (config_root / "defaults" / "broken.yaml").write_text(
+        "source:\n"
+        "  name: broken\n"
+        "  format: csv\n"
+        "  patterns: ['*.csv']\n"
+        "reader:\n"
+        "  options:\n"
+        "    infer_schema: true\n"
+    )
+    monkeypatch.setattr(read_files_job, "CONFIG_ROOT", config_root)
+
+    with (
+        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
+        patch("pipeline.jobs.read_files_job.BaseFileReader") as mock_reader,
+        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(run_id=RUN_ID)
+
+    assert exc.value.code == read_files_job.EXIT_INVALID_CONFIG == 5
+    mock_spark.assert_not_called()
+    mock_reader.assert_not_called()
+
+    assert [c.args for c in mock_update.call_args_list] == [(1, "failed"), (2, "failed")]
+    for update in mock_update.call_args_list:
+        message = update.kwargs["error_message"]
+        assert "broken.yaml" in message
+        assert "reader.options.infer_schema" in message
+
+
+def test_p2_1_valid_config_registry_is_handed_to_the_reader():
+    """C-2: the registry loaded before Spark is the one BaseFileReader uses
+    (no second load of the YAML files)."""
+    from pipeline.config import SourceRegistry
+
+    mock_spark = MagicMock()
+    with (
+        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
+        patch(
+            "pipeline.jobs.read_files_job.BaseFileReader", return_value=_mock_reader()
+        ) as mock_reader_cls,
+        patch("pipeline.jobs.read_files_job.update_file_status"),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(run_id=RUN_ID)
+
+    assert exc.value.code == 0
+    mock_reader_cls.assert_called_once()
+    assert mock_reader_cls.call_args.args == (mock_spark,)
+    assert isinstance(mock_reader_cls.call_args.kwargs["registry"], SourceRegistry)

@@ -1,12 +1,7 @@
 import pytest
-from pyspark.sql import SparkSession
 
+from pipeline.config import SourceConfig
 from pipeline.file_reader.parquet_reader import ParquetReader
-
-
-@pytest.fixture(scope="module")
-def spark():
-    return SparkSession.builder.appName("pytest").master("local[*]").getOrCreate()
 
 
 @pytest.fixture
@@ -25,5 +20,8 @@ def test_parquet_file(tmp_path, spark):
 
 
 def test_parquet_reader(parquet_reader, test_parquet_file):
-    result = parquet_reader.read(str(test_parquet_file), {})
+    config = SourceConfig.model_validate(
+        {"source": {"name": "test", "format": "parquet", "patterns": ["*.parquet"]}}
+    )
+    result = parquet_reader.read(str(test_parquet_file), config)
     assert result.count() == 2

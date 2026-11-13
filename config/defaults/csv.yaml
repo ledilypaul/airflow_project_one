@@ -1,0 +1,12 @@
+# Défaut par extension (P2-1) : utilisé quand aucune config de
+# config/sources/ ne correspond au fichier. Modèle : pipeline/config/models.py.
+source:
+  name: default_csv
+  format: csv
+  patterns: ["*.csv"]
+
+reader:
+  options:
+    header: true
+    inferSchema: true
+    delimiter: ","

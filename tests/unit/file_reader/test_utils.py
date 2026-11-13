@@ -1,14 +1,16 @@
-# tests/unit/utils/test_functions_utils.py
+"""`pipeline.file_reader.utils` is kept as a re-export of `pipeline.config.types`
+(P2-1 / C-7): these tests go through the old import path on purpose.
 
-from pathlib import Path
+The B2 regression tests (`genre_list: array` crashed every IMDB file) used to
+live here and only checked that the schema *built*. They are merged into
+tests/unit/file_reader/test_p2_1_readers.py::test_p2_1_every_repo_config_reads_a_synthetic_file,
+which *reads* a file with every csv/txt config of the repository (C-1).
+"""
 
 import pytest
-import yaml
-from pyspark.sql.types import ArrayType, BooleanType, DateType, FloatType, IntegerType, StringType
+from pyspark.sql.types import BooleanType, DateType, FloatType, IntegerType, StringType
 
-from pipeline.file_reader.utils import get_spark_type
-
-CONFIG_DIR = Path(__file__).resolve().parent.parent.parent.parent / "config"
+from pipeline.file_reader.utils import build_schema, get_spark_type
 
 
 def test_get_spark_type_valid():
@@ -28,42 +30,17 @@ def test_get_spark_type_invalid():
         get_spark_type("unknown_type")
 
 
-def test_b2_array_type_is_supported():
-    """
-    Regression test for B2 (docs/audit/2026-11-05-baseline.md):
-    config/imdb_config.yaml declares `genre_list: array`, which used to
-    raise `ValueError: Type non reconnu dans YAML : 'array'` because
-    `get_spark_type()` had no mapping for it.
-    """
-    spark_type = get_spark_type("array")
-    assert spark_type == ArrayType(StringType())
+def test_p2_1_array_type_is_not_supported():
+    """C-1: `columns_type` only applies to csv/txt, and Spark's CSV source only
+    reads atomic types (an ARRAY column fails the read with
+    UNSUPPORTED_DATA_TYPE_FOR_DATASOURCE). `array` is therefore usable
+    nowhere: read the column as `string`, split it in a later transformation."""
+    with pytest.raises(ValueError, match="array"):
+        get_spark_type("array")
 
 
-def _iter_columns_type_blocks(config):
-    """Yield every `columns_type` mapping nested anywhere in a config dict."""
-    if isinstance(config, dict):
-        if isinstance(config.get("columns_type"), dict):
-            yield config["columns_type"]
-        for value in config.values():
-            yield from _iter_columns_type_blocks(value)
+def test_p2_1_file_reader_utils_reexports_the_config_types():
+    from pipeline.config import types
 
-
-def test_b2_every_config_yaml_schema_builds():
-    """
-    Regression test for B2: every `columns_type` declared in config/*.yaml
-    (not just imdb_config.yaml) must build a Spark schema without raising.
-    """
-    config_files = sorted(CONFIG_DIR.glob("*.yaml"))
-    assert config_files, f"no config found in {CONFIG_DIR}"
-
-    checked_any_columns_type = False
-    for config_file in config_files:
-        config = yaml.safe_load(config_file.read_text())
-        for columns_type in _iter_columns_type_blocks(config):
-            if not columns_type:
-                continue
-            checked_any_columns_type = True
-            for _column_name, col_type in columns_type.items():
-                get_spark_type(col_type)  # must not raise
-
-    assert checked_any_columns_type, "no non-empty columns_type block found to exercise B2"
+    assert get_spark_type is types.get_spark_type
+    assert build_schema is types.build_schema
