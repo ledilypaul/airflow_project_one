@@ -1,0 +1,7 @@
+{
+  "spark": {
+    "slots": 1,
+    "description": "Spark applications (spark-submit) of read_file_dag, see CLAUDE.md",
+    "include_deferred": false
+  }
+}
