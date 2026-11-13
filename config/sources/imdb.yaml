@@ -84,3 +84,22 @@ storage:
   mode: overwrite
   raw_path: "raw/"
   staging_path: "staging/"
+
+# Contrôles qualité (P2-3, modèle : pipeline/config/quality.py), exécutés sur
+# les données nettoyées pour le staging. EXEMPLE CONSERVATEUR, À AJUSTER :
+# seule l'identité du film est contrôlée, aucune règle métier n'est supposée.
+# Un contrôle `error` (défaut) en échec, ou qui n'a pas pu s'exécuter : raw
+# écrit, staging non écrit (la partition staging d'une tentative précédente
+# est supprimée), fichier `failed`. `severity: warn` : consigné seulement,
+# staging écrit, même si le contrôle n'a pas pu s'exécuter (statut `error`).
+# Résultats de chaque exécution : <LAKE_ROOT>/quality/movies/.
+# Introduits en warn pour un premier run réel ; passer en error une fois les
+# résultats de quality/movies vérifiés.
+quality:
+  checks:
+    - type: not_null
+      column: id
+      severity: warn
+    - type: unique
+      columns: [id]
+      severity: warn

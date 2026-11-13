@@ -34,3 +34,13 @@ storage:
   mode: overwrite
   raw_path: "raw/"
   staging_path: "staging/"
+
+# Contrôles qualité (P2-3, modèle : pipeline/config/quality.py). EXEMPLE
+# CONSERVATEUR, À AJUSTER : le schéma réel des commandes n'est pas connu, seul
+# un fichier vide est signalé, en avertissement (staging écrit quand même).
+# Résultats de chaque exécution : <LAKE_ROOT>/quality/orders/.
+quality:
+  checks:
+    - type: row_count
+      min: 1
+      severity: warn

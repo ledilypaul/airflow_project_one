@@ -26,6 +26,8 @@
   exactement sa partition ; les autres fichiers et runs ne sont pas touchés.
   Une réécriture à 0 ligne ne contient aucune partition, donc n'en remplace
   aucune : le writer supprime alors lui-même celle du (run, fichier) (C-2).
+  `delete_partition` expose cette suppression (P2-3 : le job retire ainsi la
+  partition staging d'un fichier dont un contrôle qualité bloquant échoue).
   `append` reste possible, mais seulement si l'appelant le demande.
 - Contenu d'une table : un instantané par listing (C-4). Chaque run de
   listing réécrit chacun de ses fichiers sous son propre `lake_run_id` ;
@@ -51,7 +53,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from pyspark.sql import DataFrame, Observation, Window
+from pyspark.sql import DataFrame, Observation, SparkSession, Window
 from pyspark.sql import functions as F
 
 from utils.path_utils import lake_relative_parts, normalize_spark_path
@@ -206,9 +208,7 @@ class ParquetLakeWriter(BaseWriter):
         """
         if mode not in WRITE_MODES:
             raise ValueError(f"mode {mode!r} non supporté : {' ou '.join(WRITE_MODES)}")
-        for name, value in (("run_id", run_id), ("source_file", source_file)):
-            if not isinstance(value, str) or not value:
-                raise ValueError(f"{name} vide ou absent ({value!r}) : la partition serait ambiguë")
+        _check_partition_values(run_id, source_file)
         if not isinstance(file_id, int) or isinstance(file_id, bool) or file_id < 0:
             raise ValueError(f"file_id doit être un entier >= 0 (file_list.id), pas {file_id!r}")
         # Spark compare les noms de colonnes sans tenir compte de la casse.
@@ -242,7 +242,7 @@ class ParquetLakeWriter(BaseWriter):
         elif mode == "overwrite":
             # C-2 : aucune ligne, donc aucune partition remplacée ; celle d'une
             # tentative précédente du même (run, fichier) resterait en place.
-            removed = _delete_partition(data, location, run_id, source_file)
+            removed = _delete_partition(data.sparkSession, location, run_id, source_file)
             log.warning(
                 "0 row written to %s for %s=%r, %s=%r: previous partition %s",
                 location,
@@ -263,8 +263,34 @@ class ParquetLakeWriter(BaseWriter):
             )
         return rows
 
+    def delete_partition(
+        self, spark: SparkSession, target: str, *, run_id: str, source_file: str
+    ) -> bool:
+        """Supprime la partition (`run_id`, `source_file`) de la table `target`
+        (relative au lake), si elle existe ; les autres ne sont pas touchées.
 
-def _delete_partition(data: DataFrame, location: str, run_id: str, source_file: str) -> bool:
+        Utilisée par le job quand un contrôle qualité bloquant échoue (P2-3) :
+        la partition staging qu'une tentative précédente a pu écrire ne doit
+        pas rester comme un état valide.
+
+        Returns:
+            True si la partition existait.
+
+        Raises:
+            ValueError: `target` sortirait du lake, ou `run_id`/`source_file`
+                vide (le chemin désignerait le run entier ou la table).
+        """
+        _check_partition_values(run_id, source_file)
+        return _delete_partition(spark, self.location(target), run_id, source_file)
+
+
+def _check_partition_values(run_id: str, source_file: str) -> None:
+    for name, value in (("run_id", run_id), ("source_file", source_file)):
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"{name} vide ou absent ({value!r}) : la partition serait ambiguë")
+
+
+def _delete_partition(spark: SparkSession, location: str, run_id: str, source_file: str) -> bool:
     """Supprime la partition (`run_id`, `source_file`) de la table `location`
     par l'API Hadoop FileSystem de la session (même FS que l'écriture :
     local, HDFS, S3A...). Le chemin est construit avec l'échappement de
@@ -275,7 +301,6 @@ def _delete_partition(data: DataFrame, location: str, run_id: str, source_file: 
     fichiers d'un run sont écrits un par un par le même job, aucun autre ne
     peut s'y ajouter entre-temps). Renvoie True si la partition existait.
     """
-    spark = data.sparkSession
     jvm = spark._jvm
     escape = jvm.org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils.escapePathName
     hadoop_path = jvm.org.apache.hadoop.fs.Path
