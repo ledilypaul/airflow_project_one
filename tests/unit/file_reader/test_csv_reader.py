@@ -3,6 +3,9 @@ import pytest
 from pipeline.config import SourceConfig
 from pipeline.file_reader.csv_reader import CSVReader
 
+# P2-2: `storage` is mandatory in every reading config; these tests only read.
+STORAGE = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
+
 
 @pytest.fixture
 def csv_reader(spark):
@@ -21,7 +24,11 @@ def _csv_config(options, columns_type=None) -> SourceConfig:
     if columns_type is not None:
         reader["columns_type"] = columns_type
     return SourceConfig.model_validate(
-        {"source": {"name": "test", "format": "csv", "patterns": ["*.csv"]}, "reader": reader}
+        {
+            "source": {"name": "test", "format": "csv", "patterns": ["*.csv"]},
+            "reader": reader,
+            "storage": STORAGE,
+        }
     )
 
 

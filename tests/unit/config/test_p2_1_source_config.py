@@ -47,13 +47,17 @@ REPO_SOURCE_FILES = sorted((REPO_CONFIG_ROOT / "sources").glob("*.yaml"))
 REPO_DEFAULT_FILES = sorted((REPO_CONFIG_ROOT / "defaults").glob("*.yaml"))
 
 
+# P2-2: `storage` is mandatory; raw zone only unless a test says otherwise.
+RAW_ONLY_STORAGE = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
+
+
 def _config(
     name="orders",
     fmt="csv",
     patterns=("orders_*",),
     options=None,
     columns_type=None,
-    storage=None,
+    storage=RAW_ONLY_STORAGE,
 ) -> dict:
     config = {
         "source": {"name": name, "format": fmt, "patterns": list(patterns)},
@@ -61,8 +65,7 @@ def _config(
     }
     if columns_type is not None:
         config["reader"]["columns_type"] = columns_type
-    if storage is not None:
-        config["storage"] = storage
+    config["storage"] = storage
     return config
 
 
@@ -96,9 +99,8 @@ def test_p2_1_every_reading_config_loads_and_validates(config_file):
     if config.reader.columns_type:
         schema = build_schema(config.reader.columns_type)
         assert [f.name for f in schema.fields] == list(config.reader.columns_type)
-    # Idempotence: whatever declares a storage section overwrites.
-    if config.storage is not None:
-        assert config.storage.mode == "overwrite"
+    # Idempotence: every config overwrites (storage is mandatory since P2-2).
+    assert config.storage.mode == "overwrite"
 
 
 def test_p2_1_default_config_root_is_resolved_from_the_code_not_the_cwd(monkeypatch, tmp_path):

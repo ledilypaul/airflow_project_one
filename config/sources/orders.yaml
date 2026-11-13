@@ -16,6 +16,18 @@ reader:
     delimiter: ","
     encoding: "UTF-8"
 
+# Écriture (P2-2), sous LAKE_ROOT : <raw_path><table>/ reçoit le fichier tel
+# qu'il a été lu, <staging_path><table>/ le même après retrait des lignes
+# entièrement vides et des doublons exacts. Sans staging_path : raw seulement.
+# Aucune table ne peut être imbriquée dans une autre (raw/staging de cette
+# source ou tables des autres configs), casse ignorée.
+# Partitions (lake_run_id, lake_source_file), réécrites à l'identique par un
+# retry. Un instantané par listing : chaque listing réécrit le fichier sous
+# son propre lake_run_id. État courant d'une table : pour chaque
+# lake_source_file, la partition du plus grand lake_file_id (= file_list.id,
+# le listing le plus récent), voir latest_snapshot dans
+# storage/parquet_lake_writer.py. Pas « la dernière écriture gagne » :
+# relancer un ancien run réécrit sa partition sans la rendre courante.
 storage:
   table_name: orders
   format: parquet

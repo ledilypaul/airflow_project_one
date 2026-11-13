@@ -20,6 +20,10 @@ from pipeline.file_reader.parquet_reader import ParquetReader
 REPO_CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "config"
 
 
+# P2-2: `storage` is mandatory in every reading config; these tests only read.
+STORAGE = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
+
+
 def _declared_format(config_file: Path) -> str | None:
     """`source.format` read without validation, only to pick the files to
     parametrize on: an invalid YAML must fail its own test, not the collection."""
@@ -59,6 +63,7 @@ def _source(fmt="csv", options=None, columns_type=None, name="test", patterns=("
         {
             "source": {"name": name, "format": fmt, "patterns": list(patterns)},
             "reader": reader,
+            "storage": STORAGE,
         }
     )
 
@@ -162,6 +167,7 @@ def config_root(tmp_path):
                     "options": {"header": True, "delimiter": ";"},
                     "columns_type": {"id": "int", "amount": "double"},
                 },
+                "storage": STORAGE,
             },
             # Keep the YAML order: columns_type is positional.
             sort_keys=False,
@@ -172,6 +178,7 @@ def config_root(tmp_path):
             {
                 "source": {"name": "default_csv", "format": "csv", "patterns": ["*.csv"]},
                 "reader": {"options": {"header": True, "inferSchema": False}},
+                "storage": STORAGE,
             }
         )
     )

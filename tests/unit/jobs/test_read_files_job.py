@@ -6,7 +6,7 @@ All external dependencies (DB, Spark) are mocked.
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -22,6 +22,19 @@ SAMPLE_FILES = [
     {"id": 1, "file_name": "orders.csv", "file_path": "/data/orders.csv", "status": "pending"},
     {"id": 2, "file_name": "imdb.parquet", "file_path": "/data/imdb.parquet", "status": "pending"},
 ]
+
+
+@pytest.fixture(autouse=True)
+def lake(monkeypatch, tmp_path):
+    """P2-2: main() now writes every file read to the lake. These tests mock
+    the reader (and Spark): replace the write with a recorder, and point
+    LAKE_ROOT at a temporary directory in case anything slips through.
+    The real writes are covered by test_p2_2_lake_zones.py and
+    tests/unit/storage/test_p2_2_parquet_lake_writer.py."""
+    monkeypatch.setenv("LAKE_ROOT", str(tmp_path / "lake"))
+    write = MagicMock(return_value={"raw": 2})
+    monkeypatch.setattr("pipeline.jobs.read_files_job.write_to_lake", write)
+    return write
 
 
 def _mock_reader(side_effects=None):
@@ -80,10 +93,12 @@ def test_main_processes_all_files():
 
         assert exc.value.code == 0
         assert mock_reader.read_file.call_count == 2
-        mock_reader.read_file.assert_any_call("/data/orders.csv")
-        mock_reader.read_file.assert_any_call("/data/imdb.parquet")
+        config = mock_reader.get_config.return_value
+        mock_reader.read_file.assert_any_call("/data/orders.csv", config=config)
+        mock_reader.read_file.assert_any_call("/data/imdb.parquet", config=config)
         mock_spark.stop.assert_called_once()
-        assert mock_update.call_count == 2
+        # P2-2 / C-5: `pending` (reset before the write), then `processed`.
+        assert mock_update.call_count == 4
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +247,8 @@ def test_p1_3_exit_code_nonzero_on_any_failure():
 def test_p1_3_rerun_same_run_id_no_duplicates():
     """Rerunning main() twice with the same run_id/rows must only UPDATE
     (never INSERT) and must not accumulate calls across runs: 2 files ->
-    2 update_file_status calls per run, every time."""
+    4 update_file_status calls per run (P2-2 / C-5: `pending` before the
+    write, then `processed`), every time."""
     mock_spark = MagicMock()
 
     for _ in range(2):
@@ -246,7 +262,7 @@ def test_p1_3_rerun_same_run_id_no_duplicates():
             with pytest.raises(SystemExit):
                 main(run_id=RUN_ID)
 
-            assert mock_update.call_count == 2
+            assert mock_update.call_count == 4
 
 
 def test_c2_read_files_job_never_inserts_rows():
@@ -395,6 +411,10 @@ def test_p2_1_invalid_config_fails_before_spark_and_marks_rows_failed(tmp_path, 
         "reader:\n"
         "  options:\n"
         "    infer_schema: true\n"
+        "storage:\n"
+        "  format: parquet\n"
+        "  mode: overwrite\n"
+        "  raw_path: raw/\n"
     )
     monkeypatch.setattr(read_files_job, "CONFIG_ROOT", config_root)
 
@@ -439,3 +459,178 @@ def test_p2_1_valid_config_registry_is_handed_to_the_reader():
     mock_reader_cls.assert_called_once()
     assert mock_reader_cls.call_args.args == (mock_spark,)
     assert isinstance(mock_reader_cls.call_args.kwargs["registry"], SourceRegistry)
+
+
+# ---------------------------------------------------------------------------
+# P2-2 — the job writes what it reads (raw, then staging), then the status
+# ---------------------------------------------------------------------------
+
+
+def _run_main(files, reader, update):
+    with (
+        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=files),
+        patch("pipeline.jobs.read_files_job.get_spark_session", return_value=MagicMock()),
+        patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=reader),
+        patch("pipeline.jobs.read_files_job.update_file_status", update),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(run_id=RUN_ID)
+    return exc.value.code
+
+
+def test_p2_2_writes_each_file_read_with_its_config_run_id_and_file_name(lake):
+    reader = _mock_reader()
+    code = _run_main(SAMPLE_FILES, reader, MagicMock())
+
+    assert code == 0
+    assert lake.call_count == 2
+    first = lake.call_args_list[0]
+    writer, data, config = first.args
+    assert writer.location("raw/x").endswith("/lake/raw/x")
+    assert data is reader.read_file.return_value
+    assert config is reader.get_config.return_value
+    reader.get_config.assert_any_call("/data/orders.csv")
+    assert first.kwargs == {"run_id": RUN_ID, "source_file": "orders.csv", "file_id": 1}
+    assert lake.call_args_list[1].kwargs["source_file"] == "imdb.parquet"
+    assert lake.call_args_list[1].kwargs["file_id"] == 2
+
+
+def test_p2_2_status_reset_before_write(lake):
+    """C-5: a row already `processed` by a previous attempt is reset to
+    `pending` (error cleared) right before its write: if the driver dies
+    while the partition is being replaced (deleted, then renamed), the row
+    no longer claims a partition that may be gone. `processed` comes only
+    after every write of the file."""
+    events = []
+    lake.side_effect = lambda *a, **k: events.append(("write", k["source_file"])) or {"raw": 1}
+    update = MagicMock(
+        side_effect=lambda file_id, status, **kw: events.append((status, file_id, kw))
+    )
+    files = [{**f, "status": "processed"} for f in SAMPLE_FILES]
+
+    _run_main(files, _mock_reader(), update)
+
+    assert events == [
+        ("pending", 1, {"error_message": None}),
+        ("write", "orders.csv"),
+        ("processed", 1, {}),
+        ("pending", 2, {"error_message": None}),
+        ("write", "imdb.parquet"),
+        ("processed", 2, {}),
+    ]
+
+
+def test_p2_2_config_resolved_once_and_reused_for_read_and_write(lake):
+    """C-8: one `get_config` per file; the same config is read with and written with."""
+    reader = _mock_reader()
+    configs = [MagicMock(name="orders_config"), MagicMock(name="imdb_config")]
+    reader.get_config.side_effect = configs
+
+    _run_main(SAMPLE_FILES, reader, MagicMock())
+
+    assert reader.get_config.call_args_list == [
+        call("/data/orders.csv"),
+        call("/data/imdb.parquet"),
+    ]
+    assert reader.read_file.call_args_list == [
+        call("/data/orders.csv", config=configs[0]),
+        call("/data/imdb.parquet", config=configs[1]),
+    ]
+    assert [c.args[2] for c in lake.call_args_list] == configs
+
+
+def test_p2_2_write_failure_marks_failed_and_continues(lake):
+    files = SAMPLE_FILES + [
+        {"id": 3, "file_name": "c.csv", "file_path": "/data/c.csv", "status": "pending"}
+    ]
+    lake.side_effect = [{"raw": 1}, RuntimeError("staging write failed: disk full"), {"raw": 1}]
+    update = MagicMock()
+
+    code = _run_main(files, _mock_reader(), update)
+
+    assert code == 1
+    assert lake.call_count == 3
+    assert update.call_args_list == [
+        call(1, "pending", error_message=None),
+        call(1, "processed"),
+        call(2, "pending", error_message=None),
+        call(2, "failed", error_message="staging write failed: disk full"),
+        call(3, "pending", error_message=None),
+        call(3, "processed"),
+    ]
+
+
+def test_p2_2_read_failure_writes_nothing_for_that_file(lake):
+    reader = _mock_reader(side_effects=[Exception("corrupt"), MagicMock()])
+    _run_main(SAMPLE_FILES, reader, MagicMock())
+    assert [c.kwargs["source_file"] for c in lake.call_args_list] == ["imdb.parquet"]
+
+
+def test_p2_2_same_file_name_twice_in_a_run_fails_both_without_writing(lake):
+    """Partitions are keyed by (run id, file name): two files of one run with
+    the same name (two source directories) would overwrite each other."""
+    files = [
+        {"id": 1, "file_name": "orders_1.csv", "file_path": "/in/a/orders_1.csv"},
+        {"id": 2, "file_name": "orders_1.csv", "file_path": "/in/b/orders_1.csv"},
+        {"id": 3, "file_name": "orders_2.csv", "file_path": "/in/a/orders_2.csv"},
+    ]
+    update = MagicMock()
+    code = _run_main(files, _mock_reader(), update)
+
+    assert code == 1
+    assert [c.kwargs["source_file"] for c in lake.call_args_list] == ["orders_2.csv"]
+    assert update.call_args_list[2:] == [
+        call(3, "pending", error_message=None),
+        call(3, "processed"),
+    ]
+    for failed in update.call_args_list[:2]:
+        assert failed.args[1] == "failed"
+        assert "/in/a/orders_1.csv" in failed.kwargs["error_message"]
+        assert "/in/b/orders_1.csv" in failed.kwargs["error_message"]
+
+
+def test_p2_2_relative_lake_root_fails_before_spark_with_exit_5(monkeypatch, lake):
+    from pipeline.jobs import read_files_job
+
+    monkeypatch.setenv("LAKE_ROOT", "relative/lake")
+    with (
+        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
+        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(run_id=RUN_ID)
+
+    assert exc.value.code == read_files_job.EXIT_INVALID_CONFIG
+    mock_spark.assert_not_called()
+    lake.assert_not_called()
+    assert [c.args for c in mock_update.call_args_list] == [(1, "failed"), (2, "failed")]
+    assert all("LAKE_ROOT" in c.kwargs["error_message"] for c in mock_update.call_args_list)
+
+
+def test_p2_2_config_without_storage_fails_before_spark_with_exit_5(tmp_path, monkeypatch):
+    from pipeline.jobs import read_files_job
+
+    config_root = tmp_path / "config"
+    (config_root / "defaults").mkdir(parents=True)
+    (config_root / "defaults" / "csv.yaml").write_text(
+        "source:\n  name: default_csv\n  format: csv\n  patterns: ['*.csv']\n"
+    )
+    monkeypatch.setattr(read_files_job, "CONFIG_ROOT", config_root)
+
+    with (
+        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
+        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            main(run_id=RUN_ID)
+
+    assert exc.value.code == read_files_job.EXIT_INVALID_CONFIG
+    mock_spark.assert_not_called()
+    assert "storage" in mock_update.call_args_list[0].kwargs["error_message"]
+
+
+def test_p2_2_job_never_shows_dataframes():
+    """Skill §3: no `.show()` in production code (unbounded output)."""
+    assert ".show(" not in READ_FILES_JOB.read_text(encoding="utf-8")

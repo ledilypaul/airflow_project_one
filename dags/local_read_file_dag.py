@@ -31,6 +31,11 @@ enregistré au moins un fichier.
      dans le log du scheduler seulement), jusqu'à `dagrun_timeout`.
    - Ressources (mémoire, cœurs...) : pas dans le DAG, mais dans la
      Connection / `spark-defaults.conf` de chaque environnement.
+   - Sortie (P2-2) : le job écrit chaque fichier en Parquet partitionné sous
+     `LAKE_ROOT` (zones raw et staging, voir pipeline/jobs/read_files_job.py).
+     `LAKE_ROOT` n'est pas fixé ici : le job le lit dans l'environnement du
+     worker, hérité par `spark-submit` en mode local/client (en mode cluster,
+     le passer au driver par la conf Spark de l'environnement).
 3. `max_active_runs=1` : deux runs ne traitent jamais le même run source en
    parallèle ; les événements arrivés pendant un run sont regroupés dans le
    suivant.

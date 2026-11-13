@@ -7,3 +7,15 @@ source:
 
 reader:
   options: {}
+
+# Zone raw seulement (P2-2) : un fichier sans config dédiée est conservé tel
+# qu'il a été lu, rien n'est perdu en silence. Pas de zone staging : aucun
+# contrat de schéma, des fichiers sans rapport partagent cette table (une
+# partition (lake_run_id, lake_source_file) par run et par fichier ; une
+# lecture globale demande mergeSchema). Un instantané par listing ; état
+# courant : latest_snapshot (storage/parquet_lake_writer.py).
+storage:
+  table_name: default_parquet
+  format: parquet
+  mode: overwrite
+  raw_path: "raw/"
