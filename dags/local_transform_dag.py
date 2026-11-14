@@ -54,17 +54,31 @@ Third stage of the pipeline: list_files_dag -> `file_list` -> read_file_dag
   task (Airflow 3 workers parse the DAG file). dbt refuses a relative value
   of either (on-run-start hook, transform/macros/lake.sql).
 
+- Lineage (P2-5): the Cosmos producer reports, through the OpenLineage
+  provider, the datasets of its `dbt build` (openlineage-integration-common
+  reads dbt's artefacts). dbt names the staging zone by its DuckDB relation
+  (`duckdb://<DBT_DUCKDB_PATH>`, `<database>.lake_staging.<table>`), Spark by
+  its directory (`file`, `<LAKE_ROOT>/staging/<table>`): the graph would stop
+  at the lake. `lineage_lake_staging` (LakeStagingLineageOperator) emits the
+  link between the two names, one pair per `lake_staging` source of the
+  manifest whose staging directory exists (local lake). The link is
+  structural, not a proof that Spark wrote the table. It runs nothing, has
+  no upstream or downstream task, and its lineage never fails it.
+
 No project import here (pipeline/, utils/, storage/ pull pyspark and are not
 on the DAG processor's path, see test_p1_4_dags_parse_without_project_root_on_sys_path).
 """
 
+import json
 import logging
 import os
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
-from airflow.sdk import Asset, task
+from airflow.sdk import Asset, BaseOperator, task
 from cosmos import DbtDag, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
 from cosmos.constants import (
     PRODUCER_WATCHER_TASK_ID,
@@ -88,6 +102,13 @@ DEFAULT_DBT_DUCKDB_PATH = TRANSFORM_DIR / "warehouse.duckdb"
 # DuckDB: one writer per database file. Must exist (`make airflow-init`):
 # with a missing pool the scheduler leaves the tasks in `scheduled`.
 DBT_POOL = "dbt_duckdb"
+
+# P2-5: the dbt source (models/staging/_lake_staging__sources.yml) reading
+# `<LAKE_ROOT>/<STAGING_ZONE>/<identifier>/`, written by the Spark job
+# (`storage.staging_path: staging/` of config/sources/*.yaml).
+LAKE_STAGING_SOURCE = "lake_staging"
+STAGING_ZONE = "staging"
+LINEAGE_TASK_ID = "lineage_lake_staging"
 
 DEFAULT_ARGS = {
     "owner": "airflow",
@@ -122,6 +143,150 @@ def dbt_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
         "DBT_DUCKDB_PATH": value("DBT_DUCKDB_PATH", DEFAULT_DBT_DUCKDB_PATH),
         "DBT_SEND_ANONYMOUS_USAGE_STATS": "False",
     }
+
+
+# openlineage-spark 1.55.0, FilesystemDatasetUtils: object stores matched by
+# scheme prefix, with their canonical scheme (s3a/s3n -> s3, abfs -> abfss,
+# wasb -> wasbs). Everything else but `file` is generic.
+_OBJECT_STORES = (("s3", "s3"), ("gs", "gs"), ("abfs", "abfss"), ("wasb", "wasbs"))
+
+
+def spark_dataset(location: str) -> tuple[str, str]:
+    """OpenLineage (namespace, name) the Spark listener gives the directory
+    `location`, as FilesystemDatasetUtils.fromLocation (openlineage-spark
+    1.55.0) does, checked against it through py4j:
+
+    - path or `file:` URI: `file` + the path (no resolution here: the
+      caller resolves the lake root only, like the job);
+    - object store (`s3*`, `gs`, `abfs*`, `wasb*`): `<canonical
+      scheme>://<authority>` + the path without its leading slashes;
+    - any other scheme (`hdfs`, `dbfs`, `gcs`...): `<scheme>://<authority>`
+      (or `<scheme>` without authority) + the path, leading slash kept.
+    Trailing slashes are removed, an empty path is `/`.
+    """
+    parts = urlsplit(location)
+    scheme = parts.scheme.lower()
+    if not scheme or len(scheme) == 1 or scheme == "file":  # path, Windows drive, file:
+        path = parts.path if scheme == "file" else location
+        return "file", path.rstrip("/") or "/"
+    for prefix, canonical in _OBJECT_STORES:
+        if scheme.startswith(prefix):
+            name = parts.path.strip("/") or "/"
+            return f"{canonical}://{parts.netloc}", name
+    namespace = f"{scheme}://{parts.netloc}" if parts.netloc else scheme
+    return namespace, parts.path.rstrip("/") or "/"
+
+
+def duckdb_database(path: str) -> str:
+    """Database name dbt-duckdb 1.11 gives the file it opens
+    (DuckDBCredentials.path_derived_database_name): the first non-empty
+    dot-separated part of the file name (`warehouse.prod.duckdb` ->
+    `warehouse`, `.hidden.duckdb` -> `hidden`), `memory` for `:memory:`."""
+    if path == ":memory:":
+        return "memory"
+    base = os.path.basename(urlsplit(path).path)
+    return base.lstrip(".").split(".")[0]
+
+
+def lake_root_location(value: str) -> str:
+    """The lake root as the Spark job resolves it (resolve_lake_root /
+    normalize_spark_path, not imported here: they pull pyspark): a local
+    path is expanded and resolved (symlinks), a URI is kept as is. Only the
+    root is resolved; zones and tables are then joined as text."""
+    value = value.strip()
+    if urlsplit(value).scheme and len(urlsplit(value).scheme) > 1:
+        return value.rstrip("/")
+    return str(Path(value).expanduser().resolve())
+
+
+def lake_staging_lineage(
+    manifest: Mapping[str, Any], environ: Mapping[str, str]
+) -> list[tuple[tuple[str, str], tuple[str, str]]]:
+    """(Spark dataset, dbt dataset) of every `lake_staging` source of the dbt
+    manifest, in manifest order.
+
+    - Spark: the table directory `<LAKE_ROOT>/staging/<identifier>` (see
+      spark_dataset, lake_root_location);
+    - dbt: what openlineage-integration-common names a dbt-duckdb source:
+      namespace `duckdb://<DBT_DUCKDB_PATH>`, name
+      `<database>.<schema>.<identifier>`, the database being the one
+      dbt-duckdb derives from the file it opens at run time (not the one the
+      manifest was parsed with).
+
+    The link is structural (this dbt source reads that directory), not a
+    proof that Spark wrote it: for a local lake, only the staging tables
+    whose directory exists are linked. A remote lake is not listed.
+
+    `environ` is dbt's environment (dbt_env()): `LAKE_ROOT`, `DBT_DUCKDB_PATH`.
+    """
+    lake_root = lake_root_location(environ["LAKE_ROOT"])
+    warehouse = environ["DBT_DUCKDB_PATH"]
+    database = duckdb_database(warehouse)
+    pairs = []
+    for source in manifest.get("sources", {}).values():
+        if source.get("source_name") != LAKE_STAGING_SOURCE:
+            continue
+        identifier = source.get("identifier") or source["name"]
+        spark = spark_dataset(f"{lake_root}/{STAGING_ZONE}/{identifier}")
+        if spark[0] == "file" and not Path(spark[1]).is_dir():
+            continue
+        dbt = (f"duckdb://{warehouse}", f"{database}.{source['schema']}.{identifier}")
+        pairs.append((spark, dbt))
+    return pairs
+
+
+class LakeStagingLineageOperator(BaseOperator):
+    """OpenLineage link between the Spark staging tables and the dbt sources
+    that read them (P2-5). Runs nothing: its lineage is all it carries.
+
+    Inputs: the Spark names of the staging tables; outputs: the dbt names of
+    the `lake_staging` sources (see lake_staging_lineage: structural link,
+    local staging directories that exist only). Computed from the manifest
+    and dbt's environment when the provider asks (start and end of the
+    task), never raising: an unreadable manifest gives an empty lineage and
+    a warning.
+    """
+
+    ui_color = "#e8f4ea"
+
+    def __init__(
+        self, *, manifest_path: str, dbt_environment: Mapping[str, str], **kwargs: Any
+    ) -> None:
+        super().__init__(**kwargs)
+        self.manifest_path = str(manifest_path)
+        self.dbt_environment = dict(dbt_environment)
+
+    def execute(self, context: Any) -> None:
+        log.info(
+            "OpenLineage link between the Spark staging zone and the dbt `%s` sources "
+            "(nothing to run)",
+            LAKE_STAGING_SOURCE,
+        )
+
+    def _lineage(self) -> Any:
+        from airflow.providers.common.compat.openlineage.facet import Dataset
+        from airflow.providers.openlineage.extractors import OperatorLineage
+
+        try:
+            manifest = json.loads(Path(self.manifest_path).read_text(encoding="utf-8"))
+            pairs = lake_staging_lineage(manifest, self.dbt_environment)
+        except Exception:
+            log.warning(
+                "OpenLineage: no lake_staging link, cannot read %s (ignored)",
+                self.manifest_path,
+                exc_info=True,
+            )
+            return OperatorLineage()
+        return OperatorLineage(
+            inputs=[Dataset(namespace=ns, name=name) for (ns, name), _ in pairs],
+            outputs=[Dataset(namespace=ns, name=name) for _, (ns, name) in pairs],
+        )
+
+    def get_openlineage_facets_on_start(self) -> Any:
+        return self._lineage()
+
+    def get_openlineage_facets_on_complete(self, task_instance: Any) -> Any:
+        return self._lineage()
 
 
 def _newest_dbt_source() -> tuple[float, Path] | None:
@@ -193,6 +358,13 @@ transform_dag = DbtDag(
 )
 
 with transform_dag:
+    # P2-5: no upstream or downstream task (it never waits for dbt nor delays
+    # it), outside the DuckDB pool (it never opens the warehouse).
+    LakeStagingLineageOperator(
+        task_id=LINEAGE_TASK_ID,
+        manifest_path=str(DBT_MANIFEST),
+        dbt_environment=dbt_env(),
+    )
 
     @task(outlets=[DBT_MARTS_ASSET])
     def publish_dbt_marts() -> None:
@@ -206,6 +378,7 @@ with transform_dag:
     _leaves = [
         t
         for t in transform_dag.tasks
-        if not t.downstream_task_ids and t.task_id != PRODUCER_WATCHER_TASK_ID
+        if not t.downstream_task_ids
+        and t.task_id not in (PRODUCER_WATCHER_TASK_ID, LINEAGE_TASK_ID)
     ]
     _leaves >> publish_dbt_marts()

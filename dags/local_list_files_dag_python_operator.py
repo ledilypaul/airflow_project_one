@@ -106,6 +106,7 @@ def insert_files_to_db(**kwargs):
     from airflow.providers.postgres.hooks.postgres import PostgresHook
     from airflow.sdk.exceptions import AirflowSkipException
 
+    from utils.file_list_lineage import report_file_list_lineage
     from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
     ti = kwargs["ti"]
@@ -128,18 +129,21 @@ def insert_files_to_db(**kwargs):
 
     # Un seul engine construit pour toute la task, réutilisé pour chaque
     # fichier ci-dessous, plutôt qu'un PostgresHook/engine par ligne (M3).
-    engine = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
+    hook = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+    engine = hook.get_sqlalchemy_engine()
 
     # Fichiers traités sans erreur : insérés, ou déjà présents pour ce run
     # (retry : ON CONFLICT DO NOTHING n'insère rien mais ne lève pas).
     # Volontairement pas un rowcount SQL.
     inserted = 0
+    recorded = []
     for filepath in file_list:
         try:
             filename = os.path.basename(filepath)
             mod_time = datetime.fromtimestamp(os.path.getmtime(filepath))
             insert_into_file_list([filename, filepath, mod_time], dag_run_id=run_id, engine=engine)
             inserted += 1
+            recorded.append(filepath)
         except FileNotFoundError:
             # Fichier supprimé entre le list et l'insert : on skip et on log
             print(f"Fichier introuvable, skip: {filepath}")
@@ -154,6 +158,9 @@ def insert_files_to_db(**kwargs):
         raise AirflowSkipException(
             f"0/{len(file_list)} listed files could be recorded (all vanished), nothing to process"
         )
+    # P2-5 : lignage OpenLineage (fichiers enregistrés -> file_list), que le
+    # provider ne voit pas à travers l'engine SQLAlchemy. Ne lève jamais.
+    report_file_list_lineage(hook, role="output", source_files=recorded)
     print(f"{inserted}/{len(file_list)} fichiers enregistrés.")
     return inserted
 

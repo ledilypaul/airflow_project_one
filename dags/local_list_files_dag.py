@@ -58,6 +58,7 @@ def list_files_dag():
         from airflow.sdk import get_current_context
         from airflow.sdk.exceptions import AirflowSkipException
 
+        from utils.file_list_lineage import report_file_list_lineage
         from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
         # "Nothing to process" is not an error: skip (no red run, no
@@ -70,12 +71,14 @@ def list_files_dag():
 
         # One engine built once for the whole task, reused for every file
         # below, instead of one PostgresHook/engine per inserted row (M3).
-        engine = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
+        hook = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+        engine = hook.get_sqlalchemy_engine()
 
         # Files handled without error: inserted, or already present for this
         # run (retry: ON CONFLICT DO NOTHING inserts no new row but does not
         # raise). Not a SQL rowcount, on purpose.
         inserted = 0
+        recorded: list[str] = []
         for filepath in file_list:
             try:
                 filename = os.path.basename(filepath)
@@ -84,6 +87,7 @@ def list_files_dag():
                     [filename, filepath, mod_time], dag_run_id=run_id, engine=engine
                 )
                 inserted += 1
+                recorded.append(filepath)
             except FileNotFoundError:
                 log.warning("File not found, skipping: %s", filepath)
             except Exception as e:
@@ -97,6 +101,9 @@ def list_files_dag():
                 f"0/{len(file_list)} listed files could be recorded (all vanished), "
                 "nothing to process"
             )
+        # P2-5: OpenLineage cannot see SQL sent through the engine: declare
+        # the recorded files (inputs) and file_list (output). Never raises.
+        report_file_list_lineage(hook, role="output", source_files=recorded)
         log.info("%d/%d files recorded", inserted, len(file_list))
         return inserted
 

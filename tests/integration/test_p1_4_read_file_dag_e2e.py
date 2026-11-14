@@ -34,6 +34,12 @@ Never build the run id into a templated string (`@task.bash`, an f-string in
 injection from a manual run id. This test is the one that must catch it (the
 `{{ 7*7 }}` assertion).
 
+P2-5: OpenLineage is off for every run (the developer's shell variables are
+dropped), except in the lineage test, which turns it on with a `file`
+transport under pytest's tmp dir and checks that spark-submit receives the
+listener, its jar, its transport and the parent job info of the real task
+instance, and that the Airflow event of `spark_read_files` is that parent.
+
 Isolation: everything Airflow runs in a subprocess with its own AIRFLOW_HOME
 and SQLite metadata DB (migrated once per module) under pytest's tmp dir, so
 the in-process Airflow configuration of the other tests
@@ -144,13 +150,16 @@ DAG_TEST_SCRIPT = textwrap.dedent(
 def airflow_env(tmp_path_factory):
     """Environment of an isolated Airflow with a migrated SQLite metadata DB."""
     home = tmp_path_factory.mktemp("airflow_home")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("AIRFLOW")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("AIRFLOW", "OPENLINEAGE"))}
     env.update(
         AIRFLOW_HOME=str(home),
         AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=f"sqlite:///{home / 'airflow.db'}",
         AIRFLOW__CORE__DAGS_FOLDER=str(DAGS_FOLDER),
         AIRFLOW__CORE__LOAD_EXAMPLES="False",
         AIRFLOW__CORE__UNIT_TEST_MODE="True",
+        # P2-5: never any lineage event, unless a test turns it on.
+        AIRFLOW__OPENLINEAGE__DISABLED="True",
+        AIRFLOW__COSMOS__ENABLE_TELEMETRY="False",
     )
     subprocess.run(
         [sys.executable, "-m", "airflow", "db", "migrate"],
@@ -186,7 +195,15 @@ def fake_spark_submit(tmp_path):
 
 
 def _run_dag_test(
-    airflow_env, fake_spark_submit, tmp_path, run_id, *, exit_code, chain_second, statuses
+    airflow_env,
+    fake_spark_submit,
+    tmp_path,
+    run_id,
+    *,
+    exit_code,
+    chain_second,
+    statuses,
+    extra_env=None,
 ):
     """Run DAG_TEST_SCRIPT in an isolated Airflow; return (states, logs).
     `statuses`: file_list statuses of the run id's files after the job."""
@@ -207,6 +224,7 @@ def _run_dag_test(
     env["AIRFLOW_CONN_SPARK_DEFAULT"] = json.dumps(
         {"conn_type": "spark", "host": TEST_SPARK_MASTER}
     )
+    env.update(extra_env or {})
 
     proc = subprocess.run(
         [
@@ -338,3 +356,136 @@ def test_p2_4_c2_read_file_dag_e2e_exit_1_publishes_only_processed_files(
     assert states["first_lake_staging_events"] == events, logs
     assert states["first_guard"] == "failed", logs
     assert states["first"] == "failed", logs
+
+
+def _confs(argv: list[str]) -> dict[str, str]:
+    values = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--conf"]
+    return dict(value.split("=", 1) for value in values)
+
+
+def test_p2_5_read_file_dag_e2e_without_lineage_passes_no_openlineage_conf(
+    airflow_env, fake_spark_submit, tmp_path
+):
+    """Lineage off (the default of this module): spark-submit gets no
+    listener and no `spark.openlineage.*` property, as before P2-5."""
+    _, calls_file = fake_spark_submit
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p2_5_off",
+        exit_code=0,
+        chain_second=False,
+        statuses=["processed"],
+    )
+    assert states["first"] == "success", logs
+    [call] = [json.loads(line) for line in calls_file.read_text().splitlines()]
+    assert not [arg for arg in call["argv"] if "openlineage" in arg.lower()], call["argv"]
+
+
+def test_p2_5_read_file_dag_e2e_spark_run_is_attached_to_its_task(
+    airflow_env, fake_spark_submit, tmp_path
+):
+    """Lineage on (`file` transport, a listener jar): the real operator,
+    with the real task instance, passes the listener, the jar, the transport
+    and the parent job info; the parent run id is the run id of the Airflow
+    event of `spark_read_files`, whose input is `file_list`."""
+    _, calls_file = fake_spark_submit
+    events_dir = tmp_path / "lineage" / "events"
+    events_dir.mkdir(parents=True)
+    from tests.unit.dags.lineage_jar import make_listener_jar, sha256
+
+    jar = make_listener_jar(tmp_path / "openlineage-spark_2.13-test.jar")
+    extra_env = {
+        "AIRFLOW__OPENLINEAGE__DISABLED": "False",
+        "AIRFLOW__OPENLINEAGE__TRANSPORT": json.dumps(
+            {"type": "file", "log_file_path": str(events_dir / "airflow"), "append": False}
+        ),
+        "AIRFLOW__OPENLINEAGE__NAMESPACE": "p2_5_e2e",
+        "OPENLINEAGE_SPARK_JAR": str(jar),
+        "OPENLINEAGE_SPARK_SHA256": sha256(jar),
+        # Only read for the dataset name of file_list (host, port, database).
+        "AIRFLOW_CONN_FILE_LIST_DB": json.dumps(
+            {"conn_type": "postgres", "host": "pg.example", "port": 5434, "schema": "files"}
+        ),
+    }
+
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p2_5_on",
+        exit_code=0,
+        chain_second=False,
+        statuses=["processed"],
+        extra_env=extra_env,
+    )
+
+    assert states["first"] == "success", logs
+    [call] = [json.loads(line) for line in calls_file.read_text().splitlines()]
+    confs = _confs(call["argv"])
+    assert confs["spark.extraListeners"] == "io.openlineage.spark.agent.OpenLineageSparkListener"
+    assert confs["spark.jars"] == str(jar)
+    assert confs["spark.openlineage.transport.type"] == "file"
+    # C-13: one event file per Spark application: read_file_dag's own run
+    # (a manual dag.test() run), map index 0, try 1.
+    location = Path(confs["spark.openlineage.transport.location"])
+    assert location.parent == events_dir
+    assert location.name.startswith("spark-read_file_dag-manual__")
+    assert location.name.endswith("-0-1.jsonl")
+    assert confs["spark.openlineage.namespace"] == "p2_5_e2e"
+    assert confs["spark.openlineage.parentJobNamespace"] == "p2_5_e2e"
+    assert confs["spark.openlineage.parentJobName"] == "read_file_dag.spark_read_files"
+    assert confs["spark.openlineage.rootParentJobName"] == "read_file_dag"
+    assert call["argv"][-1] == "--run-id=manual__p2_5_on"
+
+    events = [json.loads(p.read_text()) for p in sorted(events_dir.glob("airflow-*.json"))]
+    task_events = [
+        e
+        for e in events
+        if e["job"]["name"] == "read_file_dag.spark_read_files" and e["eventType"] == "COMPLETE"
+    ]
+    assert task_events, [(e["eventType"], e["job"]["name"]) for e in events]
+    [complete] = task_events
+    # The Spark run's parent is this very task run, under its DAG run.
+    assert complete["run"]["runId"] == confs["spark.openlineage.parentRunId"]
+    root = complete["run"]["facets"]["parent"]["root"]["run"]["runId"]
+    assert root == confs["spark.openlineage.rootParentRunId"]
+    # pre_execute declared file_list as the task's input.
+    inputs = {(d["namespace"], d["name"]) for d in complete["inputs"]}
+    assert inputs == {("postgres://pg.example:5434", "files.public.file_list")}
+
+
+def test_p2_5_sec2_read_file_dag_e2e_wrong_jar_digest_runs_without_lineage(
+    airflow_env, fake_spark_submit, tmp_path
+):
+    """The jar is present and a zip with the listener, but not the pinned
+    one: the real pre_execute strips the listener, the job runs as without
+    lineage and the run succeeds."""
+    from tests.unit.dags.lineage_jar import make_listener_jar
+
+    _, calls_file = fake_spark_submit
+    events_dir = tmp_path / "lineage" / "events"
+    events_dir.mkdir(parents=True)
+    jar = make_listener_jar(tmp_path / "openlineage-spark_2.13-other.jar")
+    extra_env = {
+        "AIRFLOW__OPENLINEAGE__DISABLED": "False",
+        "AIRFLOW__OPENLINEAGE__TRANSPORT": json.dumps(
+            {"type": "file", "log_file_path": str(events_dir / "airflow"), "append": False}
+        ),
+        "OPENLINEAGE_SPARK_JAR": str(jar),
+        "OPENLINEAGE_SPARK_SHA256": "0" * 64,
+    }
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p2_5_bad_jar",
+        exit_code=0,
+        chain_second=False,
+        statuses=["processed"],
+        extra_env=extra_env,
+    )
+    assert states["first"] == "success", logs
+    [call] = [json.loads(line) for line in calls_file.read_text().splitlines()]
+    assert not [a for a in call["argv"] if "openlineage" in a.lower() or a.startswith("spark.jars")]

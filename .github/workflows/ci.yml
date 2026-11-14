@@ -41,6 +41,27 @@ jobs:
       - name: Install dbt (transform/) and generate the dbt manifest
         run: make dbt-parse
 
+      # P2-5 : jar du listener OpenLineage Spark (version et SHA-256 épinglés
+      # dans le Makefile), mis en cache entre les runs : Maven Central n'est
+      # sollicité que quand la version ou l'empreinte change. `make lineage-jar`
+      # revérifie le SHA-256 du jar restauré, et le retélécharge s'il diffère.
+      # La clé contient la version ET l'empreinte épinglée
+      # (OPENLINEAGE_SPARK_SHA256) : changer l'une ou l'autre invalide le cache.
+      - name: Read the pinned OpenLineage Spark version and SHA-256
+        id: openlineage
+        run: |
+          echo "version=$(sed -n 's/^OPENLINEAGE_SPARK_VERSION := //p' Makefile)" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sed -n 's/^OPENLINEAGE_SPARK_SHA256 := //p' Makefile)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the OpenLineage Spark jar
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: lineage/jars
+          key: openlineage-spark_2.13-${{ steps.openlineage.outputs.version }}-${{ steps.openlineage.outputs.sha256 }}
+
+      - name: Download the OpenLineage Spark jar (checked by SHA-256)
+        run: make lineage-jar
+
       - name: Ruff lint
         run: uv run ruff check .
 
@@ -53,8 +74,12 @@ jobs:
       # P0-5, pas besoin d'une étape dédiée en plus de la suite pytest.
       # REQUIRE_DBT=1 : les tests dbt réels (tests/integration/test_p2_4_dbt_build.py)
       # échouent au lieu d'être ignorés si transform/.venv manquait.
-      - name: Run test suite (includes DAG import check and real dbt builds)
+      # REQUIRE_LINEAGE=1 (P2-5) : de même pour le vrai job Spark avec son
+      # listener OpenLineage (tests/integration/test_p2_5_spark_lineage.py)
+      # si le jar manquait.
+      - name: Run test suite (includes DAG import check, real dbt builds and Spark lineage)
         run: uv run pytest tests/ -q
         env:
           REQUIRE_DBT: "1"
+          REQUIRE_LINEAGE: "1"
           AIRFLOW__COSMOS__ENABLE_TELEMETRY: "False"

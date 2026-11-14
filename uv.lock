@@ -67,6 +67,7 @@ dependencies = [
 airflow = [
     { name = "apache-airflow" },
     { name = "apache-airflow-providers-apache-spark" },
+    { name = "apache-airflow-providers-openlineage" },
     { name = "apache-airflow-providers-postgres" },
     { name = "apache-airflow-providers-standard" },
     { name = "astronomer-cosmos" },
@@ -96,6 +97,7 @@ requires-dist = [
 airflow = [
     { name = "apache-airflow", specifier = "==3.3.2" },
     { name = "apache-airflow-providers-apache-spark", specifier = ">=6.3" },
+    { name = "apache-airflow-providers-openlineage", specifier = ">=2.21,<3" },
     { name = "apache-airflow-providers-postgres", specifier = ">=7.0" },
     { name = "apache-airflow-providers-standard", specifier = ">=1.19" },
     { name = "astronomer-cosmos", specifier = ">=1.16,<1.17" },
@@ -298,6 +300,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/fe/83/addb51c36e20de3121f25a7d83fdd43eb7b15464d7ffe912b12b4cb1f3ca/apache_airflow_providers_common_sql-2.4.0.tar.gz", hash = "sha256:363f89dab28bdb00e9090a50476a71795b8237adb0b1768c9490b805b1868e0d", size = 161884, upload-time = "2026-10-24T18:48:44.92Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e0/dc/802061fa7f25f41e114a27986f21dd772c14458091328739733b9f78c4c4/apache_airflow_providers_common_sql-2.4.0-py3-none-any.whl", hash = "sha256:1b0b1364d92df2390f5b4278dc570061f2f81b9c7ad61e0467c9f9cc3159781e", size = 103189, upload-time = "2026-10-24T18:48:15.379Z" },
+]
+
+[[package]]
+name = "apache-airflow-providers-openlineage"
+version = "2.21.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "apache-airflow" },
+    { name = "apache-airflow-providers-common-compat" },
+    { name = "apache-airflow-providers-common-sql" },
+    { name = "attrs" },
+    { name = "openlineage-integration-common" },
+    { name = "openlineage-python" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ef/0a/88fabacbcd2199d554656c50b1071acaf53f571d2e1267479b415702518f/apache_airflow_providers_openlineage-2.21.0.tar.gz", hash = "sha256:915a017dcd607b8c25a44e228360da9d69eb9930ea68c82432386c425bb69770", size = 374742, upload-time = "2026-11-01T18:27:19.543Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3b/5a/9a7c66bb55b999796ee544573b5df53125942619c13402b40f5d1ed2f540/apache_airflow_providers_openlineage-2.21.0-py3-none-any.whl", hash = "sha256:accc0cad751502247b8de657545bd59736ab0dcf4919f9ac4e231e9357b668d5", size = 132278, upload-time = "2026-11-01T18:27:17.139Z" },
 ]
 
 [[package]]

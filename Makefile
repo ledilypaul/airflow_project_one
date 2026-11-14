@@ -25,6 +25,47 @@ $(AIRFLOW_TARGETS): export AIRFLOW__CORE__LOAD_EXAMPLES := False
 # Cosmos sends anonymous usage metrics over HTTP by default: off in dev.
 $(AIRFLOW_TARGETS): export AIRFLOW__COSMOS__ENABLE_TELEMETRY := False
 
+# --- OpenLineage (P2-5) ---------------------------------------------------------
+# Lineage of the pipeline, configured for the Airflow targets only (`make test`
+# keeps the CI environment, where it is off). Default transport: `file`, one
+# JSON file per Airflow event and one spark-<application>.jsonl per Spark
+# application, under $(LINEAGE_DIR)/events (gitignored); `make lineage-show`
+# summarises them, `make lineage-clean` deletes them.
+# OPENLINEAGE_URL=http://localhost:5002 (Marquez, `make lineage-up`) switches
+# to http. OPENLINEAGE_DISABLED=true (or `[openlineage] disabled = True`)
+# turns it off. A shell-exported AIRFLOW__OPENLINEAGE__TRANSPORT/NAMESPACE wins.
+# The transport JSON is built by scripts/openlineage_transport.py from
+# environment variables (json.dumps), never by interpolation: `make
+# lineage-transport` prints it.
+LINEAGE_DIR ?= $(CURDIR)/lineage
+LINEAGE_EVENTS_DIR = $(LINEAGE_DIR)/events
+OPENLINEAGE_URL ?=
+OPENLINEAGE_NAMESPACE ?= airflow_project_one
+AIRFLOW__OPENLINEAGE__NAMESPACE ?= $(OPENLINEAGE_NAMESPACE)
+PYTHON ?= $(UV) run python
+# Spark listener (JVM): openlineage-spark for Scala 2.13 (PySpark 4), one
+# self-contained jar from Maven Central, pinned by version and SHA-256.
+# Without a valid file, read_file_dag runs Spark without its listener.
+# Provenance of the digest (2026-11-14): equal to the `.sha256` Maven Central
+# publishes next to the jar, and the jar's `.asc` signature verifies with the
+# key B4AD C6AE E76F 4EED 97FA 78A1 C6C9 B79C 9583 2D71 (an OpenLineage
+# maintainer's; the same key signs openlineage-java 1.55.0).
+OPENLINEAGE_SPARK_VERSION := 1.55.0
+OPENLINEAGE_SPARK_SHA256 := da278ffadc9c43b063169d3991890a97924d5bb1d21954c65e2fe785dd373d70
+OPENLINEAGE_SPARK_JAR ?= $(LINEAGE_DIR)/jars/openlineage-spark_2.13-$(OPENLINEAGE_SPARK_VERSION).jar
+OPENLINEAGE_SPARK_URL := https://repo1.maven.org/maven2/io/openlineage/openlineage-spark_2.13/$(OPENLINEAGE_SPARK_VERSION)/openlineage-spark_2.13-$(OPENLINEAGE_SPARK_VERSION).jar
+$(AIRFLOW_TARGETS): export AIRFLOW__OPENLINEAGE__NAMESPACE := $(AIRFLOW__OPENLINEAGE__NAMESPACE)
+$(AIRFLOW_TARGETS): export OPENLINEAGE_SPARK_JAR := $(OPENLINEAGE_SPARK_JAR)
+# read_file_dag checks the jar against it when the task runs.
+$(AIRFLOW_TARGETS): export OPENLINEAGE_SPARK_SHA256 := $(OPENLINEAGE_SPARK_SHA256)
+# The hook lineage collector keeps 100 inputs per task by default: a listing
+# of more files would declare only the first 100 (a warning says how many
+# are missing). Larger values make larger events.
+$(AIRFLOW_TARGETS): export AIRFLOW__LINEAGE__MAX_ASSETS_PER_COLLECTOR := 1000
+# Passed to recipes through the environment only, never interpolated.
+airflow lineage-transport lineage-clean: export LINEAGE_EVENTS_DIR := $(LINEAGE_EVENTS_DIR)
+airflow lineage-transport: export OPENLINEAGE_URL := $(OPENLINEAGE_URL)
+
 # Env file with DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME for the
 # file_list_db Connection. Empty = the script's default (.env).
 ENV_FILE ?=
@@ -55,7 +96,9 @@ PG_HOST_PORT := 5434
 PG_CONTAINER := airflow_postgres
 
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
-	airflow-init airflow spark-job transform-sync dbt-parse dbt-build
+	airflow-init airflow spark-job transform-sync dbt-parse dbt-build \
+	lineage-jar lineage-show lineage-transport lineage-clean \
+	lineage-up lineage-down
 
 ##@ Help
 
@@ -123,8 +166,16 @@ airflow-init: ## Migrate the metadata DB, create/update Connections, import pool
 # triggerer started by `standalone` is required by transform_dag (deferrable
 # Cosmos sensors). LAKE_ROOT / DBT_DUCKDB_PATH are not exported: the DAG
 # applies the same defaults as the dbt targets above.
+# The lineage jar is fetched (or re-checked) once; a failed download
+# (offline) only warns: Spark then runs without its listener, the pipeline is
+# unchanged.
 airflow: dbt-parse ## Run Airflow standalone (api-server, scheduler, dag-processor, triggerer)
-	$(UV) run airflow standalone
+	@mkdir -p -- "$$LINEAGE_EVENTS_DIR"
+	@$(if $(filter true TRUE True 1 t T,$(strip $(OPENLINEAGE_DISABLED))),true,\
+		$(MAKE) --no-print-directory lineage-jar || \
+		echo "warning: no OpenLineage Spark jar, Spark runs without its listener" >&2)
+	AIRFLOW__OPENLINEAGE__TRANSPORT="$${AIRFLOW__OPENLINEAGE__TRANSPORT:-$$($(PYTHON) scripts/openlineage_transport.py)}" \
+		$(UV) run airflow standalone
 
 ##@ Spark
 
@@ -146,3 +197,45 @@ dbt-parse: transform-sync ## Write transform/target/manifest.json (transform_dag
 
 dbt-build: transform-sync ## dbt build outside Airflow (LAKE_ROOT, DBT_DUCKDB_PATH overridable)
 	$(DBT) build $(DBT_FLAGS)
+
+##@ Lineage (OpenLineage, P2-5)
+
+lineage-jar: export OL_JAR := $(OPENLINEAGE_SPARK_JAR)
+lineage-jar: export OL_SHA256 := $(OPENLINEAGE_SPARK_SHA256)
+lineage-jar: export OL_URL := $(OPENLINEAGE_SPARK_URL)
+lineage-jar: ## Download the pinned openlineage-spark jar, or re-check the present one (SHA-256)
+	@set -e; \
+	if [ -f "$$OL_JAR" ]; then \
+		if echo "$$OL_SHA256  $$OL_JAR" | sha256sum -c --status -; then \
+			echo "$$OL_JAR: present, SHA-256 OK"; exit 0; \
+		fi; \
+		echo "warning: $$OL_JAR does not match the pinned SHA-256: removed, downloading again" >&2; \
+		rm -f -- "$$OL_JAR"; \
+	fi; \
+	mkdir -p -- "$$(dirname -- "$$OL_JAR")"; \
+	trap 'rm -f -- "$$OL_JAR.part"' EXIT; \
+	curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o "$$OL_JAR.part" "$$OL_URL"; \
+	echo "$$OL_SHA256  $$OL_JAR.part" | sha256sum -c --quiet -; \
+	mv -- "$$OL_JAR.part" "$$OL_JAR"; \
+	echo "$$OL_JAR: downloaded, SHA-256 OK"
+
+lineage-transport: ## Print the OpenLineage transport (JSON) that `make airflow` uses
+	@$(PYTHON) scripts/openlineage_transport.py
+
+# Only the event files the transports write (airflow-*.json, spark*.jsonl),
+# at the top of the events directory: never the jar, never a subdirectory.
+lineage-clean: ## Delete the lineage event files of lineage/events (keeps the listener jar)
+	@test -n "$$LINEAGE_EVENTS_DIR" && test -d "$$LINEAGE_EVENTS_DIR" || \
+		{ echo "$$LINEAGE_EVENTS_DIR: nothing to clean"; exit 0; }; \
+	find "$$LINEAGE_EVENTS_DIR" -maxdepth 1 -type f \
+		\( -name 'airflow-*.json' -o -name 'spark*.jsonl' \) -print -delete | wc -l | \
+		xargs printf "%s event file(s) deleted from $$LINEAGE_EVENTS_DIR\n"
+
+lineage-show: ## Summarise the lineage events of lineage/events: jobs, inputs, outputs
+	$(UV) run python scripts/lineage_show.py "$(LINEAGE_EVENTS_DIR)"
+
+lineage-up: ## Start Marquez (API 127.0.0.1:5002, web UI http://127.0.0.1:3002), profile `lineage`
+	docker compose --profile lineage up -d marquez-db marquez-api marquez-web
+
+lineage-down: ## Stop and remove the Marquez containers (keeps their data volume)
+	docker compose --profile lineage rm --stop --force marquez-web marquez-api marquez-db

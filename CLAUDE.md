@@ -32,9 +32,9 @@ uv run pytest tests/unit/file_reader/test_reader_factory.py::test_factory_return
 uv run ruff check . && uv run ruff format --check .
 ```
 
-DAG tests (`tests/unit/dags/`) don't need a real Airflow metadata DB or scheduler: `tests/unit/dags/conftest.py` sets `AIRFLOW__CORE__UNIT_TEST_MODE=True` and points `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` at a throwaway sqlite file before anything under `airflow.*` is imported.
+DAG tests (`tests/unit/dags/`) don't need a real Airflow metadata DB or scheduler: `tests/unit/dags/conftest.py` sets `AIRFLOW__CORE__UNIT_TEST_MODE=True` and points `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` at a throwaway sqlite file before anything under `airflow.*` is imported. `tests/integration/conftest.py` applies the same setup. For the whole suite, `tests/conftest.py` forces `AIRFLOW__OPENLINEAGE__DISABLED=True` and drops every `OPENLINEAGE_*` / `AIRFLOW__OPENLINEAGE__*` variable of the shell (and `AIRFLOW__LINEAGE__MAX_ASSETS_PER_COLLECTOR`): the suite never emits lineage. A test that needs it turns it on with `monkeypatch`, towards `tmp_path`, and the `dag.test()` e2e runs with lineage off unless a test enables it.
 
-`transform_dag` is rendered from `transform/target/manifest.json`: without it, its import fails (and `test_no_import_errors` with it). `make test` runs `make dbt-parse` first (which runs `make transform-sync`: the first `make test` downloads dbt into `transform/.venv`); CI does the same before pytest. The real dbt builds (`tests/integration/test_p2_4_dbt_build.py`) are skipped when `transform/.venv` is missing, unless `REQUIRE_DBT=1` (set in CI), which turns the skip into a failure.
+`transform_dag` is rendered from `transform/target/manifest.json`: without it, its import fails (and `test_no_import_errors` with it). `make test` runs `make dbt-parse` first (which runs `make transform-sync`: the first `make test` downloads dbt into `transform/.venv`); CI does the same before pytest. The real dbt builds (`tests/integration/test_p2_4_dbt_build.py`) are skipped when `transform/.venv` is missing, unless `REQUIRE_DBT=1` (set in CI), which turns the skip into a failure. Likewise, the real Spark job with its OpenLineage listener (`tests/integration/test_p2_5_spark_lineage.py`) needs the jar of `make lineage-jar`: it is skipped without it, unless `REQUIRE_LINEAGE=1` (set in CI).
 
 ### Running Airflow locally
 
@@ -57,6 +57,8 @@ Then it imports the pools versioned in `deploy/airflow/pools.json` (re-run it af
 - **Connection `spark_default`.** Its `host` is the `--master` (`local[*]`, `yarn`, `spark://host:7077`, `k8s://...`). The extras `deploy-mode`, `queue`, `namespace` and `spark-binary` (one of `spark-submit`, `spark2-submit`, `spark3-submit`, found on the worker's `PATH`) are optional. If the Connection is **missing**, the provider itself does not fail: it logs `Could not load connection string spark_default, defaulting to yarn` at INFO level and runs `spark-submit --master yarn`, which fails locally ("HADOOP_CONF_DIR or YARN_CONF_DIR must be set"). That is why `resolve_source_run_ids` checks the Connection first and fails the run with an explicit `AirflowFailException` when it is missing (it logs the Connection's `host` otherwise). `airflow connections create-default-connections` also creates a `spark_default` with `host=yarn` and `queue=root.default`: `make airflow-init` overwrites it (host `local[*]`, extras cleared). Outside `ENV=prod`, `utils/spark_session.py` forces `master("local[*]")` in the job itself, so in dev the Connection's master only decides how `spark-submit` launches the driver.
 - **Pool `spark`.** One slot locally: each `local[*]` application uses every core of the machine and starts its own driver JVM. Two at once just compete for the same CPU and RAM. Raise it to the number of applications your cluster can run side by side. A **missing pool is silent**: the DAG still parses (no DAG warning in the UI), `resolve_source_run_ids` succeeds, then `spark_read_files` stays in `scheduled` forever. The only traces are a scheduler log line (`Tasks using non-existent pool 'spark' will not be scheduled`) and the task instance's dependency details. The run stays stuck until `dagrun_timeout` (6 hours) fails it, and with `max_active_runs=1` the next `file_list` events pile up behind it meanwhile. `dag.test()` does not check pools: it is not blocked.
 - `spark-submit` must be on the worker's `PATH` (it is with `uv run`: PySpark ships it in `.venv/bin`).
+
+The Airflow targets also configure OpenLineage (see "Lineage (OpenLineage, P2-5)"): `AIRFLOW__OPENLINEAGE__NAMESPACE` (`airflow_project_one`), `OPENLINEAGE_SPARK_JAR`, `OPENLINEAGE_SPARK_SHA256` and `AIRFLOW__LINEAGE__MAX_ASSETS_PER_COLLECTOR=1000`. `make airflow` adds `AIRFLOW__OPENLINEAGE__TRANSPORT`: `file` into `lineage/events/` by default, `http` when `OPENLINEAGE_URL` is set. It is built with `json.dumps` by `scripts/openlineage_transport.py`, never by interpolation; `make lineage-transport` prints it. A value exported by the shell wins, and it overrides `[openlineage] transport` of `airflow.cfg`. `make airflow` downloads the listener jar, or re-checks its SHA-256 (`make lineage-jar`); offline, it only warns.
 
 Airflow ≥3.0 uses the Simple Auth Manager by default, which has no `airflow users create` (`airflow standalone` prints the generated admin password and stores it in `simple_auth_manager_passwords.json.generated`). To get FAB-based user management, install `apache-airflow-providers-fab` and set `auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager` under `[core]` in `airflow.cfg`.
 
@@ -89,6 +91,14 @@ It connects through `.env` (`DB_*`), not through Airflow.
 ```bash
 make db-up     # docker compose up -d: Postgres on host port 5434, Redis on 6379
 make db-down   # docker compose down (keeps the postgres-data volume, no -v)
+```
+
+Marquez (OpenLineage UI, optional) sits in the same compose file under the profile `lineage`, so `make db-up` never starts it:
+
+```bash
+make lineage-up     # Marquez API http://127.0.0.1:5002, web UI http://127.0.0.1:3002 (localhost only)
+make lineage-down   # stops and removes its containers (keeps the marquez-data volume)
+OPENLINEAGE_URL=http://localhost:5002 make airflow   # send the events to Marquez instead of files
 ```
 
 The project's Postgres listens on host port **5434** (container `airflow_postgres`), so it can run next to another project's Postgres on 5433; set `DB_PORT=5434` in `.env`. `make db-up` first checks the port (`make db-port-check`): it fails, naming the container or process, if anything but `airflow_postgres` holds it. There is no Airflow service in the compose file yet. In Airflow 3, `airflow db init` and `airflow webserver` no longer exist: use `airflow db migrate` and `airflow api-server`.
@@ -165,6 +175,28 @@ Two files with the same name in one run are both marked `failed`, because their 
 - **Empty table.** Models read through the `lake_staging()` macro, not `source()`. When a staging table has no file yet (no orders read), the macro returns an empty relation typed by the columns declared in the source, instead of DuckDB's empty-glob error.
   - `movies` declares all `imdb.yaml` columns (a test checks names, order and types).
   - `orders` declares only the technical columns.
+
+### Lineage (OpenLineage, P2-5)
+
+Answers "where does this table come from, and what produced it?", from the source files to `dbt_marts`. Design note: `docs/architecture/2026-11-14-p2-5-openlineage.md`. Rule: **lineage never breaks the pipeline**; whatever goes wrong with it, the job runs with the pre-P2-5 command and a warning says why.
+
+- **Configuration.** Environment only, nothing in the DAGs: `apache-airflow-providers-openlineage` (group `airflow`) reads `[openlineage]` / `AIRFLOW__OPENLINEAGE__*`. With no transport configured the provider is disabled. `OPENLINEAGE_DISABLED=true` or `[openlineage] disabled = True` turns it off. `make lineage-show` (`scripts/lineage_show.py`, streaming, tolerant of malformed events) summarises the dev `file` events: jobs, inputs, outputs, edges. `make lineage-clean` deletes the event files.
+- **Dataset names.** They follow the OpenLineage naming spec, so the integrations meet:
+  - a source file: `file` + its resolved absolute path (listing and Spark);
+  - `file_list`: `postgres://<host>:<port>` + `<db>.public.file_list`;
+  - a lake table: as `FilesystemDatasetUtils` of openlineage-spark 1.55.0 names it: `file` + `<LAKE_ROOT>/<zone>/<table>` (root resolved, the rest joined as text); `s3*`/`gs`/`abfs*`/`wasb*` without the leading slash; other schemes (`hdfs`, `dbfs`, `gcs`) with it;
+  - a DuckDB relation: `duckdb://<DBT_DUCKDB_PATH>` + `<db>.<schema>.<table>`, `<db>` being dbt-duckdb's name for the file (`warehouse.prod.duckdb` -> `warehouse`).
+- **`file_list`.** The tasks reach it through a SQLAlchemy engine, which the provider cannot see. `utils/file_list_lineage.py` declares it to Airflow's hook lineage collector: the listing tasks have the recorded files as inputs and `file_list` as output; `spark_read_files` has `file_list` as input. It never fails a task and returns at once when lineage is off.
+  - The collector keeps `[lineage] max_assets_per_collector` inputs (100 by default, 1000 from the Makefile): a warning gives the number of files not declared.
+  - A file whose name contains `#` or `?` is skipped with a warning: an Asset URI cannot carry it as Spark names it.
+- **Spark.** The JVM listener `io.openlineage.spark.agent.OpenLineageSparkListener` (`openlineage-spark_2.13`, version and SHA-256 pinned in the Makefile, with their provenance; `make lineage-jar` downloads it over HTTPS only into `lineage/jars/`, gitignored, and always re-checks a present file) is enabled by the `spark-submit` conf that `openlineage_spark_settings()` builds in `read_file_dag`, never by an import in the job. `make spark-job` never adds it.
+  - At parse time, no conf at all when: lineage is off; `OPENLINEAGE_SPARK_JAR` is unset (debug log), relative, missing, not a zip or without the listener class; the configuration is invalid (bad JSON, provider missing); the transport carries credentials (`auth`, `headers`, `custom_headers`, user info in a URL, `composite` included) or is configured outside `[openlineage] transport` (it cannot be checked), since the hook logs the Spark properties in clear; a `file` transport's `log_file_path` is not local and absolute.
+  - At execution (`pre_execute=prepare_spark_lineage`, never raises): the jar must match `OPENLINEAGE_SPARK_SHA256` (hashed once per path, size and mtime), or the listener is removed; a jar for another Scala version passes the zip check but stops the SparkContext. Each application gets its own `spark-<dag>-<run>-<hash>-<map index>-<try>.jsonl`. Then `file_list` is reported.
+  - Otherwise the conf adds the jar, the listener, `spark.redaction.regex` (extended to API keys, tokens and `openlineage.transport.url`), the namespace and `disabledTrimmers=KeyValueTrimmer` (`orders_dt=2026-11-14.csv` keeps its name; the lake tables, written at their root, are unaffected). A `file` transport is set by us, any other one (http) is injected by the provider.
+  - The parent job info is always injected: the Spark application is the child of `read_file_dag.spark_read_files`, under the DAG run.
+  - The explicit `openlineage_inject_*` values override `[openlineage] spark_inject_*`, and `--conf spark.jars` / `spark.extraListeners` override `spark-defaults.conf`. An unreachable backend never fails the job.
+- **dbt.** The Cosmos watcher producer reports the datasets of its `dbt build` (`openlineage-integration-common`, already installed with Cosmos). dbt names the staging source by its DuckDB relation, Spark by its directory: `lineage_lake_staging` (`LakeStagingLineageOperator` in `transform_dag`, no upstream or downstream, outside the DuckDB pool) emits the link between the two names, one pair per `lake_staging` source of the manifest whose staging directory exists (local lake). The link is structural, not a proof that Spark wrote the table. See `transform/README.md`.
+- **Tests.** `tests/integration/test_p2_5_spark_lineage.py` (real job and listener), `test_p2_5_dbt_lineage.py` (real build, Cosmos' processor), the `dag.test()` e2e (real parent injection, wrong jar digest) and `tests/unit/dags/test_p2_5_transform_lineage.py` (names checked against the listener's, by py4j) keep the Spark, bridge and dbt names equal.
 
 There's also `dags/local_list_files_dag_python_operator.py`, an equivalent of DAG 1 built with `PythonOperator` instead of the `@task` TaskFlow API — its `dag_id` was deliberately renamed to `list_files_dag_classic` to avoid colliding with `local_list_files_dag.py`.
 

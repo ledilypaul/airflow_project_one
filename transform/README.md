@@ -215,3 +215,37 @@ Ne lancez donc pas `make dbt-build` pendant qu'un run de `transform_dag`
   - Fixer la graine serait un contournement fragile. Le DAG se vérifie avec
     un vrai scheduler et un triggerer (`make airflow`), le projet dbt avec
     `dbt build` (`tests/integration/test_p2_4_dbt_build.py`).
+
+## Lignage OpenLineage (P2-5)
+
+Pourquoi et comment : voir
+[`docs/architecture/2026-11-14-p2-5-openlineage.md`](../docs/architecture/2026-11-14-p2-5-openlineage.md).
+
+- **Qui émet.** Le producteur watcher de Cosmos (`dbt_producer_watcher`)
+  analyse les artefacts de son `dbt build` (`openlineage-integration-common`,
+  installé avec Cosmos), et le provider OpenLineage d'Airflow émet ses
+  entrées et sorties. Rien n'est ajouté à ce projet uv : ni `dbt-ol` ni
+  `openlineage-dbt`.
+- **Noms DuckDB.** Une relation est nommée `duckdb://<DBT_DUCKDB_PATH>` +
+  `<base>.<schéma>.<table>`. La base est le nom que dbt-duckdb 1.11 donne au
+  fichier ouvert à l'exécution : la première partie non vide de son nom
+  (`warehouse.duckdb` et `warehouse.prod.duckdb` donnent `warehouse`,
+  `.hidden.duckdb` donne `hidden`). Les sources du lake
+  (`_lake_staging__sources.yml`) sont donc nommées
+  `warehouse.lake_staging.movies` : le processeur ne tient pas compte de
+  `external_location`.
+- **Le pont.** Spark nomme la même table par son répertoire (`file`,
+  `<LAKE_ROOT>/staging/movies`). La tâche `lineage_lake_staging` de
+  `transform_dag` (`LakeStagingLineageOperator`) émet le lien entre les deux
+  noms, une paire par source `lake_staging` du manifest. Les noms sont
+  recalculés à l'exécution depuis `LAKE_ROOT` et `DBT_DUCKDB_PATH`.
+  - **Lien structurel.** Il dit qu'une source dbt lit ce répertoire, pas que
+    Spark l'a écrit pendant ce run. Pour un lake local, seules les tables
+    staging dont le répertoire existe sont reliées ; un lake distant n'est
+    pas listé.
+  - **Sans risque.** La tâche n'exécute rien, n'a ni amont ni aval, n'est
+    pas dans le pool `dbt_duckdb`, et un manifest illisible ne donne qu'un
+    lignage vide avec un warning.
+- **Ajouter une source.** Une nouvelle table de `lake_staging` est reliée
+  automatiquement, à condition de garder le glob
+  `<LAKE_ROOT>/staging/$identifier/...` (un test le vérifie).
