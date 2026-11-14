@@ -26,5 +26,70 @@ services:
       interval: 10s
       retries: 5
 
+  # P2-5: Marquez, to browse the OpenLineage graph (optional). Profile
+  # `lineage`: `make db-up` / `docker compose up` never start it, `make
+  # lineage-up` does. Then `OPENLINEAGE_URL=http://localhost:5002 make airflow`.
+  # - Published on 127.0.0.1 only (Marquez has no authentication): API 5002,
+  #   web UI 3002, away from the project's 5434, 6379 and 8080. The admin port
+  #   and the database are not published.
+  # - Own network `lineage`: the web UI reaches the API by its service name.
+  # - Images pinned by tag (for the reader) and digest (what is pulled),
+  #   checked on 2026-11-14 with `docker buildx imagetools inspect`.
+  # - The marquez / marquez credentials are imposed by the image's
+  #   development config (marquez.dev.yml): local use only.
+  marquez-db:
+    # PostgreSQL 14: the version Marquez 0.50.0 documents; its Flyway 8.5.13
+    # predates PostgreSQL 17 and was never tested with it.
+    image: postgres:14@sha256:980b7cb415aa0f812f65bdec8f6f599be408d8ed9c83ffcaa12650eac397b264
+    container_name: marquez_db
+    profiles: ["lineage"]
+    networks: ["lineage"]
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    volumes:
+      - marquez-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquez -d marquez"]
+      interval: 5s
+      retries: 10
+
+  marquez-api:
+    image: marquezproject/marquez:0.50.0@sha256:6d8a2c2cdb28a4f6d13f9ca6f8cc055d8312c4dee204ebeb848efdd76e6ab30e
+    container_name: marquez_api
+    profiles: ["lineage"]
+    networks: ["lineage"]
+    environment:
+      MARQUEZ_PORT: 5000
+      MARQUEZ_ADMIN_PORT: 5001
+      POSTGRES_HOST: marquez-db
+      POSTGRES_PORT: 5432
+      SEARCH_ENABLED: "false"
+    ports:
+      - "127.0.0.1:5002:5000"
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.50.0@sha256:e8d53e10ab141cde1b121b01ff47776a58b407813fb6e10f490842d20c184346
+    container_name: marquez_web
+    profiles: ["lineage"]
+    networks: ["lineage"]
+    environment:
+      MARQUEZ_HOST: marquez-api
+      MARQUEZ_PORT: 5000
+      WEB_PORT: 3000
+      REACT_APP_ADVANCED_SEARCH: "false"
+    ports:
+      - "127.0.0.1:3002:3000"
+    depends_on:
+      - marquez-api
+
+networks:
+  lineage:
+
 volumes:
   postgres-data:
+  marquez-data:

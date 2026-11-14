@@ -9,6 +9,7 @@ os.environ.setdefault("AIRFLOW__CORE__LOAD_EXAMPLES", "False")
 # P2-4: Cosmos (transform_dag) sends anonymous usage metrics over HTTP by
 # default; never from the test suite.
 os.environ.setdefault("AIRFLOW__COSMOS__ENABLE_TELEMETRY", "False")
+# P2-5: OpenLineage is neutralised for the whole suite by tests/conftest.py.
 
 # airflow-project-one est installé en mode éditable (`uv sync`), donc
 # `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler

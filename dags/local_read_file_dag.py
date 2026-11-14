@@ -52,6 +52,21 @@ enregistré au moins un fichier.
 4. `max_active_runs=1` : deux runs ne traitent jamais le même run source en
    parallèle ; les événements arrivés pendant un run sont regroupés dans le
    suivant.
+5. Lignage OpenLineage (P2-5), configuré par l'environnement seulement :
+   - `openlineage_spark_settings()` active le listener JVM
+     (`OpenLineageSparkListener`) par la conf de `spark-submit`, jamais par un
+     import dans le job. Rien n'est ajouté (commande identique à avant P2-5)
+     quand OpenLineage est désactivé ou qu'aucun jar n'est configuré
+     (`OPENLINEAGE_SPARK_JAR`, fichier présent) : une classe de listener
+     absente du classpath empêcherait SparkContext de démarrer ;
+   - transport `file` (dev) : les événements Spark vont dans `spark.jsonl`, à
+     côté de ceux d'Airflow ; tout autre transport (http) est injecté par le
+     provider (`openlineage_inject_transport_info`) ;
+   - le run Spark est rattaché à sa tâche (`openlineage_inject_parent_job_info`) ;
+   - `prepare_spark_lineage` (`pre_execute`) vérifie le SHA-256 du jar
+     (`OPENLINEAGE_SPARK_SHA256`), donne à chaque application son fichier
+     d'événements et déclare `file_list` en entrée de `spark_read_files` (le
+     job y choisit ses fichiers). Le lignage ne fait jamais échouer la tâche.
 
 `application_args` est un champ templaté de `SparkSubmitOperator` : la valeur
 mappée depuis l'XCom n'est pas rendue par Jinja (Airflow ignore les valeurs
@@ -62,6 +77,7 @@ depuis un run_id manuel (voir tests/integration/test_p1_4_read_file_dag_e2e.py).
 """
 
 import logging
+import os
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -99,6 +115,27 @@ DEFAULT_ARGS = {
     "retry_delay": timedelta(minutes=5),
 }
 
+# P2-5: OpenLineage Spark listener (JVM), from the openlineage-spark jar whose
+# path is given by OPENLINEAGE_SPARK_JAR (`make lineage-jar` downloads the
+# pinned version, Scala 2.13 like PySpark 4). Spark events of the dev `file`
+# transport go to this file, next to the Airflow ones.
+OPENLINEAGE_SPARK_LISTENER = "io.openlineage.spark.agent.OpenLineageSparkListener"
+OPENLINEAGE_SPARK_LISTENER_ENTRY = "io/openlineage/spark/agent/OpenLineageSparkListener.class"
+OPENLINEAGE_SPARK_JAR_ENV = "OPENLINEAGE_SPARK_JAR"
+OPENLINEAGE_SPARK_SHA256_ENV = "OPENLINEAGE_SPARK_SHA256"
+SPARK_LINEAGE_FILE = "spark.jsonl"
+# Spark's default `(?i)secret|password|token|access[.]?key`, plus what an
+# OpenLineage transport can carry: redacted from the Spark UI and event log.
+SPARK_REDACTION_REGEX = (
+    r"(?i)secret|password|token|access[.]?key|apikey|authorization|openlineage\.transport\.url"
+)
+# KeyValueTrimmer names a file such as `orders_dt=2026-11-14.csv` after its
+# directory (it takes the name for a partition): the listing declares the
+# file. The lake tables are written at their root, so they keep their names.
+OPENLINEAGE_DISABLED_TRIMMERS = "io.openlineage.client.dataset.partition.trimmer.KeyValueTrimmer"
+# Keys added by openlineage_spark_settings (besides spark.openlineage.*).
+_LINEAGE_CONF_KEYS = {"spark.jars", "spark.extraListeners", "spark.redaction.regex"}
+
 # Valeurs de `run_id` qui ne désignent aucun run : refusées comme le fait déjà
 # le job Spark (code de sortie 2), mais ici avant même de lancer spark-submit.
 _MISSING_RUN_ID_VALUES = {"", "None"}
@@ -115,6 +152,292 @@ def build_application_args(run_id: str) -> list[str]:
     the argument list to `subprocess.Popen` as is.
     """
     return [f"--run-id={run_id}"]
+
+
+def _lineage_off() -> dict[str, Any]:
+    return {
+        "conf": None,
+        "openlineage_inject_parent_job_info": False,
+        "openlineage_inject_transport_info": False,
+    }
+
+
+def openlineage_spark_settings() -> dict[str, Any]:
+    """SparkSubmitOperator kwargs enabling the OpenLineage Spark listener (P2-5).
+
+    Read when the file is parsed, i.e. by the worker itself when it runs the
+    task, from the Airflow OpenLineage configuration (`[openlineage]` /
+    `AIRFLOW__OPENLINEAGE__*`, `OPENLINEAGE_DISABLED`) and from
+    `OPENLINEAGE_SPARK_JAR`. Cheap: environment, config, and the central
+    directory of the jar (about 35 ms); the jar is hashed at execution only
+    (prepare_spark_lineage).
+
+    Lineage never breaks the pipeline: whenever Spark lineage cannot be
+    enabled safely, the result is `conf=None` and no injection, i.e. exactly
+    the spark-submit command of before P2-5, with a warning:
+    - lineage off (disabled, or no transport configured): silently;
+    - `OPENLINEAGE_SPARK_JAR` unset (debug log only, read at every parse),
+      not absolute (`~` is expanded), missing, not a zip, or without the
+      listener class: a listener absent from the classpath stops the
+      SparkContext;
+    - a transport that is not a JSON object, or any other error (the
+      provider missing included): the DAG still imports;
+    - a transport carrying credentials (`auth`, `headers`/`custom_headers`,
+      user info in a URL, also inside `composite`), or one configured
+      elsewhere than `[openlineage] transport` (config_path, config_conn_id,
+      OPENLINEAGE_URL...), which cannot be checked: the provider would inject
+      it into the Spark properties, which SparkSubmitHook logs in clear
+      (`Spark-Submit cmd`, masking only `secret`/`password` keys);
+    - a `file` transport whose `log_file_path` is not a local absolute path.
+
+    Otherwise: the jar, the listener, `spark.redaction.regex` extended to
+    the OpenLineage properties, the namespace, KeyValueTrimmer disabled (a
+    source file `orders_dt=2026-11-14.csv` keeps its own name), and:
+    - `file` transport: Spark events in the directory of the Airflow ones
+      (one file per application, set by prepare_spark_lineage);
+    - any other transport (http): injected by the provider at execution.
+    The parent job info is always injected: the Spark run is the child of
+    its Airflow task. These explicit `openlineage_inject_*` values override
+    `[openlineage] spark_inject_*`, and `--conf spark.jars` /
+    `spark.extraListeners` override the ones of spark-defaults.conf.
+    """
+    try:
+        return _openlineage_spark_settings()
+    except Exception:
+        log.warning(
+            "OpenLineage: invalid configuration, Spark runs without its listener",
+            exc_info=True,
+        )
+        return _lineage_off()
+
+
+def _openlineage_spark_settings() -> dict[str, Any]:
+    from airflow.providers.openlineage import conf as openlineage_conf
+
+    if openlineage_conf.is_disabled():
+        return _lineage_off()
+    jar = (os.environ.get(OPENLINEAGE_SPARK_JAR_ENV) or "").strip()
+    if not jar:
+        log.debug("%s is not set: Spark runs without its listener", OPENLINEAGE_SPARK_JAR_ENV)
+        return _lineage_off()
+    jar_path = Path(jar).expanduser()
+    problem = _jar_problem(jar_path)
+    if problem:
+        log.warning(
+            "%s=%s %s: Spark runs without its OpenLineage listener (run `make lineage-jar`)",
+            OPENLINEAGE_SPARK_JAR_ENV,
+            jar,
+            problem,
+        )
+        return _lineage_off()
+
+    conf = {
+        "spark.jars": str(jar_path),
+        "spark.extraListeners": OPENLINEAGE_SPARK_LISTENER,
+        "spark.redaction.regex": SPARK_REDACTION_REGEX,
+        "spark.openlineage.namespace": openlineage_conf.namespace(),
+        "spark.openlineage.dataset.disabledTrimmers": OPENLINEAGE_DISABLED_TRIMMERS,
+    }
+    transport = openlineage_conf.transport()
+    if not transport:
+        log.warning(
+            "OpenLineage transport not set in [openlineage] transport (config_path, "
+            "config_conn_id or OPENLINEAGE_* variables): it cannot be checked for "
+            "credentials, so it is not injected into Spark, which runs without its listener"
+        )
+        return _lineage_off()
+    if transport.get("type") == "file":
+        directory = _local_directory(transport.get("log_file_path"))
+        if directory is None:
+            log.warning(
+                "OpenLineage file transport: log_file_path=%r is not a local absolute path, "
+                "Spark runs without its listener",
+                transport.get("log_file_path"),
+            )
+            return _lineage_off()
+        conf["spark.openlineage.transport.type"] = "file"
+        # Default location; prepare_spark_lineage gives each application its own.
+        conf["spark.openlineage.transport.location"] = str(directory / SPARK_LINEAGE_FILE)
+        inject_transport = False
+    else:
+        reason = _transport_credentials(transport)
+        if reason:
+            log.warning(
+                "OpenLineage transport carries credentials (%s): it is never injected into "
+                "the Spark properties, which spark-submit logs in clear. Spark runs without "
+                "its listener",
+                reason,
+            )
+            return _lineage_off()
+        inject_transport = True
+    return {
+        "conf": conf,
+        "openlineage_inject_parent_job_info": True,
+        "openlineage_inject_transport_info": inject_transport,
+    }
+
+
+def _jar_problem(jar_path: Path) -> str | None:
+    """Why `jar_path` cannot be the listener jar, or None."""
+    import zipfile
+
+    if not jar_path.is_absolute():
+        return "is not an absolute path (it would depend on the worker's current directory)"
+    if not jar_path.is_file():
+        return "does not exist"
+    try:
+        with zipfile.ZipFile(jar_path) as archive:
+            archive.getinfo(OPENLINEAGE_SPARK_LISTENER_ENTRY)
+    except KeyError:
+        return f"has no {OPENLINEAGE_SPARK_LISTENER} class"
+    except (OSError, zipfile.BadZipFile) as exc:
+        return f"is not a readable jar ({type(exc).__name__}: {exc})"
+    return None
+
+
+def _local_directory(log_file_path: Any) -> Path | None:
+    """Directory of a local absolute `log_file_path` (`/x/airflow` or
+    `file:///x/airflow`), else None."""
+    from urllib.parse import urlsplit
+
+    if not isinstance(log_file_path, str) or not log_file_path:
+        return None
+    parts = urlsplit(log_file_path)
+    if parts.scheme == "file":
+        path = parts.path
+    elif parts.scheme:
+        return None
+    else:
+        path = log_file_path
+    return Path(path).parent if path.startswith("/") else None
+
+
+def _transport_credentials(transport: Any) -> str | None:
+    """What in `transport` (composite included) is a credential, or None."""
+    from urllib.parse import urlsplit
+
+    if not isinstance(transport, dict):
+        return None
+    for key in ("auth", "headers", "custom_headers"):
+        if transport.get(key):
+            return f"`{key}`"
+    url = transport.get("url")
+    if isinstance(url, str) and (urlsplit(url).username or urlsplit(url).password):
+        return "user info in `url`"
+    nested = transport.get("transports") or []
+    for sub in nested.values() if isinstance(nested, dict) else nested:
+        reason = _transport_credentials(sub)
+        if reason:
+            return reason
+    return None
+
+
+# (path, size, mtime_ns) -> SHA-256 of the jar: hashed once per file version.
+_jar_digest_cache: dict[tuple[str, int, int], str] = {}
+
+
+def _file_sha256(path: str) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _jar_sha256(path: str) -> str:
+    stat = os.stat(path)
+    key = (path, stat.st_size, stat.st_mtime_ns)
+    if key not in _jar_digest_cache:
+        _jar_digest_cache[key] = _file_sha256(path)
+    return _jar_digest_cache[key]
+
+
+def _application_lineage_file(context: Any, directory: Path) -> Path:
+    """One Spark event file per application: DAG, run (slug + hash: the run
+    id is free text), map index and try."""
+    import hashlib
+    import re
+
+    ti = context["ti"]
+    run_id = str(context.get("run_id") or ti.dag_run.run_id)
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id).strip("._")[:60]
+    digest = hashlib.sha1(run_id.encode()).hexdigest()[:8]
+    name = f"spark-{ti.dag_id}-{slug}-{digest}-{ti.map_index}-{ti.try_number}.jsonl"
+    return directory / name
+
+
+def _strip_lineage(task: Any) -> None:
+    """Remove everything openlineage_spark_settings added: the command is
+    then the one of a run without lineage."""
+    kept = {
+        key: value
+        for key, value in (task.conf or {}).items()
+        if key not in _LINEAGE_CONF_KEYS and not key.startswith("spark.openlineage.")
+    }
+    task.conf = kept or None
+    task._openlineage_inject_parent_job_info = False
+    task._openlineage_inject_transport_info = False
+
+
+def prepare_spark_lineage(context: Any) -> None:
+    """`pre_execute` of spark_read_files (P2-5). Never raises.
+
+    - SEC-2: when `OPENLINEAGE_SPARK_SHA256` is set (the Makefile exports
+      the pinned digest), the jar must match it, or the listener is removed
+      (a jar for another Scala version passes the zip check, then stops the
+      SparkContext). Hashed here, when the task runs, rather than at every
+      parse of the DAG file (about 110 ms for 42 MB), and cached by path,
+      size and mtime.
+    - C-13: the `file` transport gets one location per application.
+    - `file_list` is declared as the task's input (report_file_list_input).
+    """
+    try:
+        task = context["task"]
+        conf = task.conf or {}
+        if conf.get("spark.extraListeners") == OPENLINEAGE_SPARK_LISTENER:
+            expected = (os.environ.get(OPENLINEAGE_SPARK_SHA256_ENV) or "").strip().lower()
+            jar = conf["spark.jars"]
+            actual = _jar_sha256(jar) if expected else None
+            if expected and actual != expected:
+                log.warning(
+                    "%s has SHA-256 %s, not the pinned %s (%s): Spark runs without its "
+                    "OpenLineage listener (run `make lineage-jar`)",
+                    jar,
+                    actual,
+                    expected,
+                    OPENLINEAGE_SPARK_SHA256_ENV,
+                )
+                _strip_lineage(task)
+            elif conf.get("spark.openlineage.transport.type") == "file":
+                default = Path(conf["spark.openlineage.transport.location"])
+                location = _application_lineage_file(context, default.parent)
+                task.conf = {**conf, "spark.openlineage.transport.location": str(location)}
+    except Exception:
+        log.warning("OpenLineage: could not prepare the Spark lineage (ignored)", exc_info=True)
+    report_file_list_input(context)
+
+
+def report_file_list_input(context: Any) -> None:
+    """Declare `file_list` as the OpenLineage input of spark_read_files: the
+    job selects its files there through SQLAlchemy, which no integration
+    sees. Returns at once when lineage is off (no-op collector); never
+    raises (see utils/file_list_lineage.py)."""
+    try:
+        from airflow.sdk.lineage import NoOpCollector, get_hook_lineage_collector
+
+        if isinstance(get_hook_lineage_collector(), NoOpCollector):
+            return
+        from airflow.providers.postgres.hooks.postgres import PostgresHook
+
+        from utils.file_list_lineage import report_file_list_lineage
+        from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID
+
+        hook = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+        report_file_list_lineage(hook, role="input")
+    except Exception:
+        log.warning("OpenLineage: could not report file_list as input (ignored)", exc_info=True)
 
 
 @dag(
@@ -262,6 +585,10 @@ def read_file_dag():
         # into the logged spark-submit command (`--conf spark.*.env.X=...`) in
         # clear, masking only keys containing `secret` or `password` (C-6).
         env_vars={"PYTHONPATH": str(PROJECT_ROOT)},
+        # P2-5: OpenLineage listener, transport and parent job info (or
+        # nothing at all when lineage is off), from the environment.
+        **openlineage_spark_settings(),
+        pre_execute=prepare_spark_lineage,
     ).expand(application_args=resolve_source_run_ids().map(build_application_args))
 
     spark_read_files >> [publish_lake_staging(), fail_if_spark_failed()]

@@ -28,3 +28,7 @@ data/
 
 # Local lake (P2-2): Parquet written by the Spark job when LAKE_ROOT is unset
 lake/
+
+# OpenLineage (P2-5): events of the dev `file` transport and the downloaded
+# openlineage-spark jar (`make lineage-jar`)
+lineage/

@@ -39,6 +39,8 @@ SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "_lake_staging__sources.yml
 
 PRODUCER = "dbt_producer_watcher"
 PUBLISH = "publish_dbt_marts"
+# P2-5: carries the OpenLineage link Spark staging -> dbt sources; not a dbt task.
+LINEAGE = "lineage_lake_staging"
 
 
 @pytest.fixture(scope="module")
@@ -55,7 +57,7 @@ def transform_dag(dagbag):
 
 
 def _dbt_tasks(dag):
-    return [t for t in dag.tasks if t.task_id != PUBLISH]
+    return [t for t in dag.tasks if t.task_id not in (PUBLISH, LINEAGE)]
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +194,7 @@ def test_p2_4_transform_dag_run_policy(transform_dag):
 
 def test_p2_4_transform_dag_has_one_task_pair_per_model(transform_dag):
     """Rendered from the manifest: a run + test task per dbt model, plus the
-    watcher producer and the publishing task."""
+    watcher producer, the publishing task and (P2-5) the lineage link."""
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     models = {
         node["name"]
@@ -205,7 +207,7 @@ def test_p2_4_transform_dag_has_one_task_pair_per_model(transform_dag):
         "mart_movies__by_release_year_language",
     }
     expected = {f"{m}.{kind}" for m in models for kind in ("run", "test")}
-    assert set(transform_dag.task_ids) == expected | {PRODUCER, PUBLISH}
+    assert set(transform_dag.task_ids) == expected | {PRODUCER, PUBLISH, LINEAGE}
 
 
 def test_p2_4_transform_dag_uses_watcher_mode_with_the_transform_venv(transform_dag):
