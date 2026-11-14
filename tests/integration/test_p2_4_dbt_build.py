@@ -15,7 +15,8 @@ for real (transform/.venv/bin/dbt, DuckDB) and the tests check that:
     error, and the build still succeeds;
   - C-1: a lake without any staging file (mistyped LAKE_ROOT) or a scheme
     DuckDB cannot read (`hdfs://`) fails before any model, warehouse intact;
-  - C-3: a type widened by an old snapshot breaks the movies contract;
+  - C-3: a type widened by an old snapshot breaks the movies contract, and
+    the orders one (P2-6, orders.yaml now declares its schema);
   - C-5: no DuckDB extension is auto-installed or auto-loaded;
   - C-6 (dbt side): a failing dbt test fails the build;
   - C-7/C-8: `file:///...` (the job's form) and `file:/...` are accepted;
@@ -41,6 +42,7 @@ TRANSFORM_DIR = PROJECT_ROOT / "transform"
 DBT_EXECUTABLE = TRANSFORM_DIR / ".venv" / "bin" / "dbt"
 DBT_PYTHON = TRANSFORM_DIR / ".venv" / "bin" / "python"
 IMDB_CONFIG = PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
+ORDERS_CONFIG = PROJECT_ROOT / "config" / "sources" / "orders.yaml"
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="needs a POSIX venv layout")
 
@@ -190,15 +192,23 @@ def _write_movies(spark, writer) -> None:
 
 
 def _write_orders(spark, writer) -> None:
+    """P2-6: the schema of orders.yaml (`columns_type`), which the enforced
+    contract of stg_orders__current mirrors."""
+    from pipeline.config.registry import load_source_config
+    from pipeline.config.types import build_schema
+
+    schema = build_schema(load_source_config(ORDERS_CONFIG).reader.columns_type)
+
     def write(run_id, source_file, file_id, rows):
-        data = spark.createDataFrame(rows, "order_id int, amount double, customer string")
+        data = spark.createDataFrame(rows, schema)
         writer.write(
             data, "staging/orders", run_id=run_id, source_file=source_file, file_id=file_id
         )
 
-    write(RUN_OLD, "orders_1.csv", 12, [(1, 10.5, "x"), (2, 3.0, "y")])
-    write(RUN_NEW, "orders_1.csv", 31, [(1, 11.5, "x")])
-    write(RUN_NUMERIC, "orders_2.csv", 21, [(7, 1.0, None)])
+    day = date(2026, 11, 1)
+    write(RUN_OLD, "orders_1.csv", 12, [(1, "x", 10.5, day), (2, "y", 3.0, None)])
+    write(RUN_NEW, "orders_1.csv", 31, [(1, "x", 11.5, day)])
+    write(RUN_NUMERIC, "orders_2.csv", 21, [(7, None, 1.0, day)])
 
 
 def _spark_current(spark, lake_root: str, table: str, columns: list[str]) -> list[dict]:
@@ -338,12 +348,18 @@ def test_p2_4_c1_table_without_file_keeps_a_typed_empty_relation(dbt_executable,
 
     for relation in ("stg_movies__current", "mart_movies__by_release_year_language"):
         assert _describe(empty_wh, relation) == _describe(full_wh, relation), relation
-    # orders not read in that lake: only the declared technical columns.
-    assert [c for c, _ in _describe(full_wh, "stg_orders__current")] == [
-        "lake_file_id",
-        "lake_ingested_at",
-        "lake_run_id",
-        "lake_source_file",
+    # P2-6: orders not read in that lake, yet the same typed columns as when
+    # it is (orders.yaml columns_type, enforced contract).
+    assert _describe(full_wh, "stg_orders__current") == _describe(empty_wh, "stg_orders__current")
+    assert _describe(empty_wh, "stg_orders__current") == [
+        ("order_id", "INTEGER"),
+        ("customer", "VARCHAR"),
+        ("amount", "DOUBLE"),
+        ("order_date", "DATE"),
+        ("lake_file_id", "BIGINT"),
+        ("lake_ingested_at", "TIMESTAMP"),
+        ("lake_run_id", "VARCHAR"),
+        ("lake_source_file", "VARCHAR"),
     ]
 
 
@@ -423,6 +439,31 @@ def test_p2_4_c3_widened_old_snapshot_breaks_the_movies_contract(dbt_executable,
     assert proc.returncode != 0, output[-3000:]
     assert "contract" in output.lower(), output[-3000:]
     assert "vote_count" in output, output[-3000:]
+
+
+def test_p2_6_widened_old_snapshot_breaks_the_orders_contract(dbt_executable, spark, tmp_path):
+    """P2-6: the same guard on stg_orders__current, now that orders.yaml
+    declares its schema: an old snapshot written with `order_id` as BIGINT
+    (an inferSchema read, before P2-6) fails the build."""
+    from pyspark.sql import functions as F
+
+    from storage.parquet_lake_writer import ParquetLakeWriter
+
+    lake = tmp_path / "lake"
+    writer = ParquetLakeWriter(str(lake))
+    _write_movies(spark, writer)
+    _write_orders(spark, writer)
+    old = spark.range(1).select(
+        F.lit(9).cast("bigint").alias("order_id"), F.lit(1.0).alias("amount")
+    )
+    writer.write(old, "staging/orders", run_id="manual__old", source_file="old.csv", file_id=1)
+
+    proc = _dbt_build(tmp_path, lake_root=str(lake), warehouse=str(tmp_path / "w.duckdb"))
+
+    output = proc.stdout + proc.stderr
+    assert proc.returncode != 0, output[-3000:]
+    assert "contract" in output.lower(), output[-3000:]
+    assert "order_id" in output, output[-3000:]
 
 
 def test_p2_4_c5_duckdb_never_autoloads_extensions(dbt_executable, spark, tmp_path):

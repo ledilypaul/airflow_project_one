@@ -84,10 +84,14 @@ sources:
           - {name: lake_source_file, data_type: VARCHAR}
       - name: orders
         description: >-
-          staging/orders (config/sources/orders.yaml). Schéma métier inconnu (lu avec
-          inferSchema, sans columns_type) : seules les colonnes techniques sont
-          déclarées, la relation vide n'a donc que celles-là.
+          staging/orders (config/sources/orders.yaml). Colonnes métier dans l'ordre et
+          avec les types de reader.columns_type (P2-6, test pytest qui le vérifie), puis
+          les colonnes techniques dans l'ordre où DuckDB les relit.
         columns:
+          - {name: order_id, data_type: INTEGER}
+          - {name: customer, data_type: VARCHAR}
+          - {name: amount, data_type: DOUBLE}
+          - {name: order_date, data_type: DATE}
           - {name: lake_file_id, data_type: BIGINT}
           - {name: lake_ingested_at, data_type: TIMESTAMP}
           - {name: lake_run_id, data_type: VARCHAR}

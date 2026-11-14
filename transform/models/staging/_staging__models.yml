@@ -66,12 +66,22 @@ models:
       - {name: lake_source_file, data_type: VARCHAR, data_tests: [not_null]}
   - name: stg_orders__current
     description: >-
-      État courant de staging/orders (latest_snapshot). Colonnes métier : celles
-      inférées par Spark ; aucune tant qu'aucun fichier orders n'a été lu.
+      État courant de staging/orders (latest_snapshot) : un seul instantané par
+      fichier source. lake_ingested_at : TIMESTAMP sans fuseau, en UTC.
+    # Contrat appliqué (P2-6), même raison que stg_movies__current : mêmes
+    # colonnes et types que la source orders (reader.columns_type d'orders.yaml
+    # + colonnes techniques), vérifié par pytest.
+    config:
+      contract:
+        enforced: true
     data_tests:
       - one_snapshot_per_source_file
     columns:
-      - {name: lake_run_id, data_tests: [not_null]}
-      - {name: lake_source_file, data_tests: [not_null]}
-      - {name: lake_file_id, data_tests: [not_null]}
-      - {name: lake_ingested_at, data_tests: [not_null]}
+      - {name: order_id, data_type: INTEGER}
+      - {name: customer, data_type: VARCHAR}
+      - {name: amount, data_type: DOUBLE}
+      - {name: order_date, data_type: DATE}
+      - {name: lake_file_id, data_type: BIGINT, data_tests: [not_null]}
+      - {name: lake_ingested_at, data_type: TIMESTAMP, data_tests: [not_null]}
+      - {name: lake_run_id, data_type: VARCHAR, data_tests: [not_null]}
+      - {name: lake_source_file, data_type: VARCHAR, data_tests: [not_null]}

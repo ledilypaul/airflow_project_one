@@ -178,7 +178,13 @@ def test_p2_2_write_passes_the_storage_mode_of_the_config(orders):
 def test_p2_2_main_writes_real_file_end_to_end(spark, tmp_path, monkeypatch):
     source = tmp_path / "in" / "orders_x.csv"
     source.parent.mkdir()
-    source.write_text("order_id,item,amount\n1,a,1.5\n1,a,1.5\n,,\n3,c,2.0\n", encoding="utf-8")
+    # P2-6: the header must match the declared columns of the repo's
+    # orders.yaml (enforceSchema=false), not the ad-hoc one of the tests above.
+    source.write_text(
+        "order_id,customer,amount,order_date\n"
+        "1,a,1.5,2026-11-01\n1,a,1.5,2026-11-01\n,,,\n3,c,2.0,2026-11-03\n",
+        encoding="utf-8",
+    )
     lake_root = tmp_path / "lake"
     monkeypatch.setenv("LAKE_ROOT", str(lake_root))
     # The session is shared by the whole test run: main() must not stop it.
@@ -199,14 +205,17 @@ def test_p2_2_main_writes_real_file_end_to_end(spark, tmp_path, monkeypatch):
         call(FILE_ID, "pending", error_message=None),
         call(FILE_ID, "processed"),
     ]
+
     # config/sources/orders.yaml: table `orders`, raw and staging zones.
-    assert _business_rows(spark, lake_root, "raw/orders") == [
-        (1, "a", 1.5),
-        (1, "a", 1.5),
-        (3, "c", 2.0),
-        (None, None, None),
-    ]
-    assert _business_rows(spark, lake_root, "staging/orders") == [(1, "a", 1.5), (3, "c", 2.0)]
+    def rows(target):
+        df = spark.read.parquet((lake_root / target).as_uri())
+        return sorted(
+            (tuple(r[c] for c in ("order_id", "customer", "amount")) for r in df.collect()),
+            key=lambda row: tuple((v is None, v) for v in row),
+        )
+
+    assert rows("raw/orders") == [(1, "a", 1.5), (1, "a", 1.5), (3, "c", 2.0), (None, None, None)]
+    assert rows("staging/orders") == [(1, "a", 1.5), (3, "c", 2.0)]
     for zone in ("raw", "staging"):
         df = spark.read.parquet((lake_root / zone / "orders").as_uri())
         assert {(r.lake_run_id, r.lake_source_file, r.lake_file_id) for r in df.collect()} == {

@@ -67,7 +67,10 @@ def _resolve_callable():
 def test_p1_5_spark_task_is_spark_submit_operator_mapped_on_application_args(spark_task):
     from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
-    assert spark_task.operator_class is SparkSubmitOperator
+    # P2-6: a subclass that only removes the retries of deterministic exits
+    # (tests/unit/dags/test_p2_6_no_retry_exit_codes.py).
+    assert issubclass(spark_task.operator_class, SparkSubmitOperator)
+    assert spark_task.operator_class.__name__ == "ReadFilesSparkSubmitOperator"
     assert set(spark_task.expand_input.value) == {"application_args"}
 
 

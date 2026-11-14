@@ -13,7 +13,9 @@ Covers:
   - the dbt environment (LAKE_ROOT, DBT_DUCKDB_PATH) and its defaults;
   - a missing manifest is an import error of that file only;
   - the dbt project matches the lake: sources = staging tables of the
-    reading configs, movies columns = imdb.yaml `columns_type`.
+    reading configs, movies columns = imdb.yaml `columns_type`, orders
+    columns = orders.yaml `columns_type` (P2-6), both with an enforced
+    contract.
 
 The manifest (transform/target/manifest.json) comes from `make dbt-parse`,
 which CI runs before pytest.
@@ -454,9 +456,33 @@ def test_p2_4_movies_source_columns_follow_the_imdb_schema():
     assert declared == expected + TECHNICAL_COLUMNS
 
 
-def test_p2_4_orders_source_declares_only_technical_columns():
+def test_p2_6_orders_source_columns_follow_the_orders_schema():
+    """P2-6 (replaces test_p2_4_orders_source_declares_only_technical_columns):
+    orders.yaml declares `columns_type`, so the typed empty relation of
+    orders has the business columns too, like movies."""
+    from pipeline.config.registry import load_source_config
+
+    columns_type = load_source_config(
+        PROJECT_ROOT / "config" / "sources" / "orders.yaml"
+    ).reader.columns_type
     (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
-    assert [(c["name"], c["data_type"]) for c in orders["columns"]] == TECHNICAL_COLUMNS
+    declared = [(c["name"], c["data_type"]) for c in orders["columns"]]
+
+    expected = [(name, DUCKDB_TYPES[spark_type]) for name, spark_type in columns_type.items()]
+    assert declared == expected + TECHNICAL_COLUMNS
+
+
+def test_p2_6_every_dbt_source_table_is_typed_like_its_reading_config():
+    """No staging table read with an inferred schema reaches dbt: each
+    source table has a `columns_type` to align its columns on."""
+    from pipeline.config.registry import SourceRegistry
+
+    typed = {
+        loaded.config.storage.table_name
+        for loaded in SourceRegistry.from_directory().sources
+        if loaded.config.reader.columns_type
+    }
+    assert {t["name"] for t in _dbt_sources()["tables"]} <= typed
 
 
 def test_p2_4_dbt_profile_reads_paths_from_the_environment():
@@ -481,6 +507,21 @@ def test_p2_4_c3_movies_contract_matches_the_source_columns():
     assert model["config"]["contract"] == {"enforced": True}
     assert [(c["name"], c["data_type"]) for c in model["columns"]] == [
         (c["name"], c["data_type"]) for c in movies["columns"]
+    ]
+
+
+def test_p2_6_orders_contract_matches_the_source_columns():
+    """P2-6: same enforced contract as stg_movies__current, on the orders
+    source columns (orders.yaml + technical columns, checked above)."""
+    models = yaml.safe_load(
+        (TRANSFORM_DIR / "models" / "staging" / "_staging__models.yml").read_text(encoding="utf-8")
+    )["models"]
+    (model,) = [m for m in models if m["name"] == "stg_orders__current"]
+    (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
+
+    assert model["config"]["contract"] == {"enforced": True}
+    assert [(c["name"], c["data_type"]) for c in model["columns"]] == [
+        (c["name"], c["data_type"]) for c in orders["columns"]
     ]
 
 

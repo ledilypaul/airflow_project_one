@@ -109,7 +109,7 @@ Autres protections :
 
 ## 7. Points ouverts
 
-- **`orders`.** Sans `columns_type` dans `config/sources/orders.yaml`, ses types peuvent varier d'un fichier à l'autre, donc pas de contrat sur `stg_orders__current`. À déclarer une fois le schéma réel connu, puis activer le contrat.
+- **`orders`.** Sans `columns_type` dans `config/sources/orders.yaml`, ses types peuvent varier d'un fichier à l'autre, donc pas de contrat sur `stg_orders__current`. À déclarer une fois le schéma réel connu, puis activer le contrat. *Fait en P2-6 (`docs/architecture/2026-11-14-p2-6-phase2-followups.md`).*
 - **Exécutions sans effet.** `publish_lake_staging` compte aussi les fichiers `processed` des sources sans zone staging. dbt peut alors tourner pour rien, ce qui reste idempotent et sans effet.
 - **Lake distant** (S3, Azure) : déclarer l'extension DuckDB et les identifiants.
 - **Points antérieurs :** un code de sortie sans retry pour les échecs qualité déterministes, et le passage des contrôles IMDB en `error`.

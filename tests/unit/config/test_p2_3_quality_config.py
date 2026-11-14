@@ -377,10 +377,7 @@ def test_p2_3_repo_imdb_checks_id_not_null_and_unique_as_warnings():
     assert imdb.quality_target == "quality/movies"
 
 
-def test_p2_3_repo_orders_warns_on_empty_file_only():
-    orders = load_source_config(REPO_CONFIG_ROOT / "sources" / "orders.yaml")
-    (check,) = orders.quality.checks
-    assert (check.type, check.min, check.max, check.severity) == ("row_count", 1, None, "warn")
+# P2-6: the repo orders checks are pinned by tests/unit/config/test_p2_6_orders_schema.py.
 
 
 @pytest.mark.parametrize("config_file", sorted((REPO_CONFIG_ROOT / "defaults").glob("*.yaml")))

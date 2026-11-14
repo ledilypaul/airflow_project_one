@@ -152,6 +152,17 @@ class QualityChecksFailed(Exception):
             message += f" ({'; '.join(self.notes)})"
         super().__init__(message)
 
+    @property
+    def deterministic(self) -> bool:
+        """Vrai quand une nouvelle tentative échouerait de la même façon
+        (P2-6) : chaque contrôle bloquant a trouvé des lignes en échec
+        (statut `fail`), et rien d'autre n'a échoué (aucune note : résultats
+        enregistrés, partition staging précédente supprimée). Un contrôle
+        bloquant qui n'a pas pu s'exécuter (statut `error`) ne l'est pas :
+        sa cause peut être passagère (erreur Spark)."""
+        failures = blocking_failures(self.results)
+        return bool(failures) and not self.notes and all(r.status == FAIL for r in failures)
+
 
 class QualityChecksError(Exception):
     """Le moteur lui-même a levé une exception (C-1) : aucun résultat, le
