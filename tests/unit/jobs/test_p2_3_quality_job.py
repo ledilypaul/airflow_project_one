@@ -12,7 +12,7 @@ For a source that declares `quality`:
   `error` when it could not run): staging is NOT written and the staging
   partition a previous attempt may have left for this (run, file) is
   removed; the file is `failed` with a readable summary, the other files go
-  on, exit code 1;
+  on, exit code 6 when no file failed otherwise (P2-6), else 1;
 - only `warn` checks failing or unable to run: staging written, file
   `processed`, nothing in `error_message`;
 - the engine itself raising (C-1): fail closed, the previous staging
@@ -297,7 +297,8 @@ def test_p2_3_main_marks_a_blocking_failure_failed_and_goes_on(spark, tmp_path, 
         spark, tmp_path, monkeypatch, {"orders_bad.csv": BAD_CSV, "orders_good.csv": GOOD_CSV}
     )
 
-    assert code == 1
+    # P2-6: the only failure is a blocking check (status fail): exit 6, not 1.
+    assert code == read_files_job.EXIT_QUALITY_FAILED
     assert update.call_args_list == [
         call(1, "pending", error_message=None),
         call(

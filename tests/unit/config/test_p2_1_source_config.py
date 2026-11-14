@@ -171,11 +171,13 @@ def test_p2_1_migrated_configs_keep_their_information():
 
     orders = load_source_config(REPO_CONFIG_ROOT / "sources" / "orders.yaml")
     assert orders.source.patterns == ["orders_*.csv"]
+    # P2-6: explicit schema (columns_type) checked against each header;
+    # inferSchema, ignored once a schema is given, removed.
     assert orders.reader.options == {
         "header": True,
-        "inferSchema": True,
         "delimiter": ",",
         "encoding": "UTF-8",
+        "enforceSchema": False,
     }
 
     txt = load_source_config(REPO_CONFIG_ROOT / "defaults" / "txt.yaml")

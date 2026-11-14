@@ -31,6 +31,12 @@ enregistré au moins un fichier.
      dans le log du scheduler seulement), jusqu'à `dagrun_timeout`.
    - Ressources (mémoire, cœurs...) : pas dans le DAG, mais dans la
      Connection / `spark-defaults.conf` de chaque environnement.
+   - Retries (P2-6) : `ReadFilesSparkSubmitOperator`, une sous-classe de
+     `SparkSubmitOperator`, convertit les codes de sortie déterministes du
+     job (2 run id invalide, 3 aucune ligne, 5 config ou LAKE_ROOT invalide,
+     6 échec qualité bloquant seulement) en `AirflowFailException` : pas de
+     retry, qui échouerait de la même façon. 1 (un fichier en échec pour une
+     autre raison), 4 (parent disparu) et toute autre erreur gardent le retry.
    - Sortie (P2-2) : le job écrit chaque fichier en Parquet partitionné sous
      `LAKE_ROOT` (zones raw et staging, voir pipeline/jobs/read_files_job.py).
      `LAKE_ROOT` n'est pas fixé ici : le job le lit dans l'environnement du
@@ -136,6 +142,16 @@ OPENLINEAGE_DISABLED_TRIMMERS = "io.openlineage.client.dataset.partition.trimmer
 # Keys added by openlineage_spark_settings (besides spark.openlineage.*).
 _LINEAGE_CONF_KEYS = {"spark.jars", "spark.extraListeners", "spark.redaction.regex"}
 
+# P2-6: exit codes of pipeline/jobs/read_files_job.py that a retry cannot
+# change (same values as its EXIT_* constants, checked by a test: the DAG does
+# not import the job, which would load pyspark at every parse).
+NO_RETRY_EXIT_CODES: dict[int, str] = {
+    2: "invalid --run-id",
+    3: "no file_list row for the run id",
+    5: "invalid reading config or LAKE_ROOT, every file of the run marked failed",
+    6: "blocking quality checks only, see file_list and quality/<table> in the lake",
+}
+
 # Valeurs de `run_id` qui ne désignent aucun run : refusées comme le fait déjà
 # le job Spark (code de sortie 2), mais ici avant même de lancer spark-submit.
 _MISSING_RUN_ID_VALUES = {"", "None"}
@@ -152,6 +168,59 @@ def build_application_args(run_id: str) -> list[str]:
     the argument list to `subprocess.Popen` as is.
     """
     return [f"--run-id={run_id}"]
+
+
+def _spark_submit_returncode(hook: Any) -> int | None:
+    """Return code of the spark-submit process `hook` ran, or None when it
+    never started.
+
+    SparkSubmitHook (apache-airflow-providers-apache-spark 6.3.4) keeps the
+    `subprocess.Popen` of spark-submit in `_submit_sp` and raises
+    `AirflowException("Cannot execute: ... Error code is: N.")` when it
+    exits non-zero. In local/client mode, spark-submit exits with the code
+    of the Python driver, i.e. the job's. There is no public accessor: the
+    attribute is pinned by tests/unit/dags/test_p2_6_no_retry_exit_codes.py.
+    """
+    returncode = getattr(getattr(hook, "_submit_sp", None), "returncode", None)
+    return returncode if isinstance(returncode, int) else None
+
+
+class ReadFilesSparkSubmitOperator(SparkSubmitOperator):
+    """SparkSubmitOperator that never retries a deterministic failure of
+    read_files_job (P2-6).
+
+    When spark-submit exits with one of `NO_RETRY_EXIT_CODES` (2, 3, 5, 6),
+    the hook's `AirflowException` becomes an `AirflowFailException`, which
+    the Task SDK fails without retry; its message names the code and keeps
+    the hook's (masked command, log tail). Any other failure (exit 1 or 4,
+    a signal, an error before spark-submit started) propagates unchanged
+    and keeps the task's `retries`.
+
+    Only `execute` is overridden: `.partial().expand()`, the templated
+    fields, `pre_execute` (P2-5 lineage) and `on_kill` are the provider's.
+    In YARN/Kubernetes cluster mode, spark-submit's return code is not the
+    driver's: those runs keep retrying, the safe side.
+    """
+
+    def execute(self, context: Any) -> None:
+        from airflow.sdk.exceptions import AirflowException, AirflowFailException
+
+        try:
+            return super().execute(context)
+        except AirflowException as exc:
+            code = _spark_submit_returncode(self._hook)
+            meaning = NO_RETRY_EXIT_CODES.get(code) if code is not None else None
+            if code is None:
+                self.log.warning(
+                    "spark-submit return code unavailable (hook._submit_sp "
+                    "missing or not started): deterministic failures of "
+                    "read_files_job will be retried."
+                )
+            if meaning is None:
+                raise
+            raise AirflowFailException(
+                f"read_files_job exit code {code} ({meaning}): deterministic, not retried. {exc}"
+            ) from exc
 
 
 def _lineage_off() -> dict[str, Any]:
@@ -572,7 +641,8 @@ def read_file_dag():
             "(`lake_staging` was emitted only if some file was processed)"
         )
 
-    spark_read_files = SparkSubmitOperator.partial(
+    # P2-6: the provider's operator, minus the retries of deterministic exits.
+    spark_read_files = ReadFilesSparkSubmitOperator.partial(
         task_id="spark_read_files",
         application=str(JOB_PATH),
         conn_id=SPARK_CONN_ID,

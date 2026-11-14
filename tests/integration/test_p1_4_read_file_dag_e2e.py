@@ -27,7 +27,10 @@ mapping, SparkSubmitOperator, SparkSubmitHook, the Spark Connection), that:
     least one file of the run is `processed` (Spark succeeded, or exit 1 with
     another file processed), and nothing otherwise (no file processed, exit
     3, or no run id); `fail_if_spark_failed` keeps a run with a failed Spark
-    application failed.
+    application failed;
+  - P2-6: with the DAG's `retries=1` kept (retried at once), exit 6 (quality
+    failure only) is tried once, exit 1 twice; with another file processed,
+    `lake_staging` is still emitted and the run stays failed.
 
 Never build the run id into a templated string (`@task.bash`, an f-string in
 `application_args`...): Jinja would render it, which reopens template
@@ -76,10 +79,12 @@ DAG_TEST_SCRIPT = textwrap.dedent(
     """
     import json
     import sys
+    from datetime import timedelta
 
     from airflow.models import DagBag
 
     dag_file, run_id, result_file, chain_second_run, file_list_db, statuses = sys.argv[1:7]
+    keep_spark_retries = sys.argv[7] == "1"
 
     # P2-4 / C-2: publish_lake_staging reads file_list through the
     # `file_list_db` Connection (Postgres). Stand-in: a SQLite file_list with
@@ -105,13 +110,21 @@ DAG_TEST_SCRIPT = textwrap.dedent(
     # dag.test() waits for retry_delay (5 min) before a retry: a regression
     # must fail fast instead. Only the retry policy is changed.
     for task in dag.tasks:
-        task.retries = 0
+        if keep_spark_retries and task.task_id == "spark_read_files":
+            # P2-6: keep the DAG's retries, retried at once.
+            assert task.retries == 1, task.retries
+            task.retry_delay = timedelta(0)
+        else:
+            task.retries = 0
 
     first = dag.test(run_conf={"run_id": run_id})
     first_spark_tis = sorted(
         (ti.map_index, ti.pool, str(ti.state))
         for ti in first.get_task_instances()
         if ti.task_id == "spark_read_files"
+    )
+    first_spark_tries = sorted(
+        ti.try_number for ti in first.get_task_instances() if ti.task_id == "spark_read_files"
     )
     first_publish_state = str(first.get_task_instance("publish_lake_staging").state)
     first_guard_state = str(first.get_task_instance("fail_if_spark_failed").state)
@@ -135,6 +148,7 @@ DAG_TEST_SCRIPT = textwrap.dedent(
             {
                 "first": str(first.state),
                 "first_spark_tis": first_spark_tis,
+                "first_spark_tries": first_spark_tries,
                 "first_publish": first_publish_state,
                 "first_guard": first_guard_state,
                 "first_lake_staging_events": lake_staging_events,
@@ -204,6 +218,7 @@ def _run_dag_test(
     chain_second,
     statuses,
     extra_env=None,
+    keep_spark_retries=False,
 ):
     """Run DAG_TEST_SCRIPT in an isolated Airflow; return (states, logs).
     `statuses`: file_list statuses of the run id's files after the job."""
@@ -237,6 +252,7 @@ def _run_dag_test(
             "1" if chain_second else "0",
             str(tmp_path / "file_list.db"),
             json.dumps(statuses),
+            "1" if keep_spark_retries else "0",
         ],
         env=env,
         cwd=tmp_path,
@@ -489,3 +505,66 @@ def test_p2_5_sec2_read_file_dag_e2e_wrong_jar_digest_runs_without_lineage(
     assert states["first"] == "success", logs
     [call] = [json.loads(line) for line in calls_file.read_text().splitlines()]
     assert not [a for a in call["argv"] if "openlineage" in a.lower() or a.startswith("spark.jars")]
+
+
+# ---------------------------------------------------------------------------
+# P2-6 — no retry for a deterministic failure
+# ---------------------------------------------------------------------------
+
+
+def test_p2_6_read_file_dag_e2e_quality_exit_6_is_not_retried(
+    airflow_env, fake_spark_submit, tmp_path
+):
+    """Exit 6 (every failed file failed on blocking quality checks only):
+    one attempt although spark_read_files keeps `retries=1`. Another file of
+    the run is `processed`: `lake_staging` is emitted, and the run stays
+    failed (`fail_if_spark_failed`)."""
+    _, calls_file = fake_spark_submit
+
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p2_6_exit_6",
+        exit_code=6,
+        chain_second=False,
+        statuses=["processed", "failed"],
+        keep_spark_retries=True,
+    )
+
+    calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+    assert len(calls) == 1, calls
+    assert states["first_spark_tis"] == [[0, "spark", "failed"]], logs
+    # retries=1 kept, yet a single try: AirflowFailException (its message is
+    # checked by tests/unit/dags/test_p2_6_no_retry_exit_codes.py).
+    assert states["first_spark_tries"] == [1], logs
+    assert states["first_publish"] == "success", logs
+    assert states["first_lake_staging_events"] == ["publish_lake_staging"], logs
+    assert states["first_guard"] == "failed", logs
+    assert states["first"] == "failed", logs
+
+
+def test_p2_6_read_file_dag_e2e_exit_1_is_still_retried(airflow_env, fake_spark_submit, tmp_path):
+    """Exit 1 (a file failed for another reason): the retry still happens,
+    same setup as the test above."""
+    _, calls_file = fake_spark_submit
+
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p2_6_exit_1",
+        exit_code=1,
+        chain_second=False,
+        statuses=["processed", "failed"],
+        keep_spark_retries=True,
+    )
+
+    calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
+    assert len(calls) == 2, calls
+    assert [c["argv"][-1] for c in calls] == ["--run-id=manual__p2_6_exit_1"] * 2
+    assert states["first_spark_tis"] == [[0, "spark", "failed"]], logs
+    assert states["first_spark_tries"] == [2], logs
+    assert states["first_publish"] == "success", logs
+    assert states["first_guard"] == "failed", logs
+    assert states["first"] == "failed", logs

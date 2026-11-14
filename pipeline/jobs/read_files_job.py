@@ -58,10 +58,14 @@ project's venv (e.g. `ENV=prod` on YARN/Kubernetes where the interpreter
 isn't the one `uv sync` installed into): `pipeline.*` / `utils.*` won't be on
 sys.path in that case, so the fallback below adds the project root itself.
 
-Exit codes:
+Exit codes (read_file_dag does not retry 2, 3, 5 and 6, see P2-6):
     0 = every file processed;
-    1 = at least one file failed (its row is `failed`, with the error), a
-        blocking quality check included (P2-3);
+    1 = at least one file failed (its row is `failed`, with the error) for
+        a reason a retry may change: read or write error, quality engine
+        raising (`quality checks could not run`), blocking check that could
+        not run (status `error`), quality results not recorded or stale
+        staging partition not removed, two files with the same name. Also
+        any mix of those with quality failures;
     2 = missing/invalid --run-id (nothing queried, nothing written);
     3 = no file_list row for that run id (nothing written);
     4 = parent process gone (see `start_parent_watchdog`): the job stopped on
@@ -72,7 +76,18 @@ Exit codes:
         run is `failed` with the config error, Spark never started. Also a
         quality regex that Java refuses (P2-3 / C-8), detected right after
         Spark starts and before any file is read: same marking, Spark
-        stopped. Deterministic: a retry fails the same way until it is fixed.
+        stopped. Deterministic: a retry fails the same way until it is fixed;
+    6 = at least one file failed, and every failed file failed only on
+        blocking quality checks that found failing rows (status `fail`,
+        severity `error`), their results recorded and the file's staging
+        partition removed (P2-6). The other files may be `processed`.
+        Deterministic: the same data fails the same checks, so a retry
+        would only rewrite the same partitions.
+
+Priority, for the final code of a run that reached the files: 0 when no
+file failed; otherwise 6 when every failed file is a deterministic quality
+failure; otherwise 1. 1 wins over 6 as soon as one failure is of another
+kind: a retry must stay possible for that file.
 
 Checks run in this order, cheapest and most fundamental first: the run id
 (2, no I/O), then its rows (3: without rows there is nothing to process nor
@@ -143,8 +158,12 @@ except ModuleNotFoundError:
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s - %(message)s")
 log = logging.getLogger(__name__)
 
+EXIT_FILES_FAILED = 1
+EXIT_INVALID_RUN_ID = 2
+EXIT_NO_ROWS = 3
 EXIT_PARENT_GONE = 4
 EXIT_INVALID_CONFIG = 5
+EXIT_QUALITY_FAILED = 6
 
 # Root of the reading configs (`sources/`, `defaults/`); a module attribute so
 # that tests can point it at a temporary directory.
@@ -404,6 +423,27 @@ def _forget_results(
         )
 
 
+def final_exit_code(*, failed: int, deterministic_quality: int) -> int:
+    """Exit code of a run that processed its files (P2-6).
+
+    `failed`: number of files marked `failed`; `deterministic_quality`: how
+    many of them failed only on blocking quality checks with status `fail`
+    (`QualityChecksFailed.deterministic`). 0 when nothing failed,
+    `EXIT_QUALITY_FAILED` when every failure is such a quality failure,
+    `EXIT_FILES_FAILED` otherwise (one failure of another kind is enough).
+    """
+    if failed < 0 or deterministic_quality < 0 or deterministic_quality > failed:
+        raise ValueError(
+            f"inconsistent failure counts: failed={failed}, "
+            f"deterministic_quality={deterministic_quality}"
+        )
+    if failed == 0:
+        return 0
+    if deterministic_quality == failed:
+        return EXIT_QUALITY_FAILED
+    return EXIT_FILES_FAILED
+
+
 def _fail_all(file_list, error_message: str) -> None:
     for file in file_list:
         update_file_status(file["id"], "failed", error_message=error_message)
@@ -419,7 +459,7 @@ def main(run_id: str):
             "to scope to (idempotence, P1-3). Pass a real --run-id.",
             run_id,
         )
-        sys.exit(2)
+        sys.exit(EXIT_INVALID_RUN_ID)
 
     file_list = list_file_from_db(run_id)
     if not file_list:
@@ -432,7 +472,7 @@ def main(run_id: str):
             "Nothing was processed.",
             run_id,
         )
-        sys.exit(3)
+        sys.exit(EXIT_NO_ROWS)
 
     # P2-1 / C-2: load and validate every reading config before starting
     # Spark. An invalid config is a deterministic error for the whole run, not
@@ -489,6 +529,8 @@ def main(run_id: str):
 
         success_count = 0
         fail_count = 0
+        # P2-6: failures a retry cannot change (blocking checks, status fail).
+        quality_fail_count = 0
         for file in file_list:
             file_id = file["id"]
             file_path = file["file_path"]
@@ -530,6 +572,8 @@ def main(run_id: str):
                 # Already logged by write_to_lake, with the staging outcome.
                 update_file_status(file_id, "failed", error_message=str(e))
                 fail_count += 1
+                if isinstance(e, QualityChecksFailed) and e.deterministic:
+                    quality_fail_count += 1
             except Exception as e:
                 log.error("Error processing %s: %s", file_path, e)
                 update_file_status(file_id, "failed", error_message=str(e))
@@ -538,7 +582,24 @@ def main(run_id: str):
         spark.stop()
 
     log.info("%d/%d files processed successfully.", success_count, len(file_list))
-    sys.exit(1 if fail_count > 0 else 0)
+    code = final_exit_code(failed=fail_count, deterministic_quality=quality_fail_count)
+    if code == EXIT_QUALITY_FAILED:
+        log.error(
+            "%d file(s) failed, all on blocking quality checks only: exit code %d "
+            "(deterministic, not retried by read_file_dag). Fix the data or the checks, "
+            "then re-run the run id.",
+            fail_count,
+            code,
+        )
+    elif code == EXIT_FILES_FAILED and quality_fail_count:
+        log.error(
+            "%d file(s) failed, %d of them on quality checks only: exit code %d "
+            "(retryable, the other failures may be transient).",
+            fail_count,
+            quality_fail_count,
+            code,
+        )
+    sys.exit(code)
 
 
 def _source_file_name(file_path: str) -> str:

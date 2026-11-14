@@ -3,7 +3,7 @@ name: code-auditor
 description: Audit de code en LECTURE SEULE - qualité, bugs, dette technique, performance Spark, bonnes pratiques Airflow 3, tests et couverture. À utiliser proactivement après un lot de modifications, avant une fusion, ou quand on demande un audit/une revue de code. Ne modifie jamais le code.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
-model: inherit
+model: opus
 effort: high
 skills:
   - audit-report-format

@@ -278,7 +278,11 @@ def test_p2_5_c7_key_value_file_name_is_not_trimmed(listener_jar, monkeypatch, t
     conf = _settings(monkeypatch, listener_jar, tmp_path / "events")
     csv = tmp_path / "data" / "orders_dt=2026-11-14.csv"
     csv.parent.mkdir(parents=True)
-    csv.write_text("order_id,amount,customer\n1,10.5,a\n2,3.0,b\n", encoding="utf-8")
+    # P2-6: the header of orders.yaml's columns_type (checked by Spark).
+    csv.write_text(
+        "order_id,customer,amount,order_date\n1,a,10.5,2026-11-14\n2,b,3.0,2026-11-14\n",
+        encoding="utf-8",
+    )
     lake = tmp_path / "lake"
 
     code, statuses, logs = _run_job(tmp_path, conf, csv, lake)

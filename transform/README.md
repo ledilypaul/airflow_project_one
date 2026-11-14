@@ -119,9 +119,8 @@ dans la source, et le build réussit avec 0 ligne.
 - `movies` déclare toutes ses colonnes, avec les types de
   `config/sources/imdb.yaml` (un test pytest le vérifie). La relation vide a
   donc exactement le schéma réel.
-- `orders`, dont le schéma métier n'est pas connu (`inferSchema`), ne déclare
-  que les colonnes techniques : tant qu'aucun fichier orders n'a été lu,
-  `stg_orders__current` n'a que celles-là.
+- `orders` fait de même avec les types de `config/sources/orders.yaml`
+  (P2-6, même test).
 - Une nouvelle source doit déclarer au moins ses colonnes techniques, chacune
   avec son `data_type`.
 
@@ -147,18 +146,24 @@ Tout est matérialisé en **table** : l'entrepôt reflète le lake au dernier
 type le plus large de **tous** les instantanés de la table, anciens compris :
 un vieil instantané lu en `BIGINT` élargit `INTEGER` partout.
 
-- **`stg_movies__current`** a un **contrat appliqué**
-  (`contract: {enforced: true}`), avec les colonnes et types de la source
-  movies, eux-mêmes alignés sur `imdb.yaml` (vérifié par pytest). Un type
-  élargi ou une colonne en plus fait échouer le build au lieu de changer le
-  schéma de l'entrepôt en silence.
-- **`stg_orders__current`** n'en a pas. `orders.yaml` lit avec `inferSchema`,
-  sans `columns_type` : son schéma n'est pas connu et peut changer d'un
-  fichier à l'autre. Ses types suivent donc les fichiers présents, élargis
-  par les anciens instantanés. **Action ouverte** :
-  1. déclarer `reader.columns_type` dans `config/sources/orders.yaml` ;
-  2. déclarer les mêmes colonnes dans la source dbt ;
-  3. activer le même contrat.
+- **`stg_movies__current`** et **`stg_orders__current`** ont un **contrat
+  appliqué** (`contract: {enforced: true}`), avec les colonnes et types de
+  leur source, eux-mêmes alignés sur `reader.columns_type` d'`imdb.yaml` et
+  d'`orders.yaml` (vérifié par pytest). Un type élargi ou une colonne en plus
+  fait échouer le build au lieu de changer le schéma de l'entrepôt en
+  silence (un test d'intégration par modèle).
+- **Une nouvelle source** suit le même chemin : `reader.columns_type` dans
+  sa config de lecture, les mêmes colonnes dans la source dbt, puis le
+  contrat. Un test vérifie que chaque table de `lake_staging` a un
+  `columns_type`.
+- **orders (P2-6).** `orders.yaml` déclare aussi `enforceSchema: false` : le
+  schéma étant positionnel, Spark compare l'en-tête de chaque fichier aux
+  noms déclarés. Un fichier d'une autre disposition est `failed` à la
+  lecture au lieu d'arriver dans le staging avec des colonnes décalées.
+  Un instantané écrit avant P2-6 (lu avec `inferSchema`) dont un type ou
+  une colonne diffère (par exemple `order_id` en `BIGINT`) fait échouer le
+  contrat. Relire le fichier ne suffit pas, puisque `union_by_name` lit
+  aussi les anciens instantanés : il faut supprimer ces partitions.
 
 ## DuckDB : un seul écrivain
 

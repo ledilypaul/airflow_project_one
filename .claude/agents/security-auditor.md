@@ -3,7 +3,7 @@ name: security-auditor
 description: Audit de sécurité IT en LECTURE SEULE - secrets commités, gestion des identifiants Airflow/Postgres, dépendances vulnérables, configuration docker/Kubernetes, injections SQL, permissions et exposition réseau. À utiliser avant toute mise en ligne, après un changement de dépendances ou de config, ou sur demande d'audit sécurité.
 tools: Read, Grep, Glob, Bash
 disallowedTools: Edit, Write, NotebookEdit
-model: inherit
+model: opus
 effort: high
 skills:
   - audit-report-format
