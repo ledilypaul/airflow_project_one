@@ -4,6 +4,9 @@ Troisième étape du pipeline. Elle lit la zone **staging** du lake Parquet
 écrite par le job Spark et construit, dans un fichier DuckDB, l'état courant
 de chaque table puis des marts.
 
+Pourquoi cette couche et les choix qui la composent : voir
+[`docs/architecture/2026-11-14-p2-4-transform-layer.md`](../docs/architecture/2026-11-14-p2-4-transform-layer.md).
+
 ```
 list_files_dag --file_list--> read_file_dag --lake_staging--> transform_dag --dbt_marts-->
                               (Spark : raw, staging)          (dbt build, DuckDB)

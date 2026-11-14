@@ -275,6 +275,7 @@ A separate, older/ad-hoc IMDB-specific extract+transform script pair, not wired 
 - **Never** read `.env`, commit secrets, or push. Work on a `feat/` or `fix/` branch, never directly on `main`/`develop`.
 - Every bug fix comes with a regression test named after its backlog ID.
 - The current audit baseline and the prioritized backlog live in `docs/audit/` (start with `2026-11-05-baseline.md`).
+- Design notes for delivered backlog items live in `docs/architecture/` (e.g. `2026-11-14-p2-4-transform-layer.md` for the dbt layer).
 
 ## Agent team
 
