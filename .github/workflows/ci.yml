@@ -26,8 +26,20 @@ jobs:
       - name: Check that uv.lock is up to date with pyproject.toml
         run: uv lock --check
 
+      # P2-4 : transform/ est un projet uv séparé (dbt n'est pas installé à
+      # côté d'Airflow), avec son propre uv.lock, vérifié de la même façon.
+      - name: Check that transform/uv.lock is up to date with transform/pyproject.toml
+        run: uv --directory transform lock --check
+
       - name: Install dependencies (runtime + airflow + dev groups)
         run: uv sync
+
+      # transform_dag est rendu depuis transform/target/manifest.json
+      # (LoadMode.DBT_MANIFEST) : sans lui, son import échoue et
+      # test_no_import_errors aussi. `make dbt-parse` synchronise
+      # transform/.venv (--locked) puis lance `dbt parse`.
+      - name: Install dbt (transform/) and generate the dbt manifest
+        run: make dbt-parse
 
       - name: Ruff lint
         run: uv run ruff check .
@@ -39,5 +51,10 @@ jobs:
       # DAGs via DagBag et vérifie dagbag.import_errors == {} ; c'est la
       # vérification "chargement des DAGs sans erreur d'import" demandée par
       # P0-5, pas besoin d'une étape dédiée en plus de la suite pytest.
-      - name: Run test suite (includes DAG import check)
+      # REQUIRE_DBT=1 : les tests dbt réels (tests/integration/test_p2_4_dbt_build.py)
+      # échouent au lieu d'être ignorés si transform/.venv manquait.
+      - name: Run test suite (includes DAG import check and real dbt builds)
         run: uv run pytest tests/ -q
+        env:
+          REQUIRE_DBT: "1"
+          AIRFLOW__COSMOS__ENABLE_TELEMETRY: "False"

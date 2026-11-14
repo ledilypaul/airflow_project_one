@@ -1,0 +1,18 @@
+# Aucun chemin en dur : DBT_DUCKDB_PATH vient de l'environnement (Makefile,
+# ou DAG transform_dag via ProjectConfig.env_vars), chemin absolu obligatoire
+# (vérifié au démarrage par la macro check_lake_environment).
+lake_transform:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('DBT_DUCKDB_PATH') }}"
+      # DuckDB n'accepte qu'un écrivain par fichier : un seul thread dbt,
+      # et côté Airflow un pool d'un slot (dbt_duckdb) et max_active_runs=1.
+      threads: 1
+      # Aucune extension téléchargée ni chargée implicitement : un lake distant
+      # (s3://, gs://, az://...) exige de déclarer ici `extensions: [httpfs]`
+      # (ou `azure`) et ses identifiants, explicitement.
+      settings:
+        autoinstall_known_extensions: false
+        autoload_known_extensions: false

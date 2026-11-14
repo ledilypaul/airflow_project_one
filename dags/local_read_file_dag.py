@@ -36,7 +36,20 @@ enregistré au moins un fichier.
      `LAKE_ROOT` n'est pas fixé ici : le job le lit dans l'environnement du
      worker, hérité par `spark-submit` en mode local/client (en mode cluster,
      le passer au driver par la conf Spark de l'environnement).
-3. `max_active_runs=1` : deux runs ne traitent jamais le même run source en
+3. `publish_lake_staging` (P2-4) émet l'Asset `lake_staging`, qui planifie
+   `transform_dag` (dbt). Règle `all_done` (C-2) : elle s'exécute une fois
+   toutes les instances `spark_read_files` terminées, réussies ou non. Un seul
+   fichier en échec permanent (exit 1) ne doit pas bloquer dbt pour toujours :
+   elle émet dès qu'au moins un fichier des run ids résolus est `processed`
+   dans `file_list` (Connection `file_list_db`), et se met en `skipped` (rien
+   d'émis) sinon, ou quand `resolve_source_run_ids` a échoué (aucun run id).
+   dbt reconstruit l'état courant de toute la zone staging : il prend les
+   fichiers traités, pas les fichiers en échec.
+   `fail_if_spark_failed` (règle `one_failed`) garde le run en échec : l'état
+   d'un DagRun vient de ses feuilles, et `publish_lake_staging` réussie aurait
+   sinon rendu vert un run dont une application Spark a échoué. Elle est
+   `skipped` quand tout a réussi.
+4. `max_active_runs=1` : deux runs ne traitent jamais le même run source en
    parallèle ; les événements arrivés pendant un run sont regroupés dans le
    suivant.
 
@@ -55,12 +68,15 @@ from pathlib import Path
 from typing import Any
 
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from airflow.sdk import Asset, Param, dag, task
+from airflow.sdk import Asset, Param, TriggerRule, dag, task
 
 # Same name as in the listing DAGs: Airflow matches Assets by name/URI, not by
 # object identity. Declared here rather than in a shared `dags.*` module, which
 # would only be importable with the project root on sys.path (C-1).
 FILE_LIST_ASSET = Asset(name="file_list")
+# P2-4: emitted once the Spark job wrote the staging zone; transform_dag is
+# scheduled on it (same name declared in dags/local_transform_dag.py).
+LAKE_STAGING_ASSET = Asset(name="lake_staging")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JOB_PATH = PROJECT_ROOT / "pipeline" / "jobs" / "read_files_job.py"
@@ -191,7 +207,49 @@ def read_file_dag():
             "config) to target a specific list_files_dag run (idempotence: P1-3/C-1, P1-4)."
         )
 
-    SparkSubmitOperator.partial(
+    @task(outlets=[LAKE_STAGING_ASSET], trigger_rule=TriggerRule.ALL_DONE)
+    def publish_lake_staging(ti: Any = None) -> int:
+        """Emit `lake_staging` (P2-4 / C-2) when at least one file of the
+        resolved run ids is `processed` in file_list; skip (no event) otherwise.
+
+        Runs once every spark_read_files instance is done (`all_done`), so a
+        single permanently failing file does not block dbt forever. The run
+        ids are pulled from the XCom rather than passed as an argument: when
+        resolve_source_run_ids failed there is none, and the task skips
+        instead of failing on a missing XCom.
+        """
+        from airflow.sdk.exceptions import AirflowSkipException
+
+        from utils import functions_utils
+
+        run_ids = ti.xcom_pull(task_ids="resolve_source_run_ids")
+        if not run_ids:
+            raise AirflowSkipException(
+                "no source run id (resolve_source_run_ids failed): `lake_staging` not emitted"
+            )
+        processed = functions_utils.count_processed_files(run_ids)
+        if processed == 0:
+            raise AirflowSkipException(
+                f"no file_list row is `processed` for run_ids={run_ids}: nothing new in the "
+                "lake, `lake_staging` not emitted"
+            )
+        log.info("%d processed file(s): emitting the `lake_staging` asset", processed)
+        return processed
+
+    @task(trigger_rule=TriggerRule.ONE_FAILED, retries=0)
+    def fail_if_spark_failed() -> None:
+        """Keep the run failed when a spark_read_files instance failed (or was
+        upstream_failed): a DagRun takes its state from its leaves, and the
+        `all_done` publish_lake_staging leaf would otherwise turn it green.
+        Skipped when every instance succeeded."""
+        from airflow.sdk.exceptions import AirflowFailException
+
+        raise AirflowFailException(
+            "at least one spark_read_files instance failed or did not run: the run fails "
+            "(`lake_staging` was emitted only if some file was processed)"
+        )
+
+    spark_read_files = SparkSubmitOperator.partial(
         task_id="spark_read_files",
         application=str(JOB_PATH),
         conn_id=SPARK_CONN_ID,
@@ -205,6 +263,8 @@ def read_file_dag():
         # clear, masking only keys containing `secret` or `password` (C-6).
         env_vars={"PYTHONPATH": str(PROJECT_ROOT)},
     ).expand(application_args=resolve_source_run_ids().map(build_application_args))
+
+    spark_read_files >> [publish_lake_staging(), fail_if_spark_failed()]
 
 
 dag_instance = read_file_dag()

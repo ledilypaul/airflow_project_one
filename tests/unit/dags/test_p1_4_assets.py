@@ -39,7 +39,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DAGS_FOLDER = PROJECT_ROOT / "dags"
 
 FILE_LIST_ASSET_NAME = "file_list"
-PROJECT_DAG_IDS = {"list_files_dag", "list_files_dag_classic", "read_file_dag", "test_dag"}
+# P2-4: transform_dag is rendered from transform/target/manifest.json
+# (`make dbt-parse`, run by CI before pytest).
+PROJECT_DAG_IDS = {
+    "list_files_dag",
+    "list_files_dag_classic",
+    "read_file_dag",
+    "test_dag",
+    "transform_dag",
+}
 
 
 @pytest.fixture(scope="module")
@@ -170,10 +178,15 @@ def test_p1_4_read_file_dag_is_scheduled_on_file_list_asset(dagbag):
 
 
 def test_p1_4_read_file_dag_task_ids(dagbag):
-    """C-6: no intermediate `build_spark_commands` task any more."""
+    """C-6: no intermediate `build_spark_commands` task any more. P2-4:
+    `publish_lake_staging` emits `lake_staging` at the end, and
+    `fail_if_spark_failed` keeps the run failed when a Spark task failed
+    (test_p2_4_transform_dag.py)."""
     assert set(dagbag.dags["read_file_dag"].task_ids) == {
         "resolve_source_run_ids",
         "spark_read_files",
+        "publish_lake_staging",
+        "fail_if_spark_failed",
     }
 
 
