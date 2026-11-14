@@ -22,10 +22,31 @@ AIRFLOW_TARGETS := airflow-init airflow
 $(AIRFLOW_TARGETS): export AIRFLOW_HOME := $(AIRFLOW_HOME)
 $(AIRFLOW_TARGETS): export AIRFLOW__CORE__DAGS_FOLDER := $(CURDIR)/dags
 $(AIRFLOW_TARGETS): export AIRFLOW__CORE__LOAD_EXAMPLES := False
+# Cosmos sends anonymous usage metrics over HTTP by default: off in dev.
+$(AIRFLOW_TARGETS): export AIRFLOW__COSMOS__ENABLE_TELEMETRY := False
 
 # Env file with DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME for the
 # file_list_db Connection. Empty = the script's default (.env).
 ENV_FILE ?=
+
+# --- dbt (transform/, P2-4) ----------------------------------------------------
+# Separate uv project: dbt is not installed next to Airflow. transform_dag
+# (Cosmos) calls this same executable.
+TRANSFORM_DIR := $(CURDIR)/transform
+DBT := $(TRANSFORM_DIR)/.venv/bin/dbt
+DBT_FLAGS := --project-dir $(TRANSFORM_DIR) --profiles-dir $(TRANSFORM_DIR)
+# Same defaults as the Spark job (LAKE_ROOT) and transform_dag. A value
+# exported by the shell or given on the command line wins; a leading `~/` is
+# expanded (as the job and the DAG do), dbt refuses a relative value.
+# Exported for the dbt targets only (`make spark-job` keeps reading LAKE_ROOT
+# from the shell, or its own default).
+LAKE_ROOT ?= $(CURDIR)/lake
+DBT_DUCKDB_PATH ?= $(TRANSFORM_DIR)/warehouse.duckdb
+expand_home = $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(strip $(1))))
+DBT_TARGETS := dbt-parse dbt-build
+$(DBT_TARGETS): override export LAKE_ROOT := $(call expand_home,$(LAKE_ROOT))
+$(DBT_TARGETS): override export DBT_DUCKDB_PATH := $(call expand_home,$(DBT_DUCKDB_PATH))
+$(DBT_TARGETS): export DBT_SEND_ANONYMOUS_USAGE_STATS := False
 
 # --- docker-compose Postgres ----------------------------------------------------
 # Host port of the project's Postgres: must match docker-compose.yaml.
@@ -34,7 +55,7 @@ PG_HOST_PORT := 5434
 PG_CONTAINER := airflow_postgres
 
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
-	airflow-init airflow spark-job
+	airflow-init airflow spark-job transform-sync dbt-parse dbt-build
 
 ##@ Help
 
@@ -56,11 +77,12 @@ fmt: ## Format with ruff, then apply ruff's safe lint fixes
 	$(UV) run ruff format .
 	$(UV) run ruff check --fix .
 
-test: ## Run the test suite (includes the DAG import check)
+test: dbt-parse ## Run the test suite (includes the DAG import check; generates the dbt manifest first)
 	$(UV) run pytest tests/ -q
 
-check: ## CI order: uv.lock up to date, then lint, then tests
+check: ## CI order: both uv.lock up to date, then lint, then tests
 	$(UV) lock --check
+	$(UV) --directory transform lock --check
 	@$(MAKE) --no-print-directory lint
 	@$(MAKE) --no-print-directory test
 
@@ -97,7 +119,11 @@ airflow-init: ## Migrate the metadata DB, create/update Connections, import pool
 	$(UV) run python scripts/dev_airflow_connections.py $(if $(ENV_FILE),--env-file '$(ENV_FILE)')
 	$(UV) run airflow pools import deploy/airflow/pools.json
 
-airflow: ## Run Airflow standalone (api-server, scheduler, dag-processor, triggerer)
+# dbt-parse first: transform_dag is rendered from the dbt manifest. The
+# triggerer started by `standalone` is required by transform_dag (deferrable
+# Cosmos sensors). LAKE_ROOT / DBT_DUCKDB_PATH are not exported: the DAG
+# applies the same defaults as the dbt targets above.
+airflow: dbt-parse ## Run Airflow standalone (api-server, scheduler, dag-processor, triggerer)
 	$(UV) run airflow standalone
 
 ##@ Spark
@@ -109,3 +135,14 @@ spark-job: ## Run the Spark job outside Airflow: make spark-job RUN_ID=<dag_run_
 		exit 1; \
 	fi
 	$(UV) run spark-submit pipeline/jobs/read_files_job.py "--run-id=$$RUN_ID"
+
+##@ dbt (transform/: DuckDB on top of the lake's staging zone)
+
+transform-sync: ## Create/update transform/.venv (dbt-core, dbt-duckdb) from transform/uv.lock
+	$(UV) --directory transform sync --locked
+
+dbt-parse: transform-sync ## Write transform/target/manifest.json (transform_dag is rendered from it)
+	$(DBT) parse $(DBT_FLAGS)
+
+dbt-build: transform-sync ## dbt build outside Airflow (LAKE_ROOT, DBT_DUCKDB_PATH overridable)
+	$(DBT) build $(DBT_FLAGS)

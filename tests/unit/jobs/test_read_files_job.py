@@ -3,6 +3,7 @@ Unit tests for pipeline/jobs/read_files_job.py.
 All external dependencies (DB, Spark) are mocked.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -369,12 +370,20 @@ def test_c4_cli_requires_run_id_argument():
 
 def test_c4_cli_accepts_run_id_argument_past_argparse():
     """Running the script with --run-id must get past argument parsing: any
-    later failure (missing DB env vars in this sandboxed test run, same as
+    later failure (missing DB env vars, same as
     test_p0_4_read_files_job_imports_without_editable_install_on_syspath)
-    must NOT be an argparse usage error."""
+    must NOT be an argparse usage error.
+
+    P2-4 / C-11: hermetic. The job loads `.env` from its own location
+    whatever the cwd, so it used to connect to whatever DB `.env` names (and
+    hang until the timeout when that host drops packets). Empty DB_* values
+    win over `.env` (load_dotenv does not override them): db_connection()
+    fails at once, without any network access."""
+    db_vars_unset = dict.fromkeys(("DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT", "DB_NAME"), "")
     result = subprocess.run(
         [sys.executable, str(READ_FILES_JOB), "--run-id", "foo"],
         cwd="/tmp",
+        env={**os.environ, **db_vars_unset},
         capture_output=True,
         text=True,
         timeout=60,

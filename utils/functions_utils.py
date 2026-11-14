@@ -1,7 +1,7 @@
 import logging
 from datetime import date
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from utils.db_connection import db_connection
@@ -29,7 +29,7 @@ def _file_list_engine_from_airflow_connection():
         from airflow.providers.postgres.hooks.postgres import PostgresHook
     except ImportError as e:
         raise RuntimeError(
-            "insert_into_file_list() without an explicit engine needs "
+            "insert_into_file_list() / count_processed_files() without an explicit engine needs "
             "apache-airflow-providers-postgres (install the 'airflow' dependency "
             "group: `uv sync`), or pass engine=..."
         ) from e
@@ -112,3 +112,32 @@ def update_file_status(file_id: int, status: str, error_message: str | None = No
     except SQLAlchemyError as e:
         log.error("Error updating file_list id=%s: %s", file_id, e)
         raise
+
+
+def count_processed_files(run_ids, engine=None) -> int:
+    """Number of `file_list` rows with status `processed` among `run_ids`.
+
+    Used by read_file_dag's `publish_lake_staging` (P2-4 / C-2) to emit
+    `lake_staging` when at least one file of its run reached the lake, even
+    if another one failed. Goes through the `file_list_db` Airflow Connection
+    (the task runs in Airflow, not in the Spark job). Bound parameters only.
+    No run id: 0, without querying.
+    """
+    run_ids = list(dict.fromkeys(run_ids))
+    if not run_ids:
+        return 0
+    if engine is None:
+        engine = _file_list_engine_from_airflow_connection()
+    query = text("""
+        SELECT COUNT(*)
+        FROM file_list
+        WHERE status = :status AND dag_run_id IN :run_ids
+    """).bindparams(bindparam("run_ids", expanding=True))
+    try:
+        with engine.connect() as conn:
+            count = conn.execute(query, {"status": "processed", "run_ids": run_ids}).scalar_one()
+    except SQLAlchemyError as e:
+        log.error("Error counting processed files in file_list: %s", e)
+        raise
+    log.info("%d processed file(s) in file_list for run_ids=%s", count, run_ids)
+    return int(count)

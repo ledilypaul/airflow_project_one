@@ -22,7 +22,12 @@ mapping, SparkSubmitOperator, SparkSubmitHook, the Spark Connection), that:
   - C-5: a second `dag.test()` without conf, in the same process, fails
     instead of inheriting the previous run's run id;
   - P1-5 / C-4: a non-zero exit code of spark-submit (3 = no file_list row
-    for the run id) fails `spark_read_files` and the DAG run.
+    for the run id) fails `spark_read_files` and the DAG run;
+  - P2-4 / C-2: `publish_lake_staging` emits the `lake_staging` Asset when at
+    least one file of the run is `processed` (Spark succeeded, or exit 1 with
+    another file processed), and nothing otherwise (no file processed, exit
+    3, or no run id); `fail_if_spark_failed` keeps a run with a failed Spark
+    application failed.
 
 Never build the run id into a templated string (`@task.bash`, an f-string in
 `application_args`...): Jinja would render it, which reopens template
@@ -68,7 +73,26 @@ DAG_TEST_SCRIPT = textwrap.dedent(
 
     from airflow.models import DagBag
 
-    dag_file, run_id, result_file, chain_second_run = sys.argv[1:5]
+    dag_file, run_id, result_file, chain_second_run, file_list_db, statuses = sys.argv[1:7]
+
+    # P2-4 / C-2: publish_lake_staging reads file_list through the
+    # `file_list_db` Connection (Postgres). Stand-in: a SQLite file_list with
+    # the statuses the job would have written for this run id, behind the
+    # same engine builder (dag.test() runs the tasks in this process).
+    from sqlalchemy import create_engine, text
+
+    import utils.functions_utils as functions_utils
+
+    engine = create_engine(f"sqlite:///{file_list_db}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE file_list (id INTEGER, dag_run_id TEXT, status TEXT)"))
+        for i, status in enumerate(json.loads(statuses)):
+            conn.execute(
+                text("INSERT INTO file_list VALUES (:i, :run_id, :status)"),
+                {"i": i, "run_id": run_id, "status": status},
+            )
+    functions_utils._file_list_engine_from_airflow_connection = lambda: engine
+
     bag = DagBag(dag_folder=dag_file)
     assert not bag.import_errors, bag.import_errors
     dag = bag.dags["read_file_dag"]
@@ -83,13 +107,31 @@ DAG_TEST_SCRIPT = textwrap.dedent(
         for ti in first.get_task_instances()
         if ti.task_id == "spark_read_files"
     )
+    first_publish_state = str(first.get_task_instance("publish_lake_staging").state)
+    first_guard_state = str(first.get_task_instance("fail_if_spark_failed").state)
     second = dag.test() if chain_second_run == "1" else None
+
+    # P2-4: `lake_staging` events actually emitted by the first run.
+    from airflow.models.asset import AssetEvent
+    from airflow.utils.session import create_session
+
+    with create_session() as session:
+        lake_staging_events = [
+            e.source_task_id
+            for e in session.query(AssetEvent).filter_by(
+                source_dag_id="read_file_dag", source_run_id=first.run_id
+            )
+            if e.asset.name == "lake_staging"
+        ]
 
     with open(result_file, "w") as f:
         json.dump(
             {
                 "first": str(first.state),
                 "first_spark_tis": first_spark_tis,
+                "first_publish": first_publish_state,
+                "first_guard": first_guard_state,
+                "first_lake_staging_events": lake_staging_events,
                 "second": None if second is None else str(second.state),
             },
             f,
@@ -143,8 +185,11 @@ def fake_spark_submit(tmp_path):
     return bin_dir, calls_file
 
 
-def _run_dag_test(airflow_env, fake_spark_submit, tmp_path, run_id, *, exit_code, chain_second):
-    """Run DAG_TEST_SCRIPT in an isolated Airflow; return (states, logs)."""
+def _run_dag_test(
+    airflow_env, fake_spark_submit, tmp_path, run_id, *, exit_code, chain_second, statuses
+):
+    """Run DAG_TEST_SCRIPT in an isolated Airflow; return (states, logs).
+    `statuses`: file_list statuses of the run id's files after the job."""
     bin_dir, calls_file = fake_spark_submit
     result_file = tmp_path / "result.json"
 
@@ -172,6 +217,8 @@ def _run_dag_test(airflow_env, fake_spark_submit, tmp_path, run_id, *, exit_code
             run_id,
             str(result_file),
             "1" if chain_second else "0",
+            str(tmp_path / "file_list.db"),
+            json.dumps(statuses),
         ],
         env=env,
         cwd=tmp_path,
@@ -196,7 +243,13 @@ def test_p1_4_read_file_dag_e2e_hostile_run_id_not_injected(
     )
 
     states, logs = _run_dag_test(
-        airflow_env, fake_spark_submit, tmp_path, hostile, exit_code=0, chain_second=True
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        hostile,
+        exit_code=0,
+        chain_second=True,
+        statuses=["processed"],
     )
 
     assert states["first"] == "success", logs
@@ -216,6 +269,11 @@ def test_p1_4_read_file_dag_e2e_hostile_run_id_not_injected(
     assert "--deploy-mode" not in argv
     assert calls[0]["pythonpath"] == str(PROJECT_ROOT)
     assert states["second"] == "failed", logs
+    # P2-4: every Spark application succeeded, so `lake_staging` is emitted,
+    # once, by the final task; the failure guard is skipped.
+    assert states["first_publish"] == "success", logs
+    assert states["first_lake_staging_events"] == ["publish_lake_staging"], logs
+    assert states["first_guard"] == "skipped", logs
 
 
 def test_p1_5_read_file_dag_e2e_nonzero_spark_submit_exit_fails_task_and_run(
@@ -234,10 +292,49 @@ def test_p1_5_read_file_dag_e2e_nonzero_spark_submit_exit_fails_task_and_run(
         "manual__p1_5_exit_3",
         exit_code=3,
         chain_second=False,
+        statuses=[],
     )
 
     calls = [json.loads(line) for line in calls_file.read_text().splitlines()]
     assert len(calls) == 1, calls  # retries=0: one attempt
     assert calls[0]["argv"][-1] == "--run-id=manual__p1_5_exit_3"
     assert states["first_spark_tis"] == [[0, "spark", "failed"]], logs
+    assert states["first"] == "failed", logs
+    # P2-4 / C-2: exit 3 = no file_list row, so nothing processed: no
+    # `lake_staging` event, and the guard keeps the run failed.
+    assert states["first_publish"] == "skipped", logs
+    assert states["first_lake_staging_events"] == [], logs
+    assert states["first_guard"] == "failed", logs
+
+
+@pytest.mark.parametrize(
+    ("statuses", "publish", "events"),
+    [
+        (["processed", "failed"], "success", ["publish_lake_staging"]),
+        (["failed", "failed"], "skipped", []),
+    ],
+    ids=["one_file_processed", "no_file_processed"],
+)
+def test_p2_4_c2_read_file_dag_e2e_exit_1_publishes_only_processed_files(
+    airflow_env, fake_spark_submit, tmp_path, statuses, publish, events
+):
+    """C-2: exit 1 = at least one file failed. With `all_success`, one file
+    failing for good blocked `lake_staging`, hence dbt, forever. Now the
+    event is emitted when another file of the run was processed, and not
+    otherwise; in both cases the run itself stays failed (the `all_done`
+    publishing leaf must not turn it green)."""
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p2_4_exit_1",
+        exit_code=1,
+        chain_second=False,
+        statuses=statuses,
+    )
+
+    assert states["first_spark_tis"] == [[0, "spark", "failed"]], logs
+    assert states["first_publish"] == publish, logs
+    assert states["first_lake_staging_events"] == events, logs
+    assert states["first_guard"] == "failed", logs
     assert states["first"] == "failed", logs

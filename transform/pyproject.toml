@@ -1,0 +1,19 @@
+# Sous-projet dbt (P2-4) : environnement uv séparé de celui d'Airflow.
+# dbt-core et Airflow ont des contraintes de dépendances incompatibles ou
+# fragiles (protobuf, sqlparse, jinja2...) : dbt vit dans transform/.venv et
+# Cosmos l'appelle par son exécutable (ExecutionConfig.dbt_executable_path).
+# Rien ici n'est un paquet Python : `package = false`.
+[project]
+name = "airflow-project-one-transform"
+version = "0.1.0"
+description = "Couche transformation (dbt + DuckDB) au-dessus de la zone staging du lake"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "dbt-core~=1.12",
+    "dbt-duckdb~=1.11",
+    # DuckDB 2 changera le format de fichier et des API : borne explicite.
+    "duckdb<2",
+]
+
+[tool.uv]
+package = false

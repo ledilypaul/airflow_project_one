@@ -14,11 +14,14 @@ uv add --group dev <pkg>         # dev tool
 uv add --group airflow <pkg>     # Airflow provider
 uv lock --upgrade-package <pkg>  # upgrade one package
 uv export --no-hashes --no-dev -o requirements.txt   # only if a tool needs requirements.txt
+uv --directory transform add <pkg>   # dbt side: transform/ is a separate uv project with its own uv.lock
 ```
+
+Use uv ≥ 0.11 for anything that writes a lock (`~/.local/bin/uv` here): the pyenv `uv` shim (0.6.3) rewrites `uv.lock` in an older format. `make check` and CI run `uv lock --check` in the root **and** in `transform/`; pass `make check UV=~/.local/bin/uv` if the shim comes first on `PATH`.
 
 The project is installed in editable mode in `.venv`, so `import pipeline.*` / `utils.*` / `storage.*` works without `PYTHONPATH`. Always prefix commands with `uv run` (or activate `.venv`).
 
-Version pins worth knowing: `pandas<3` because pandas 3 breaks `pyspark.pandas` (verified with PySpark 4.3.0); `apache-airflow==3.3.2` exact.
+Version pins worth knowing: `pandas<3` because pandas 3 breaks `pyspark.pandas` (verified with PySpark 4.3.0); `apache-airflow==3.3.2` exact; `astronomer-cosmos>=1.16,<1.17` (group `airflow`). Cosmos 1.16 still uses deprecated Airflow imports: `pyproject.toml` ignores `DeprecatedImportWarning` raised from the `cosmos` package only.
 
 ### Tests
 
@@ -31,14 +34,16 @@ uv run ruff check . && uv run ruff format --check .
 
 DAG tests (`tests/unit/dags/`) don't need a real Airflow metadata DB or scheduler: `tests/unit/dags/conftest.py` sets `AIRFLOW__CORE__UNIT_TEST_MODE=True` and points `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` at a throwaway sqlite file before anything under `airflow.*` is imported.
 
+`transform_dag` is rendered from `transform/target/manifest.json`: without it, its import fails (and `test_no_import_errors` with it). `make test` runs `make dbt-parse` first (which runs `make transform-sync`: the first `make test` downloads dbt into `transform/.venv`); CI does the same before pytest. The real dbt builds (`tests/integration/test_p2_4_dbt_build.py`) are skipped when `transform/.venv` is missing, unless `REQUIRE_DBT=1` (set in CI), which turns the skip into a failure.
+
 ### Running Airflow locally
 
-The `Makefile` wraps the dev commands (`make` lists them). Quality targets mirror CI: `make check` = `uv lock --check`, then `make lint`, then `make test`.
+The `Makefile` wraps the dev commands (`make` lists them). Quality targets mirror CI: `make check` = `uv lock --check` in the root and in `transform/`, then `make lint`, then `make test` (`make dbt-parse`, then pytest).
 
 ```bash
 make db-up          # docker-compose Postgres on host port 5434 (+ Redis); checks the port first
 make airflow-init   # airflow db migrate + Connections spark_default/file_list_db + pools (idempotent)
-make airflow        # airflow standalone, http://localhost:8080
+make airflow        # make dbt-parse, then airflow standalone, http://localhost:8080
 ```
 
 The Airflow targets export `AIRFLOW_HOME=<project root>`, `AIRFLOW__CORE__DAGS_FOLDER=<project root>/dags` and `AIRFLOW__CORE__LOAD_EXAMPLES=False`. `AIRFLOW_HOME` must be the project root: when it is unset, Airflow silently reads `~/airflow/airflow.cfg`, i.e. another metadata DB and other settings. The metadata DB is then the SQLite file `./airflow.db` (gitignored), while the `file_list` table stays in the docker-compose Postgres. The Spark job writes the lake to `./lake/` (gitignored) unless `LAKE_ROOT` is set; the Makefile does not export it. Running `airflow` by hand needs the same three variables. Both are overridable for a throwaway setup: `make airflow-init AIRFLOW_HOME=/tmp/af ENV_FILE=/tmp/dev.env`. The Makefile also drops `VIRTUAL_ENV` (an activated pyenv virtualenv makes `uv` warn that it does not match `.venv`).
@@ -47,13 +52,23 @@ The Airflow targets export `AIRFLOW_HOME=<project root>`, `AIRFLOW__CORE__DAGS_F
 - `file_list_db` (postgres) from `DB_HOST`/`DB_PORT`/`DB_USER`/`DB_PASSWORD`/`DB_NAME`, read from `.env` (or `--env-file` / `ENV_FILE`; a variable already exported in the shell wins, as with `load_dotenv()`). The password goes through Airflow's ORM, never on a command line, and is never printed.
 - `spark_default` (spark, host `local[*]`). It must be created with that conn type and host, not as a URI: `spark://local[*]` does not parse. Without touching the DB, `AIRFLOW_CONN_SPARK_DEFAULT='{"conn_type": "spark", "host": "local[*]"}'` also works.
 
-Then it imports the pools versioned in `deploy/airflow/pools.json` (re-run it after editing the file). `read_file_dag` needs both the Spark Connection and the `spark` pool:
+Then it imports the pools versioned in `deploy/airflow/pools.json` (re-run it after editing the file): `spark` for `read_file_dag`, `dbt_duckdb` for `transform_dag` (see "dbt transformation layer"). The Airflow targets also export `AIRFLOW__COSMOS__ENABLE_TELEMETRY=False`. `read_file_dag` needs both the Spark Connection and the `spark` pool:
 
 - **Connection `spark_default`.** Its `host` is the `--master` (`local[*]`, `yarn`, `spark://host:7077`, `k8s://...`). The extras `deploy-mode`, `queue`, `namespace` and `spark-binary` (one of `spark-submit`, `spark2-submit`, `spark3-submit`, found on the worker's `PATH`) are optional. If the Connection is **missing**, the provider itself does not fail: it logs `Could not load connection string spark_default, defaulting to yarn` at INFO level and runs `spark-submit --master yarn`, which fails locally ("HADOOP_CONF_DIR or YARN_CONF_DIR must be set"). That is why `resolve_source_run_ids` checks the Connection first and fails the run with an explicit `AirflowFailException` when it is missing (it logs the Connection's `host` otherwise). `airflow connections create-default-connections` also creates a `spark_default` with `host=yarn` and `queue=root.default`: `make airflow-init` overwrites it (host `local[*]`, extras cleared). Outside `ENV=prod`, `utils/spark_session.py` forces `master("local[*]")` in the job itself, so in dev the Connection's master only decides how `spark-submit` launches the driver.
 - **Pool `spark`.** One slot locally: each `local[*]` application uses every core of the machine and starts its own driver JVM. Two at once just compete for the same CPU and RAM. Raise it to the number of applications your cluster can run side by side. A **missing pool is silent**: the DAG still parses (no DAG warning in the UI), `resolve_source_run_ids` succeeds, then `spark_read_files` stays in `scheduled` forever. The only traces are a scheduler log line (`Tasks using non-existent pool 'spark' will not be scheduled`) and the task instance's dependency details. The run stays stuck until `dagrun_timeout` (6 hours) fails it, and with `max_active_runs=1` the next `file_list` events pile up behind it meanwhile. `dag.test()` does not check pools: it is not blocked.
 - `spark-submit` must be on the worker's `PATH` (it is with `uv run`: PySpark ships it in `.venv/bin`).
 
 Airflow ≥3.0 uses the Simple Auth Manager by default, which has no `airflow users create` (`airflow standalone` prints the generated admin password and stores it in `simple_auth_manager_passwords.json.generated`). To get FAB-based user management, install `apache-airflow-providers-fab` and set `auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager` under `[core]` in `airflow.cfg`.
+
+### Running dbt standalone (outside Airflow)
+
+```bash
+make transform-sync   # uv sync --locked in transform/ (dbt-core 1.12, dbt-duckdb 1.11, duckdb<2)
+make dbt-parse        # transform/target/manifest.json (read by transform_dag)
+make dbt-build        # dbt build; LAKE_ROOT and DBT_DUCKDB_PATH overridable
+```
+
+The dbt targets export `LAKE_ROOT` (default `<project root>/lake`, the job's default) and `DBT_DUCKDB_PATH` (default `<project root>/transform/warehouse.duckdb`, gitignored); a value from the shell or the command line wins. Do not run it while `transform_dag` writes the same DuckDB file. See `transform/README.md`.
 
 ### Running the Spark job standalone (outside Airflow)
 
@@ -86,10 +101,15 @@ Set `ENV=prod` to switch Spark to cluster mode (YARN/K8s-managed master, adds th
 
 ## Architecture
 
-This is a two-stage Airflow pipeline that hands off from Airflow's Python/SQL world to a separate Spark process, which writes the files to a partitioned Parquet lake (raw, then staging):
+This is a three-stage Airflow pipeline. It hands off from Airflow's Python/SQL world to a separate Spark process, which writes the files to a partitioned Parquet lake (raw, then staging), then to dbt, which builds DuckDB tables on top of the staging zone (`file_list` -> `lake_staging` -> `dbt_marts` Assets):
 
 1. **`dags/local_list_files_dag.py`** (`list_files_dag`) — `Extractor` (`pipeline/extractor/extractor.py`) globs `extractor_config.yaml`'s `source_directories` for files matching `files_extensions` / `include_files`, minus `exclude_files` (fnmatch patterns), then `utils/functions_utils.insert_into_file_list` writes metadata rows (status=`pending`) into the Postgres `file_list` table, tagged with the Airflow `dag_run_id`.
-2. **`dags/local_read_file_dag.py`** (`read_file_dag`) — scheduled on the `file_list` Asset, with `max_active_runs=1`. The Asset is declared as `Asset(name="file_list")` in each of the three DAG files (Airflow matches Assets by name; a shared `dags.*` module would only import with the project root on `sys.path`). The insertion task of both listing DAGs declares it in `outlets`, and emits it only when it succeeds with at least one recorded file; an empty listing is skipped and emits nothing. `resolve_source_run_ids` collects the deduplicated `source_run_id` of every triggering `file_list` event (Airflow may batch several listings into one run). On a manual trigger (no event) it uses `dag_run.conf["run_id"]`, stripped, rather than `params` (`Param.resolve()` memoises its value). With neither, it fails explicitly. `spark_read_files` is a `SparkSubmitOperator` (provider `apache-airflow-providers-apache-spark`) mapped over `application_args=resolve_source_run_ids().map(build_application_args)`: one instance per source run, each with its own exit code and retries. It uses the `spark_default` Connection for the master and the `spark` pool, both described under "Running Airflow locally". Each instance runs `spark-submit --master <from the Connection> --name ... pipeline/jobs/read_files_job.py --run-id=<id>`. The hook passes this argument list to `subprocess.Popen` with no shell, and the run id is a single `--run-id=<id>` argument, so a value starting with `-` is not taken for an option. `env_vars={"PYTHONPATH": <project root>}` is added to the worker environment, not substituted for it (local/client mode). `LAKE_ROOT` is not set in the DAG: the job reads it from the environment inherited from the worker. `application_args` is a templated field: the value mapped from the XCom is skipped by Jinja, but never build the run id into a templated string (an f-string passed to `.partial()`, `@task.bash`...). `tests/integration/test_p1_4_read_file_dag_e2e.py` guards against that. No Spark resources (`executor_memory`...) are set in the DAG: they belong to the Connection or `spark-defaults.conf` of each environment. Airflow only orchestrates; Spark runs in its own process. The job queries `list_file_from_db(run_id)` for the rows of that `dag_run_id` and exits 3 when the run id has no rows (typo or purged data). It then loads and validates the `SourceRegistry` and resolves `LAKE_ROOT`, both **before** starting Spark. On a `ConfigError` or an invalid lake root, it marks every row of the run `failed` (`invalid reading config: ...` / `invalid lake root: ...`) and exits 5 (`EXIT_INVALID_CONFIG`). The checks run in this order: watchdog (4), run id (2), rows (3), configs and lake root (5), Spark, Java compilation of every quality regex (5), then the files. Exits 2, 3 and 5 are deterministic, so an Airflow retry fails the same way.
+2. **`dags/local_read_file_dag.py`** (`read_file_dag`) — scheduled on the `file_list` Asset, with `max_active_runs=1`. The Asset is declared as `Asset(name="file_list")` in each of the three DAG files (Airflow matches Assets by name; a shared `dags.*` module would only import with the project root on `sys.path`). The insertion task of both listing DAGs declares it in `outlets`, and emits it only when it succeeds with at least one recorded file; an empty listing is skipped and emits nothing. `resolve_source_run_ids` collects the deduplicated `source_run_id` of every triggering `file_list` event (Airflow may batch several listings into one run). On a manual trigger (no event) it uses `dag_run.conf["run_id"]`, stripped, rather than `params` (`Param.resolve()` memoises its value). With neither, it fails explicitly. `spark_read_files` is a `SparkSubmitOperator` (provider `apache-airflow-providers-apache-spark`) mapped over `application_args=resolve_source_run_ids().map(build_application_args)`: one instance per source run, each with its own exit code and retries. It uses the `spark_default` Connection for the master and the `spark` pool, both described under "Running Airflow locally". Each instance runs `spark-submit --master <from the Connection> --name ... pipeline/jobs/read_files_job.py --run-id=<id>`. The hook passes this argument list to `subprocess.Popen` with no shell, and the run id is a single `--run-id=<id>` argument, so a value starting with `-` is not taken for an option. `env_vars={"PYTHONPATH": <project root>}` is added to the worker environment, not substituted for it (local/client mode). `LAKE_ROOT` is not set in the DAG: the job reads it from the environment inherited from the worker. `application_args` is a templated field: the value mapped from the XCom is skipped by Jinja, but never build the run id into a templated string (an f-string passed to `.partial()`, `@task.bash`...). `tests/integration/test_p1_4_read_file_dag_e2e.py` guards against that. No Spark resources (`executor_memory`...) are set in the DAG: they belong to the Connection or `spark-defaults.conf` of each environment. Airflow only orchestrates; Spark runs in its own process. The job queries `list_file_from_db(run_id)` for the rows of that `dag_run_id` and exits 3 when the run id has no rows (typo or purged data). It then loads and validates the `SourceRegistry` and resolves `LAKE_ROOT`, both **before** starting Spark. On a `ConfigError` or an invalid lake root, it marks every row of the run `failed` (`invalid reading config: ...` / `invalid lake root: ...`) and exits 5 (`EXIT_INVALID_CONFIG`). The checks run in this order: watchdog (4), run id (2), rows (3), configs and lake root (5), Spark, Java compilation of every quality regex (5), then the files. Exits 2, 3 and 5 are deterministic, so an Airflow retry fails the same way. A final task, `publish_lake_staging`, emits the `lake_staging` Asset.
+   - It runs once every mapped `spark_read_files` instance is done (`all_done`), so one permanently failing file does not block dbt forever.
+   - It emits when at least one file of the resolved run ids is `processed` in `file_list` (`count_processed_files`, through the `file_list_db` Connection).
+   - Otherwise it is `skipped` and emits nothing: no file processed, or `resolve_source_run_ids` failed (no XCom).
+   - A DagRun takes its state from its leaves: the `fail_if_spark_failed` leaf (`one_failed`, no retry) keeps a run with a failed Spark application `failed`. It is skipped when everything succeeded.
+3. **`dags/local_transform_dag.py`** (`transform_dag`, P2-4) — see "dbt transformation layer" below.
 
 For each file, the job:
 1. resolves the config once (`get_config`);
@@ -106,6 +126,45 @@ Two files with the same name in one run are both marked `failed`, because their 
 - every listing adds one snapshot per file; the current state is given by `latest_snapshot` (highest `lake_file_id`), not by the last write.
 
 **The Spark job must never import Airflow**, directly or through `pipeline/`, `utils/` or `storage/`: it runs in the environment of an Airflow 3 task, where the Task SDK supervisor sets `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=airflow-db-not-allowed:///` to forbid metadata DB access, and `SparkSubmitOperator` passes that environment on to `spark-submit`. Importing `airflow` there fails in `settings.initialize()` with a SQLAlchemy `ArgumentError` (not an `ImportError`). Import Airflow code (e.g. `PostgresHook` in `utils/functions_utils.py`) inside the functions that need it. `tests/unit/jobs/test_spark_job_no_airflow_import.py` guards this. **Unpause `read_file_dag` before running a listing**: Airflow only queues Asset-triggered runs for unpaused DAGs. An event emitted while it is paused creates no run; it is consumed by the next Asset-triggered run, which takes every event since the previous run.
+
+### dbt transformation layer (`transform/`, Cosmos)
+
+- **Project.** `transform/` is a separate uv project (`package = false`, own `uv.lock`): dbt is not installed next to Airflow.
+- **Rendering.** `transform_dag` is a Cosmos (`astronomer-cosmos` 1.16) `DbtDag`, scheduled on `Asset(name="lake_staging")`, with `max_active_runs=1` and no catchup.
+  - `LoadMode.DBT_MANIFEST`: the DAG processor never runs dbt.
+  - A missing manifest is an explicit import error of that file only (naming `make dbt-parse`); the other DAGs still load.
+  - So is a **stale** one: a manifest older (`mtime`) than a file of `transform/{models,macros,data_tests}` or `dbt_project.yml`, whose graph would no longer match the producer's `dbt build`. Rerun `make dbt-parse` after a checkout or a pull that touches them.
+  - Never set `RenderConfig.dbt_executable_path`: Cosmos 1.16's `is_dbt_installed_in_same_environment` answers True without dbt and then refuses a separate dbt.
+- **Execution.** `ExecutionMode.WATCHER` with `ExecutionConfig(dbt_executable_path=<root>/transform/.venv/bin/dbt, invocation_mode=SUBPROCESS)`: one producer runs a single `dbt build`, and one sensor per model/test reports its status.
+  - Model sensors are deferrable, so a **triggerer** is required (`airflow standalone` runs one).
+  - The producer never reruns dbt on a retry (Cosmos skips it); a consumer's retry runs dbt for its model alone.
+- **Single writer.** DuckDB accepts one writer per file:
+  - every dbt task, consumers included, runs in the `dbt_duckdb` pool (1 slot, `include_deferred: false`, so a deferred sensor never blocks the producer);
+  - `threads: 1` in `transform/profiles.yml`.
+  - Consequence: the producer holds the only slot for its whole `dbt build`, so the sensors mostly run after it, one by one, instead of following it live. That is the price of a safe replay on a single writer.
+- **`dag.test()` cannot run `transform_dag` reliably.** The Cosmos 1.16 wiring bug leaves the model sensors without the producer upstream, and `dag.test()` runs its schedulable task instances in `set` order. That order depends on `PYTHONHASHSEED`. When a sensor comes first, its inline trigger waits forever for a producer that `dag.test()` never starts. Test the DAG with a real scheduler and triggerer (`make airflow`), and the dbt project with `dbt build` (`tests/integration/test_p2_4_dbt_build.py`).
+- **Assets.** Cosmos' own Assets are disabled (`emit_datasets=False`), because their URI embeds the DuckDB file path. `publish_dbt_marts`, downstream of every dbt task except the producer, emits the stable `Asset(name="dbt_marts")`.
+- **Environment.** dbt gets `LAKE_ROOT` and `DBT_DUCKDB_PATH` through `ProjectConfig.env_vars`, added to the worker's environment, with the Makefile's defaults.
+  - They are computed in the DAG file, without importing `storage` (pyspark); Airflow 3 workers parse the DAG file, so the worker's values apply.
+  - The DAG and the Makefile expand a leading `~`, as the job does; dbt refuses it, with a message that says so.
+  - dbt checks both at `on-run-start` (`transform/macros/lake.sql`), before any model, so a refusal never touches the warehouse:
+    - relative paths are refused;
+    - `LAKE_ROOT` must be readable by DuckDB: an absolute path, `file:` followed by an absolute path, or `s3`/`gs`/`gcs`/`r2`/`az`/`azure`/`abfss` with a bucket or container. Any other scheme (`hdfs`, `dbfs`...) is refused by name;
+    - `'`, `=`, `*`, `?`, `[` and `{` are refused;
+    - at least one Parquet file must exist under `<LAKE_ROOT>/staging/*/lake_run_id=*/lake_source_file=*/`. A wrong `LAKE_ROOT` used to build empty tables and still emit `dbt_marts`.
+  - `profiles.yml` never auto-installs or auto-loads a DuckDB extension: a remote lake needs `extensions: [httpfs]` (or `azure`) declared there.
+- **Reading the lake.** Sources use `external_location` + `formatter: template`: `read_parquet('<LAKE_ROOT>/staging/<table>/lake_run_id=*/lake_source_file=*/*.parquet', hive_partitioning=true, union_by_name=true, hive_types={'lake_run_id': 'VARCHAR', 'lake_source_file': 'VARCHAR'})`.
+  - `hive_types` is mandatory: a numeric run id would otherwise be typed as an integer.
+  - The explicit glob skips `_SUCCESS`, `.crc` and Spark temporary directories.
+  - `lake_ingested_at` (INT96) is read back as a `TIMESTAMP` without time zone, in UTC.
+- **Models.**
+  - `stg_movies__current` / `stg_orders__current` = `latest_snapshot` (`qualify lake_file_id = max(lake_file_id) over (partition by lake_source_file)`).
+  - `stg_movies__current` has an enforced contract (columns and types of the movies source, aligned on `imdb.yaml`), because `union_by_name` widens a column to the widest type of every snapshot, old ones included. `stg_orders__current` has none: `orders.yaml` has no `columns_type` yet (open action).
+  - `mart_movies__by_release_year_language` is an example mart.
+  - Everything is a table.
+- **Empty table.** Models read through the `lake_staging()` macro, not `source()`. When a staging table has no file yet (no orders read), the macro returns an empty relation typed by the columns declared in the source, instead of DuckDB's empty-glob error.
+  - `movies` declares all `imdb.yaml` columns (a test checks names, order and types).
+  - `orders` declares only the technical columns.
 
 There's also `dags/local_list_files_dag_python_operator.py`, an equivalent of DAG 1 built with `PythonOperator` instead of the `@task` TaskFlow API — its `dag_id` was deliberately renamed to `list_files_dag_classic` to avoid colliding with `local_list_files_dag.py`.
 

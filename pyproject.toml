@@ -27,6 +27,7 @@ airflow = [
     "apache-airflow-providers-standard>=1.19",
     "apache-airflow-providers-postgres>=7.0",
     "apache-airflow-providers-apache-spark>=6.3",
+    "astronomer-cosmos>=1.16,<1.17",
 ]
 dev = [
     "pytest>=8.4",
@@ -59,6 +60,13 @@ filterwarnings = [
     # airflow.utils.deprecation_tools.DeprecatedImportWarning, which subclasses
     # FutureWarning — NOT UserWarning/DeprecationWarning (C-1).
     "error::airflow.utils.deprecation_tools.DeprecatedImportWarning",
+    # P2-4: Cosmos 1.16 itself still uses deprecated Airflow imports
+    # (`from airflow.models.dag import DAG` in cosmos/airflow/dag.py,
+    # `airflow.exceptions.AirflowTaskTimeout` in cosmos/operators/local.py).
+    # Third-party code: ignored for warnings raised from the cosmos package
+    # only; our DAG files stay covered by the rules above and by
+    # test_p1_1_no_deprecated_airflow_imports.
+    'ignore::airflow.utils.deprecation_tools.DeprecatedImportWarning:cosmos\.',
 ]
 
 [tool.ruff]

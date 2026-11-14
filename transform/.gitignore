@@ -1,0 +1,9 @@
+# Artefacts dbt (manifest compris : régénéré par `make dbt-parse`, voir README.md)
+target/
+logs/
+dbt_packages/
+# Entrepôt DuckDB local (DBT_DUCKDB_PATH) et ses fichiers annexes
+*.duckdb
+*.duckdb.wal
+.user.yml
+.venv/

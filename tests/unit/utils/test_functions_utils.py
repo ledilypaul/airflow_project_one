@@ -301,3 +301,68 @@ def test_insert_without_engine_and_without_postgres_provider_raises_clear_error(
         pytest.raises(RuntimeError, match="apache-airflow-providers-postgres"),
     ):
         insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+
+# ---------------------------------------------------------------------------
+# P2-4 / C-2 — count_processed_files: what publish_lake_staging decides on
+# ---------------------------------------------------------------------------
+
+
+def _file_list_sqlite(tmp_path, rows):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'file_list.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE file_list (id INTEGER, dag_run_id TEXT, status TEXT)"))
+        for i, (run_id, status) in enumerate(rows):
+            conn.execute(
+                text("INSERT INTO file_list VALUES (:id, :run_id, :status)"),
+                {"id": i, "run_id": run_id, "status": status},
+            )
+    return engine
+
+
+def test_p2_4_c2_count_processed_files_counts_processed_rows_of_the_run_ids(tmp_path):
+    from utils.functions_utils import count_processed_files
+
+    engine = _file_list_sqlite(
+        tmp_path,
+        [
+            ("run_a", "processed"),
+            ("run_a", "failed"),
+            ("run_b", "processed"),
+            ("run_b", "processed"),
+            ("run_c", "processed"),  # not asked for
+            ("run_a'; DROP TABLE file_list; --", "processed"),
+        ],
+    )
+
+    assert count_processed_files(["run_a", "run_b", "run_a"], engine=engine) == 3
+    assert count_processed_files(["run_a"], engine=engine) == 1
+    assert count_processed_files(["run_missing"], engine=engine) == 0
+    # Bound parameters, never string formatting.
+    assert count_processed_files(["run_a'; DROP TABLE file_list; --"], engine=engine) == 1
+    assert count_processed_files(["run_c"], engine=engine) == 1
+
+
+def test_p2_4_c2_count_processed_files_without_run_id_does_not_query():
+    from utils.functions_utils import count_processed_files
+
+    engine = MagicMock()
+    assert count_processed_files([], engine=engine) == 0
+    engine.connect.assert_not_called()
+
+
+def test_p2_4_c2_count_processed_files_uses_the_file_list_connection():
+    mock_engine = MagicMock()
+    mock_conn = mock_engine.connect.return_value.__enter__.return_value
+    mock_conn.execute.return_value.scalar_one.return_value = 2
+    mock_hook_cls = MagicMock()
+    mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
+
+    with patch(POSTGRES_HOOK_PATH, mock_hook_cls):
+        from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, count_processed_files
+
+        assert count_processed_files(["run_a"]) == 2
+
+    mock_hook_cls.assert_called_once_with(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
