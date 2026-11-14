@@ -5,18 +5,29 @@ et `config/defaults/*.yaml` (P2-1, constat M4).
     reader:   options, columns_type    -> comment la lire
     storage:  table_name, format, mode,
               raw_path, staging_path   -> où l'écrire (P2-2, obligatoire)
+    quality:  checks                   -> ce que le staging exige (P2-3, optionnel,
+                                          voir pipeline/config/quality.py)
 
 `extra="forbid"` partout : une clé inconnue ou mal orthographiée est une
 erreur, jamais ignorée. Les contrôles qui croisent les sections (storage
-présent, nom de table, tables raw/staging disjointes, options du reader
-selon le format) sont faits par un seul validateur, qui agrège leurs
+présent, nom de table, tables raw/staging disjointes, zone `quality/`
+réservée, options du reader selon le format, contrôles qualité) sont faits
+par un seul validateur, qui agrège leurs
 messages : une erreur n'en masque pas une autre.
+
+Limite de Pydantic : ce validateur `after` ne tourne que si toutes les
+sections ont la bonne forme. Quand l'une d'elles a une erreur de champ (par
+exemple un contrôle `quality` sans `column`), `load_source_config` complète
+le message avec `SourceConfig.problems_of_valid_sections` : les contrôles
+croisés des sections qui, elles, sont valides (P2-3 / C-7). Un appel direct à
+`SourceConfig.model_validate` ne donne que les erreurs de champ.
 
 Ce module ne doit pas importer Airflow : le job Spark le charge
 (tests/unit/jobs/test_spark_job_no_airflow_import.py).
 """
 
 import difflib
+from collections.abc import Collection, Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import (
@@ -25,10 +36,12 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    ValidationError,
     field_validator,
     model_validator,
 )
 
+from pipeline.config.quality import QUALITY_ZONE, QualitySection, quality_problems
 from pipeline.config.reader_options import (
     ALIAS_GROUPS,
     READER_OPTIONS_BY_FORMAT,
@@ -183,6 +196,8 @@ class SourceConfig(_StrictModel):
     # `after` de tourner, et masquait les erreurs du reader du même fichier.
     # `_check_consistency` le rend obligatoire, avec les autres contrôles.
     storage: StorageSection | None = None
+    # P2-3 : contrôles exécutés sur les données du staging ; exige staging_path.
+    quality: QualitySection | None = None
 
     def _require_storage(self) -> StorageSection:
         if self.storage is None:  # seulement via model_construct, sans validation
@@ -208,11 +223,83 @@ class SourceConfig(_StrictModel):
             return None
         return "/".join((*lake_relative_parts(storage.staging_path), self.table))
 
+    @property
+    def quality_target(self) -> str | None:
+        """Table des résultats des contrôles (`quality/<table>`), relative à
+        LAKE_ROOT ; None sans section `quality`."""
+        if self.quality is None:
+            return None
+        return self.quality_zone_target
+
+    @property
+    def quality_zone_target(self) -> str | None:
+        """`quality/<table>` dès que la source a une zone staging, section
+        `quality` ou non (même règle de nommage que `quality_target`) ; None
+        sans staging. Le job y supprime la partition du (run, fichier) avant
+        chaque écriture (C-6) : une source qui a perdu sa section `quality`
+        ne garde pas d'anciens résultats."""
+        if self.staging_target is None:
+            return None
+        return f"{QUALITY_ZONE}/{self.table}"
+
+    @classmethod
+    def problems_of_valid_sections(
+        cls, raw: Mapping[str, Any], invalid_sections: Collection[str]
+    ) -> list[str]:
+        """Contrôles croisés des sections valides d'une config dont d'autres
+        sections ont une erreur de champ (C-7).
+
+        Pydantic n'exécute pas `_check_consistency` dans ce cas : sans ceci,
+        une erreur de forme dans `quality` masquerait une option inconnue du
+        reader ou une section `storage` absente. Chaque contrôle croisé ne
+        tourne que si toutes les sections dont il dépend sont valides ;
+        `invalid_sections` vient des `loc` de la `ValidationError`.
+        """
+        sections: dict[str, Any] = {}
+        for name, model in _SECTION_MODELS.items():
+            if name in invalid_sections:
+                continue
+            if name not in raw or raw[name] is None:
+                sections[name] = model() if name == "reader" else None
+                continue
+            try:
+                sections[name] = model.model_validate(raw[name])
+            except ValidationError:
+                continue
+        source, problems = sections.get("source"), []
+        if source is not None:
+            # model_construct : pas de validation ; seules les sections
+            # valides sont lues par les méthodes appelées.
+            partial = cls.model_construct(
+                source=source,
+                reader=sections.get("reader") or ReaderSection(),
+                storage=sections.get("storage"),
+            )
+            if "storage" in sections:
+                problems += partial._storage_problems()
+            if "reader" in sections:
+                problems += partial._reader_problems()
+        quality = sections.get("quality")
+        if quality is not None and "storage" in sections:
+            reader, storage = sections.get("reader"), sections["storage"]
+            problems += quality_problems(
+                quality,
+                reader.columns_type if reader is not None else None,
+                storage.staging_path if storage is not None else None,
+            )
+        return problems
+
     @model_validator(mode="after")
     def _check_consistency(self) -> "SourceConfig":
         """Tous les contrôles qui croisent les sections, en un seul
         validateur : leurs messages sont agrégés dans une seule erreur (C-6)."""
         problems = self._storage_problems() + self._reader_problems()
+        if self.quality is not None:
+            problems += quality_problems(
+                self.quality,
+                self.reader.columns_type,
+                self.storage.staging_path if self.storage is not None else None,
+            )
         if problems:
             raise ValueError("\n".join(problems))
         return self
@@ -223,6 +310,18 @@ class SourceConfig(_StrictModel):
                 "storage: section obligatoire (P2-2) : tout fichier lu est écrit au moins "
                 "en zone raw. Déclarer storage.format, storage.mode et storage.raw_path."
             ]
+        reserved = [
+            f"storage.{field} {value!r} : la zone {QUALITY_ZONE!r} (casse ignorée) est réservée "
+            f"aux résultats des contrôles qualité (P2-3, {QUALITY_ZONE}/<table>/). "
+            "Choisir un autre répertoire."
+            for field, value in (
+                ("raw_path", self.storage.raw_path),
+                ("staging_path", self.storage.staging_path),
+            )
+            if value is not None and lake_relative_parts(value)[0].casefold() == QUALITY_ZONE
+        ]
+        if reserved:
+            return reserved
         if self.storage.table_name is None:
             try:
                 check_lake_name(self.source.name)
@@ -291,3 +390,11 @@ class SourceConfig(_StrictModel):
                 f"{', '.join(sorted(SCHEMA_FORMATS))} (format {fmt!r})"
             )
         return problems
+
+
+_SECTION_MODELS: dict[str, type[BaseModel]] = {
+    "source": SourceSection,
+    "reader": ReaderSection,
+    "storage": StorageSection,
+    "quality": QualitySection,
+}

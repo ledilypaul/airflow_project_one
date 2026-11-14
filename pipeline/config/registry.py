@@ -16,10 +16,11 @@ casse :
 2. sinon les défauts, avec la même règle ;
 3. sinon une erreur explicite (le job écrit alors `failed` pour ce fichier).
 
-Au chargement, les tables du lake de toutes les configs (raw et staging,
-sources et défauts) sont comparées : aucune ne peut être imbriquée dans une
-autre (P2-2 / C-3), casse ignorée. Deux sources peuvent partager exactement
-la même table : leurs partitions (run, fichier) sont distinctes.
+Au chargement, les tables du lake de toutes les configs (raw, staging et
+résultats qualité `quality/<table>`, sources et défauts) sont comparées :
+aucune ne peut être imbriquée dans une autre (P2-2 / C-3), casse ignorée.
+Deux sources peuvent partager exactement la même table : leurs partitions
+(run, fichier) sont distinctes.
 """
 
 import os
@@ -98,7 +99,13 @@ def load_source_config(path: Path) -> SourceConfig:
     try:
         return SourceConfig.model_validate(raw)
     except ValidationError as exc:
-        details = "\n".join(f"  - {line}" for line in _format_validation_error(exc))
+        lines = _format_validation_error(exc)
+        # C-7 : une erreur de champ empêche les contrôles croisés de Pydantic ;
+        # ceux des sections valides sont ajoutés pour ne rien masquer.
+        invalid_sections = {str(err["loc"][0]) for err in exc.errors() if err["loc"]}
+        if invalid_sections:
+            lines += SourceConfig.problems_of_valid_sections(raw, invalid_sections)
+        details = "\n".join(f"  - {line}" for line in lines)
         raise ConfigError(f"config de lecture invalide : {path}\n{details}") from exc
 
 
@@ -125,6 +132,7 @@ def _lake_target_conflicts(configs: list[LoadedConfig]) -> list[str]:
         for zone, target in (
             ("raw", loaded.config.raw_target),
             ("staging", loaded.config.staging_target),
+            ("quality", loaded.config.quality_target),
         )
         if target is not None
     ]

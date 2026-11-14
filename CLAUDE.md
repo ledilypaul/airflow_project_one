@@ -64,8 +64,8 @@ make spark-job RUN_ID=<dag_run_id of a list_files_dag run>
 
 `--run-id` is required: the job reads the `file_list` rows of that run and writes each file to the Parquet lake under `LAKE_ROOT`. `LAKE_ROOT` defaults to `<project root>/lake` (gitignored) and is resolved from the code. The job exits:
 - **3** when the run has no rows;
-- **5** when the setup is invalid: a reading config fails validation, a source has no `storage`, two lake tables are nested, or `LAKE_ROOT` is relative (including `file:lake`). Every row of the run is then marked `failed` and Spark is not started;
-- **1** when at least one file is `failed`.
+- **5** when the setup is invalid: a reading config fails validation, a source has no `storage`, two lake tables are nested, or `LAKE_ROOT` is relative (including `file:lake`). Every row of the run is then marked `failed` and Spark is not started. Exit 5 is also used, right after Spark starts and before any file, when a quality regex of the registry does not compile in Java;
+- **1** when at least one file is `failed`, including a blocking quality check.
 
 It connects through `.env` (`DB_*`), not through Airflow.
 
@@ -89,13 +89,15 @@ Set `ENV=prod` to switch Spark to cluster mode (YARN/K8s-managed master, adds th
 This is a two-stage Airflow pipeline that hands off from Airflow's Python/SQL world to a separate Spark process, which writes the files to a partitioned Parquet lake (raw, then staging):
 
 1. **`dags/local_list_files_dag.py`** (`list_files_dag`) — `Extractor` (`pipeline/extractor/extractor.py`) globs `extractor_config.yaml`'s `source_directories` for files matching `files_extensions` / `include_files`, minus `exclude_files` (fnmatch patterns), then `utils/functions_utils.insert_into_file_list` writes metadata rows (status=`pending`) into the Postgres `file_list` table, tagged with the Airflow `dag_run_id`.
-2. **`dags/local_read_file_dag.py`** (`read_file_dag`) — scheduled on the `file_list` Asset, with `max_active_runs=1`. The Asset is declared as `Asset(name="file_list")` in each of the three DAG files (Airflow matches Assets by name; a shared `dags.*` module would only import with the project root on `sys.path`). The insertion task of both listing DAGs declares it in `outlets`, and emits it only when it succeeds with at least one recorded file; an empty listing is skipped and emits nothing. `resolve_source_run_ids` collects the deduplicated `source_run_id` of every triggering `file_list` event (Airflow may batch several listings into one run). On a manual trigger (no event) it uses `dag_run.conf["run_id"]`, stripped, rather than `params` (`Param.resolve()` memoises its value). With neither, it fails explicitly. `spark_read_files` is a `SparkSubmitOperator` (provider `apache-airflow-providers-apache-spark`) mapped over `application_args=resolve_source_run_ids().map(build_application_args)`: one instance per source run, each with its own exit code and retries. It uses the `spark_default` Connection for the master and the `spark` pool, both described under "Running Airflow locally". Each instance runs `spark-submit --master <from the Connection> --name ... pipeline/jobs/read_files_job.py --run-id=<id>`. The hook passes this argument list to `subprocess.Popen` with no shell, and the run id is a single `--run-id=<id>` argument, so a value starting with `-` is not taken for an option. `env_vars={"PYTHONPATH": <project root>}` is added to the worker environment, not substituted for it (local/client mode). `LAKE_ROOT` is not set in the DAG: the job reads it from the environment inherited from the worker. `application_args` is a templated field: the value mapped from the XCom is skipped by Jinja, but never build the run id into a templated string (an f-string passed to `.partial()`, `@task.bash`...). `tests/integration/test_p1_4_read_file_dag_e2e.py` guards against that. No Spark resources (`executor_memory`...) are set in the DAG: they belong to the Connection or `spark-defaults.conf` of each environment. Airflow only orchestrates; Spark runs in its own process. The job queries `list_file_from_db(run_id)` for the rows of that `dag_run_id` and exits 3 when the run id has no rows (typo or purged data). It then loads and validates the `SourceRegistry` and resolves `LAKE_ROOT`, both **before** starting Spark. On a `ConfigError` or an invalid lake root, it marks every row of the run `failed` (`invalid reading config: ...` / `invalid lake root: ...`) and exits 5 (`EXIT_INVALID_CONFIG`). The checks run in this order: watchdog (4), run id (2), rows (3), configs and lake root (5), then Spark. Exits 2, 3 and 5 are deterministic, so an Airflow retry fails the same way.
+2. **`dags/local_read_file_dag.py`** (`read_file_dag`) — scheduled on the `file_list` Asset, with `max_active_runs=1`. The Asset is declared as `Asset(name="file_list")` in each of the three DAG files (Airflow matches Assets by name; a shared `dags.*` module would only import with the project root on `sys.path`). The insertion task of both listing DAGs declares it in `outlets`, and emits it only when it succeeds with at least one recorded file; an empty listing is skipped and emits nothing. `resolve_source_run_ids` collects the deduplicated `source_run_id` of every triggering `file_list` event (Airflow may batch several listings into one run). On a manual trigger (no event) it uses `dag_run.conf["run_id"]`, stripped, rather than `params` (`Param.resolve()` memoises its value). With neither, it fails explicitly. `spark_read_files` is a `SparkSubmitOperator` (provider `apache-airflow-providers-apache-spark`) mapped over `application_args=resolve_source_run_ids().map(build_application_args)`: one instance per source run, each with its own exit code and retries. It uses the `spark_default` Connection for the master and the `spark` pool, both described under "Running Airflow locally". Each instance runs `spark-submit --master <from the Connection> --name ... pipeline/jobs/read_files_job.py --run-id=<id>`. The hook passes this argument list to `subprocess.Popen` with no shell, and the run id is a single `--run-id=<id>` argument, so a value starting with `-` is not taken for an option. `env_vars={"PYTHONPATH": <project root>}` is added to the worker environment, not substituted for it (local/client mode). `LAKE_ROOT` is not set in the DAG: the job reads it from the environment inherited from the worker. `application_args` is a templated field: the value mapped from the XCom is skipped by Jinja, but never build the run id into a templated string (an f-string passed to `.partial()`, `@task.bash`...). `tests/integration/test_p1_4_read_file_dag_e2e.py` guards against that. No Spark resources (`executor_memory`...) are set in the DAG: they belong to the Connection or `spark-defaults.conf` of each environment. Airflow only orchestrates; Spark runs in its own process. The job queries `list_file_from_db(run_id)` for the rows of that `dag_run_id` and exits 3 when the run id has no rows (typo or purged data). It then loads and validates the `SourceRegistry` and resolves `LAKE_ROOT`, both **before** starting Spark. On a `ConfigError` or an invalid lake root, it marks every row of the run `failed` (`invalid reading config: ...` / `invalid lake root: ...`) and exits 5 (`EXIT_INVALID_CONFIG`). The checks run in this order: watchdog (4), run id (2), rows (3), configs and lake root (5), Spark, Java compilation of every quality regex (5), then the files. Exits 2, 3 and 5 are deterministic, so an Airflow retry fails the same way.
 
 For each file, the job:
 1. resolves the config once (`get_config`);
 2. reads the file with `read_file(path, config=config)`;
 3. resets the row to `pending`;
-4. calls `write_to_lake`: raw, then staging if the source has a `staging_path` (fully empty rows and exact duplicates removed), with `storage.mode`;
+4. calls `write_to_lake`, with `storage.mode`:
+   - writes raw;
+   - if the source has a `staging_path`, cleans the rows (fully empty rows and exact duplicates removed), runs its quality checks if any (see "Quality checks"), then writes staging unless a check is blocking;
 5. marks the row `processed`, or `failed` with the error.
 
 Two files with the same name in one run are both marked `failed`, because their partitions would collide. When Airflow kills the task, `SparkSubmitHook.on_kill` only kills the `spark-submit` process (the JVM), not the Python driver it started: the job therefore runs a parent watchdog thread (`start_parent_watchdog`) that exits with code 4, without writing any status, as soon as its parent process is gone. A retry reprocesses the run's files idempotently:
@@ -127,6 +129,11 @@ storage:                    # mandatory: where the job writes the file in the la
   mode: overwrite           # only value accepted: append is rejected (idempotency)
   raw_path: raw/
   staging_path: staging/    # optional: no staging zone without it (the defaults write raw only)
+quality:                    # optional, requires storage.staging_path (see "Quality checks")
+  checks:
+    - {type: not_null, column: id}
+    - {type: unique, columns: [id]}
+    - {type: accepted_values, column: country, values: ["FR", "NO"], severity: warn}
 ```
 
 - **Layout.** `config/sources/*.yaml` holds one dedicated config per source. `config/defaults/*.yaml` holds the fallback for each extension (`*.csv`, `*.txt`, `*.xlsx`, `*.parquet`), with the same model. `config/extractor_config.yaml` is the listing config and is never scanned by the reader.
@@ -137,9 +144,9 @@ storage:                    # mandatory: where the job writes the file in the la
   - **Types.** Boolean, integer and numeric Spark options are typed (`SPARK_OPTION_TYPES`), so `header: "yes"` is a validation error: write `true`/`false` without quotes.
   - **No hidden defaults.** An option missing from the YAML takes the Spark or pandas default (for example, CSV `header=false`).
 - **Explicit schema.** `columns_type` types are checked against `pipeline/config/types.py` (`SUPPORTED_COLUMN_TYPES` / `get_spark_type`). `pipeline/file_reader/utils.py` only re-exports them, and `pipeline.config` must not import anything from `pipeline.file_reader` (a circular import, which a test checks). Only atomic types are accepted, because Spark's CSV source cannot read ARRAY, MAP or STRUCT columns. A list column such as IMDB `genre_list` is therefore read as `string` and split later. `build_schema` turns the types into the `StructType` passed to `DataFrameReader.schema`. The schema is positional, so keep the file's column order (Spark then ignores `inferSchema`).
-- **Loading.** `BaseFileReader(spark)` builds a `SourceRegistry` once from `DEFAULT_CONFIG_ROOT`, which is resolved from the code, not from the cwd. It can also receive an already-loaded registry through `registry=`, which cannot be combined with `config_path`. An invalid file, a duplicate `source.name` or nested lake tables raise one `ConfigError`, naming each YAML file and field path (for example `reader.options.infer_schema: ...`). The errors of one file are aggregated, including when `storage` is missing.
-
-Lake tables may not be nested, whether between the raw and staging tables of one source or between sources, and the check ignores case. Two sources may share exactly the same table, but not the same table with another case. The Spark job loads the registry itself before starting Spark and exits 5 (see above).
+- **Loading.** `BaseFileReader(spark)` builds a `SourceRegistry` once from `DEFAULT_CONFIG_ROOT`, which is resolved from the code, not from the cwd. It can also receive an already-loaded registry through `registry=`, which cannot be combined with `config_path`. An invalid file, a duplicate `source.name` or nested lake tables raise one `ConfigError`, naming each YAML file and field path (for example `reader.options.infer_schema: ...`). The errors of one file are aggregated, including when `storage` is missing. Through `load_source_config` (the registry and the job), a field error in one section does not hide the cross-section errors of the valid ones; a direct `SourceConfig.model_validate` only reports the field errors.
+  - Lake tables may not be nested, whether between the raw and staging tables of one source or between sources, and the check ignores case. Two sources may share exactly the same table, but not the same table with another case. `quality/` is reserved for the check results: no `raw_path` or `staging_path` may start with it.
+  - The Spark job loads the registry itself before starting Spark and exits 5 (see above).
 - **Matching** (`SourceRegistry.match`) works on the file's basename, lowercased:
   1. Dedicated sources first. Exactly one match wins; two or more raise `AmbiguousConfigError`, naming them.
   2. Otherwise the defaults, with the same rule.
@@ -150,13 +157,48 @@ Lake tables may not be nested, whether between the raw and staging tables of one
 - **Adding a source.** Create `config/sources/<name>.yaml` with patterns that do not overlap another dedicated source, and a `storage` section whose tables neither contain nor sit inside another source's tables. Then run `uv run pytest tests/unit/config` (parametrized on every YAML present) and `uv run pytest tests/unit/file_reader -k synthetic`, which reads a synthetic file with every csv/txt config. If the whitelist rejects a legitimate option, add it to `reader_options.py` with its documentation source, and add a non-text option to `SPARK_OPTION_TYPES` too. A new format means a reader, an entry in `READER_CLASSES` and `FileFormat`, a whitelist and a test.
 - **Dependencies.** `pydantic` is a runtime dependency, because the job runs with `uv sync --no-group airflow`. `pipeline/config` must not import Airflow.
 
+### Quality checks
+
+Quality checks are native: Pydantic models in `pipeline/config/quality.py`, a pure-Spark engine in `pipeline/quality/checks.py`, and no Soda or Great Expectations dependency. Neither module may import Airflow or `pipeline.file_reader`.
+
+- **Declaring checks.** `quality.checks` is a list discriminated on `type`:
+  - `not_null` (`column`);
+  - `unique` (`columns`, the combination; rows with a null key are ignored);
+  - `accepted_values` (`column`, `values`);
+  - `range` (`column`, `min` and/or `max`, inclusive, numeric column);
+  - `regex` (`column`, `pattern`);
+  - `row_count` (`min` and/or `max`).
+  
+  Each check has a stable name, either `name` or a derived one (`not_null(id)`, `unique(a,b)`, `row_count`), and a `severity` of `error` (default) or `warn`.
+- **Load-time rules.**
+  - `quality` requires `storage.staging_path`, because the checks decide whether staging is written.
+  - With `columns_type`, every column a check names must be declared there, and `range` needs a numeric type.
+  - Identical checks and duplicate names are refused.
+  - Bounds are int64 integers or finite numbers.
+- **Pitfalls.**
+  - `accepted_values` only takes **text**, compared with the text form of the column. PyYAML reads YAML 1.1 and converts unquoted scalars (`NO`/`yes`/`on`/`off` become booleans, `007` becomes 7, `0123` becomes 83), so write `"NO"`, `"007"`, `"true"`, `"1"`. It is refused on a column declared `float`/`double`: use `range`.
+  - Nulls are only counted by `not_null`. NaN is not null, but `range` counts it as out of bounds on a float/double column.
+  - `regex` uses Spark's `rlike`, a partial match, so anchor with `^...$`. At load it must compile in Python without syntax specific to Java or to Python. The job compiles every regex in Java right after Spark starts (exit 5 on failure).
+- **Execution.** The checks run on the rows cleaned for staging: one aggregation for all per-row checks and the row count, plus one `groupBy` per `unique`, with no `collect` of data.
+- **Statuses.** Each check ends in one of four statuses:
+  - `pass`: no failing row;
+  - `fail`: failing rows, severity `error`;
+  - `warn`: failing rows, severity `warn`;
+  - `error`: the check could not run (missing column, regex refused, Spark error), and `failed_rows` is null.
+  
+  A check is **blocking** when its severity is `error` and its status `fail` or `error`. A `warn` never blocks, even in status `error`, which is logged at ERROR level.
+- **Blocking failure.** Raw is written. The file's staging partition is removed (`ParquetLakeWriter.delete_partition`) and not rewritten. The file becomes `failed` with `quality checks failed: <name>: <detail>; ...`, and the job exits 1 at the end. If the engine itself raises, the same thing happens (it fails closed), with `quality checks could not run: <cause>`.
+- **Results.** They go to `<LAKE_ROOT>/quality/<table>/`, one row per check, partitioned by (`lake_run_id`, `lake_source_file`) and overwritten by a retry. When a source has a staging zone, the job first removes that (run, file) partition of the results, whether or not the source has a `quality` section. If staging fails after passing checks, the results of that attempt are removed. Read the results together with the status in `file_list`.
+- **Repo configs.** `config/sources/imdb.yaml` declares `not_null(id)` and `unique(id)` as `warn` for a first real run: switch them to `error` once `quality/movies` has been checked. `orders.yaml` declares `row_count min 1` as `warn`. The defaults have no checks, since they have no staging.
+- A failed quality check exits 1 like any failed file, so Airflow retries the task even though the result is deterministic. A dedicated exit code without retry is left for later.
+
 ### Processing and storage layers
 
 - `pipeline/processor/base_processor.py` (`BaseProcessor`) wraps a Spark `DataFrame` with chainable cleanup methods (`remove_empty_rows`, `drop_na_rows`, `fill_na`, `remove_duplicates`, `cast_column`, `rename_columns`), each returning `self`.
 - `storage/base_writer.py` defines the `BaseWriter` ABC (`write(data, target, **kwargs)`); `storage/postgresql_writer.py` (`PostgresWriter`) implements it for both Spark DataFrames (via JDBC) and Pandas DataFrames (via `to_sql`); `storage/hive_writer.py` implements the Hive equivalent. Writers must subclass `BaseWriter` and implement `write()` to satisfy the interface.
 - `storage/parquet_lake_writer.py` is the writer the Spark job uses.
   - `ParquetLakeWriter.write(data, target, mode="overwrite", *, run_id, source_file, file_id)` writes `<LAKE_ROOT>/<zone path><table>/`, partitioned by `lake_run_id` and `lake_source_file`. It adds the columns `lake_file_id` and `lake_ingested_at`, and returns the number of rows written, measured with an `Observation` (no extra job).
-  - It also provides `resolve_lake_root` and `latest_snapshot`.
+  - It also provides `resolve_lake_root` and `latest_snapshot`. `delete_partition(spark, target, run_id=, source_file=)` removes one (run, file) partition, and the run directory if it becomes empty.
   - Technical columns never start with `_` or `.`: pyarrow and pandas ignore such partition directories and would read 0 rows, while Spark reads them.
   - Reading a `default_*` table as a whole needs `mergeSchema`, because it mixes unrelated files.
   - A source read with `inferSchema` and no `columns_type` can infer different types from one file to the next, and a mixed table may then fail to read. Declare `columns_type` for sources read as a whole.
