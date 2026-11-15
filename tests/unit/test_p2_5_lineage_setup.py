@@ -58,7 +58,7 @@ def test_p2_5_sec3_marquez_listens_on_localhost_only_on_its_own_network():
     for name in MARQUEZ_SERVICES:
         assert services[name]["networks"] == ["lineage"], name
     assert "lineage" in compose["networks"]
-    for name in ("postgres", "redis"):  # untouched (P3-1)
+    for name in ("postgres", "redis"):  # default network (kept by P3-1)
         assert "networks" not in services[name], name
     # The web UI reaches the API by its service name, on that network.
     assert services["marquez-web"]["environment"]["MARQUEZ_HOST"] == "marquez-api"

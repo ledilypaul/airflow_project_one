@@ -1,28 +1,45 @@
-version: '3.9'
+# P3-1: hardening of the two services `make db-up` starts (Marquez is separate,
+# see below). Not the full Airflow stack: there is still no Airflow service here.
+# - Host ports bound to 127.0.0.1: neither service is reachable from the network.
+# - Credentials come from the environment, which `docker compose` also reads
+#   from `.env` (the file the project already uses for `DB_*`), so the server
+#   and its clients (utils/db_connection.py, `make airflow-init`) agree. The
+#   fallbacks are for local development only; set real values in `.env`.
+# - Postgres applies POSTGRES_* only when it creates its data directory: with an
+#   existing `postgres-data` volume, the credentials of that first start remain.
 services:
   postgres:
     image: postgres:17
     container_name: airflow_postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-airflow}
+      POSTGRES_DB: ${DB_NAME:-airflow}
     ports:
-      - "5434:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       retries: 5
 
   redis:
     image: redis:7
     container_name: airflow_redis
+    # The password is read from the container environment by the shell, so it
+    # is not written in this file. REDISCLI_AUTH lets redis-cli authenticate
+    # without `-a` (which prints a warning and exposes it in the process list).
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-airflow}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-airflow}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Without the right password `redis-cli ping` prints NOAUTH and still
+      # exits 0: only PONG means healthy.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       retries: 5
 

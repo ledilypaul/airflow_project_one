@@ -107,7 +107,12 @@ make lineage-down   # stops and removes its containers (keeps the marquez-data v
 OPENLINEAGE_URL=http://localhost:5002 make airflow   # send the events to Marquez instead of files
 ```
 
-The project's Postgres listens on host port **5434** (container `airflow_postgres`), so it can run next to another project's Postgres on 5433; set `DB_PORT=5434` in `.env`. `make db-up` first checks the port (`make db-port-check`): it fails, naming the container or process, if anything but `airflow_postgres` holds it. There is no Airflow service in the compose file yet. In Airflow 3, `airflow db init` and `airflow webserver` no longer exist: use `airflow db migrate` and `airflow api-server`.
+The project's Postgres listens on host port **5434** (container `airflow_postgres`), so it can run next to another project's Postgres on 5433; set `DB_PORT=5434` in `.env`. `make db-up` first checks the port (`make db-port-check`): it fails, naming the container or process, if anything but `airflow_postgres` holds it. Both published ports (Postgres 5434, Redis 6379) are bound to `127.0.0.1` (P3-1): nothing is reachable from the network. `docker compose` also reads `.env` for interpolation:
+- **Postgres** starts with `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` taken from `DB_USER` / `DB_PASSWORD` / `DB_NAME`, i.e. the same values the Spark job and `make airflow-init` use to connect. Without them, the fallback is `airflow` / `airflow` / `airflow` (dev only). Postgres applies them **only when it creates its data directory**: an existing `postgres-data` volume keeps the credentials of its first start (`make db-down` then `docker volume rm airflow_project_one_postgres-data`, which deletes `file_list`, if you want new ones).
+- **Redis** runs with `--requirepass`, read by the container's shell from `REDIS_PASSWORD` (dev fallback `airflow`, never empty), so it is not written on the compose command line. The healthcheck authenticates through `REDISCLI_AUTH` (same value) and requires `PONG`: `redis-cli ping` answers `NOAUTH` with exit code 0. Nothing in the project uses Redis yet (no Celery executor); a client needs `redis-cli -a "$REDIS_PASSWORD"` or `REDISCLI_AUTH`.
+- Marquez keeps its own fixed `marquez` credentials (imposed by the image) and is not covered by this.
+
+There is no Airflow service in the compose file yet (the backlog's P3-1 "full official Airflow 3.3 compose" is not done: only the hardening above is). In Airflow 3, `airflow db init` and `airflow webserver` no longer exist: use `airflow db migrate` and `airflow api-server`.
 
 ### Database
 
