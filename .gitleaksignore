@@ -1,0 +1,15 @@
+# P3-4 : constats gitleaks déjà présents dans l'historique, acceptés un par un
+# (format : <commit>:<fichier>:<règle>:<ligne>). Aucun n'est dans l'arbre de travail
+# actuel : airflow.cfg n'est plus suivi (commit 61f268c, "stop tracking generated
+# passwords and airflow.cfg") et figure dans .gitignore.
+#
+# Ce sont `secret_key` et `internal_api_secret_key` du airflow.cfg généré en local
+# (lignes 456 et 1500) : des valeurs aléatoires propres à une installation de
+# développement, qui n'ouvrent rien d'autre que cette installation. Réécrire
+# l'historique n'est pas l'objet de P3-4 ; si l'un de ces airflow.cfg a servi ailleurs
+# qu'en local, régénérer ces deux clés est la vraie correction.
+# Les valeurs ne sont écrites nulle part ici.
+d92e078a8a5314ae027bb1495b9c9688d8ddfae4:airflow.cfg:generic-api-key:456
+d92e078a8a5314ae027bb1495b9c9688d8ddfae4:airflow.cfg:generic-api-key:1500
+d9936c6cb4889c0cd6595b0904a6358e0d8d6e15:airflow.cfg:generic-api-key:456
+d9936c6cb4889c0cd6595b0904a6358e0d8d6e15:airflow.cfg:generic-api-key:1500
