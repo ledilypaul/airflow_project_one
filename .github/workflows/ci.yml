@@ -5,10 +5,21 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  # P3-4 : une CVE publiée après le dernier push est détectée sans attendre le
+  # suivant. Le lundi (cron en UTC, branche par défaut) ; seuls les jobs de
+  # sécurité tournent alors, `test` est ignoré (voir sa condition).
+  schedule:
+    - cron: "17 5 * * 1"
+
+# P3-4 : le GITHUB_TOKEN du workflow est en lecture seule sur le dépôt. Un job qui
+# a besoin de plus le déclare lui-même, au niveau du job (jamais ici).
+permissions:
+  contents: read
 
 jobs:
   test:
     name: Lint, tests & DAG import check
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -83,3 +94,97 @@ jobs:
           REQUIRE_DBT: "1"
           REQUIRE_LINEAGE: "1"
           AIRFLOW__COSMOS__ENABLE_TELEMETRY: "False"
+
+  # P3-4 : audit des dépendances Python figées (uv.lock de la racine ET de transform/).
+  # Bloquant : le lock actuel n'a aucune CVE connue (vérifié le 2026-11-15), tout
+  # constat futur doit donc être vu. Une CVE sans correctif disponible se traite
+  # explicitement, avec `--ignore-vuln <ID>` et un commentaire qui dit pourquoi et
+  # jusqu'à quand, pas en désactivant l'étape.
+  # `--no-deps --disable-pip` : les exports sont déjà entièrement résolus, pip-audit
+  # n'a ni à résoudre ni à installer quoi que ce soit (rapide, sans exécuter de code).
+  # La version de pip-audit est épinglée ici (Dependabot ne la suit pas) : l'outil
+  # interroge la base de vulnérabilités en direct, une version un peu ancienne
+  # n'affaiblit donc pas le contrôle.
+  pip-audit:
+    name: pip-audit (uv.lock racine et transform/)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+
+      # --frozen : exporte le lock tel que committé, sans le régénérer (la cohérence
+      # lock/pyproject est vérifiée par le job `test`). Sans --no-dev : les groupes
+      # airflow et dev sont audités aussi.
+      - name: Export the locked requirements
+        run: |
+          uv export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/requirements-root.txt"
+          uv --directory transform export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/requirements-transform.txt"
+
+      - name: pip-audit (root project)
+        run: uvx --from "pip-audit==2.10.1" pip-audit -r "$RUNNER_TEMP/requirements-root.txt" --no-deps --disable-pip --progress-spinner off
+
+      - name: pip-audit (transform/)
+        run: uvx --from "pip-audit==2.10.1" pip-audit -r "$RUNNER_TEMP/requirements-transform.txt" --no-deps --disable-pip --progress-spinner off
+
+  # P3-4 : Trivy, système de fichiers : CVE des lockfiles (uv.lock des deux projets),
+  # secrets et mauvaises configurations. Il n'existe pas de contrôle Trivy intégré pour
+  # docker-compose.yaml : le fichier est couvert par la détection de secrets, pas par la
+  # détection de mauvaises configurations (Dockerfile, Kubernetes, Terraform...).
+  #
+  # NON BLOQUANT pour l'instant (exit-code 0) : cette étape n'a jamais tourné (aucun
+  # Trivy disponible au moment de l'écrire) et on ne veut pas une CI rouge sur un
+  # constat existant jamais examiné. Seuil explicite : HIGH et CRITICAL avec un
+  # correctif disponible (`ignore-unfixed`). Pour la rendre bloquante : lire le rapport
+  # d'un premier run, traiter ou ignorer (.trivyignore, avec un commentaire) ses
+  # constats, puis passer `exit-code` à "1".
+  # Trivy est épinglé à v0.70.0, postérieur à l'incident de mars 2026 (CVE-2026-33634 :
+  # trivy-action et setup-trivy détournés, binaire 0.69.4 malveillant). L'action
+  # elle-même est épinglée par SHA de commit ; v0.36.0 épingle setup-trivy par SHA.
+  trivy:
+    name: Trivy (lockfiles, secrets, configuration)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          version: v0.70.0
+          format: table
+
+  # P3-4 : gitleaks sur l'historique git (fetch-depth: 0). Bloquant. Les constats déjà
+  # présents dans l'historique sont listés, un par un, dans .gitleaksignore avec leur
+  # origine : on n'abaisse ni la sensibilité ni le périmètre.
+  # Dépôt personnel : pas de GITLEAKS_LICENSE. Si le dépôt passe dans une
+  # organisation, l'action en exige une (secret `GITLEAKS_LICENSE`).
+  # `pull-requests: read` : l'action liste les commits de la PR ; les commentaires sur
+  # la PR sont désactivés (ils demanderaient `pull-requests: write`).
+  gitleaks:
+    name: gitleaks (secrets in git history)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
