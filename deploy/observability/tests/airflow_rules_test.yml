@@ -1,0 +1,302 @@
+# promtool test rules deploy/observability/tests/airflow_rules_test.yml
+# (paths are relative to this file). `_` = no sample, `x+0xN` = N more samples.
+#
+# Series carry the labels the real ones have: `job="airflow_project_one"` (the
+# OTEL_SERVICE_NAME `make airflow` sets, kept by honor_labels) and one
+# `instance` per Airflow process. `up{job="otel-collector"}` is Prometheus' own
+# series for the scrape of the collector (every 30 s in prometheus.yml).
+rule_files:
+  - ../rules/airflow.yml
+
+evaluation_interval: 1m
+
+tests:
+  # --- AirflowDagRunFailed ------------------------------------------------
+  # The first failure is the first sample of a series (value 1): increase()
+  # alone would see nothing. Scrapes every 30 s, 20 minutes of history first.
+  - name: first failure of a DAG fires
+    interval: 30s
+    input_series:
+      - series: 'up{job="otel-collector", instance="otel-collector:8889"}'
+        values: '1x90'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="read_file_dag", run_type="manual", instance="s1", job="airflow_project_one"}'
+        values: '_x40 1x50'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: AirflowDagRunFailed
+        exp_alerts:
+          - exp_labels: {dag_id: read_file_dag, severity: critical}
+            exp_annotations:
+              summary: "A run of DAG read_file_dag failed"
+              description: "DAG read_file_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for read_file_dag, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
+
+  # A later failure of a DAG whose counter already exists.
+  - name: a further failure fires, a quiet counter does not
+    interval: 30s
+    input_series:
+      - series: 'up{job="otel-collector", instance="otel-collector:8889"}'
+        values: '1x120'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="transform_dag", run_type="asset_triggered", instance="s1", job="airflow_project_one"}'
+        values: '3x60 4x60'
+    alert_rule_test:
+      # Unchanged for 30 minutes: the old failures are over.
+      - eval_time: 28m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 33m
+        alertname: AirflowDagRunFailed
+        exp_alerts:
+          - exp_labels: {dag_id: transform_dag, severity: critical}
+            exp_annotations:
+              summary: "A run of DAG transform_dag failed"
+              description: "DAG transform_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for read_file_dag, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
+      # 15 minutes after the failure, it resolves.
+      - eval_time: 50m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+
+  # C-1: the scrape of the collector breaks for 20 minutes (collector or network
+  # down), then the series comes back with its old value. To the "born in the
+  # window" branch it looks new: it must not alert, no failure happened.
+  - name: a scrape gap that returns the same value does not fire
+    interval: 30s
+    input_series:
+      - series: 'up{job="otel-collector", instance="otel-collector:8889"}'
+        values: '1x20 0x40 1x40'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="read_file_dag", run_type="manual", instance="s1", job="airflow_project_one"}'
+        values: '2x20 _x40 2x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      # Right after the gap, and each minute of the 16 minutes the gate looks back.
+      - eval_time: 31m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 44m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 45m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 46m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 49m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+
+  # The scheduler restarts: a new instance, a new series, born at its first
+  # failure. The old instance's series stops (the collector drops it).
+  - name: a failure after a scheduler restart fires
+    interval: 30s
+    input_series:
+      - series: 'up{job="otel-collector", instance="otel-collector:8889"}'
+        values: '1x120'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="read_file_dag", run_type="manual", instance="old-scheduler", job="airflow_project_one"}'
+        values: '3x60 _x60'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="read_file_dag", run_type="manual", instance="new-scheduler", job="airflow_project_one"}'
+        values: '_x80 1x40'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 39m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 41m
+        alertname: AirflowDagRunFailed
+        exp_alerts:
+          - exp_labels: {dag_id: read_file_dag, severity: critical}
+            exp_annotations:
+              summary: "A run of DAG read_file_dag failed"
+              description: "DAG read_file_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for read_file_dag, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
+      - eval_time: 58m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+
+  # Prometheus itself is young (10 minutes of history): a series that exists
+  # from the first scrape is not "born", and the gate stays closed for the
+  # first 15 minutes (documented limit: a failure in that window is missed).
+  - name: a young Prometheus does not fire on the series it just discovered
+    interval: 30s
+    input_series:
+      - series: 'up{job="otel-collector", instance="otel-collector:8889"}'
+        values: '1x40'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="read_file_dag", run_type="manual", instance="s1", job="airflow_project_one"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+
+  # SEC-4: the same metric name from another service (another Airflow
+  # sending to the same collector) is not this pipeline.
+  - name: another service's failure does not fire
+    interval: 30s
+    input_series:
+      - series: 'up{job="otel-collector", instance="otel-collector:8889"}'
+        values: '1x90'
+      - series: 'airflow_dagrun_duration_failed_milliseconds_count{dag_id="read_file_dag", run_type="manual", instance="x1", job="someone_elses_airflow"}'
+        values: '_x40 1x50'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: AirflowDagRunFailed
+        exp_alerts: []
+
+  # --- AirflowSchedulerHeartbeatMissing -----------------------------------
+  - name: a beating scheduler does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="s1", job="airflow_project_one"}'
+        values: '0+12x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts: []
+
+  # The counter last moves at minute 10. The window is 5 minutes and `for` 2:
+  # it fires about 6 minutes later (about 7 to 8 minutes after the scheduler
+  # stopped, as measured on a real run), not before.
+  - name: a frozen scheduler fires after the window and `for`
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="s1", job="airflow_project_one"}'
+        values: '0+12x10 120x30'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "No Airflow scheduler heartbeat for 5 minutes"
+              description: "No new `scheduler_heartbeat` for 5 minutes: the scheduler is down or stuck, or Airflow is not running with `OTEL_EXPORTER_OTLP_ENDPOINT` set. No DAG run is created or scheduled meanwhile (Asset events pile up)."
+
+  - name: a vanished scheduler series fires
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="s1", job="airflow_project_one"}'
+        values: '0+12x10 _x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts:
+          - exp_labels: {severity: critical, job: airflow_project_one}
+            exp_annotations:
+              summary: "No Airflow scheduler heartbeat for 5 minutes"
+              description: "No new `scheduler_heartbeat` for 5 minutes: the scheduler is down or stuck, or Airflow is not running with `OTEL_EXPORTER_OTLP_ENDPOINT` set. No DAG run is created or scheduled meanwhile (Asset events pile up)."
+
+  # SEC-4: another service's heartbeat does not hide the death of ours.
+  - name: another service's heartbeat does not hide a dead scheduler
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="s1", job="airflow_project_one"}'
+        values: '0+12x10 _x30'
+      - series: 'airflow_scheduler_heartbeat_total{instance="x1", job="someone_elses_airflow"}'
+        values: '0+12x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts:
+          - exp_labels: {severity: critical, job: airflow_project_one}
+            exp_annotations:
+              summary: "No Airflow scheduler heartbeat for 5 minutes"
+              description: "No new `scheduler_heartbeat` for 5 minutes: the scheduler is down or stuck, or Airflow is not running with `OTEL_EXPORTER_OTLP_ENDPOINT` set. No DAG run is created or scheduled meanwhile (Asset events pile up)."
+
+  # And the stale series of the previous scheduler instance (restart) does not
+  # fire while the new one beats.
+  - name: a restart's stale series does not fire while the new scheduler beats
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="old", job="airflow_project_one"}'
+        values: '0+12x10 120x5 _x20'
+      - series: 'airflow_scheduler_heartbeat_total{instance="new", job="airflow_project_one"}'
+        values: '_x10 0+12x30'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: AirflowSchedulerHeartbeatMissing
+        exp_alerts: []
+
+  # --- AirflowTaskStuckScheduled ------------------------------------------
+  # Missing pool (or paused DAG): scheduled, and nothing else runs (no
+  # running/queued series at all, as on a fresh scheduler).
+  - name: a task scheduled with nothing running fires after 15 minutes
+    interval: 1m
+    input_series:
+      - series: 'airflow_ti_scheduled{dag_id="read_file_dag", task_id="spark_read_files", queue="default", job="airflow_project_one"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AirflowTaskStuckScheduled
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AirflowTaskStuckScheduled
+        exp_alerts:
+          - exp_labels: {dag_id: read_file_dag, task_id: spark_read_files, queue: default, job: airflow_project_one, severity: warning}
+            exp_annotations:
+              summary: "Task read_file_dag.spark_read_files stuck in `scheduled`"
+              description: "Task spark_read_files of DAG read_file_dag has been `scheduled` for 15 minutes while no task runs or is queued. Two causes: its pool does not exist (`make airflow-init` imports deploy/airflow/pools.json; the scheduler log says `Tasks using non-existent pool ... will not be scheduled`), or its DAG is paused (the scheduler does not queue the tasks of a paused DAG)."
+
+  # Pool `spark` (1 slot) busy with another mapped instance: a normal queue.
+  - name: a task waiting behind a running one does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_ti_scheduled{dag_id="read_file_dag", task_id="spark_read_files", queue="default", job="airflow_project_one"}'
+        values: '1x60'
+      - series: 'airflow_ti_running{dag_id="read_file_dag", task_id="spark_read_files", queue="default", job="airflow_project_one"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: AirflowTaskStuckScheduled
+        exp_alerts: []
+
+  # The scheduler resets the gauge to 0 when the task leaves `scheduled`.
+  - name: a gauge reset to zero does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_ti_scheduled{dag_id="read_file_dag", task_id="spark_read_files", queue="default", job="airflow_project_one"}'
+        values: '1x5 0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AirflowTaskStuckScheduled
+        exp_alerts: []
+
+  # SEC-4: another service's scheduled task, or its running one, changes nothing.
+  - name: another service's tasks neither fire nor mask the alert
+    interval: 1m
+    input_series:
+      - series: 'airflow_ti_scheduled{dag_id="theirs", task_id="t", queue="default", job="someone_elses_airflow"}'
+        values: '1x40'
+      - series: 'airflow_ti_scheduled{dag_id="read_file_dag", task_id="spark_read_files", queue="default", job="airflow_project_one"}'
+        values: '1x40'
+      - series: 'airflow_ti_running{dag_id="theirs", task_id="t", queue="default", job="someone_elses_airflow"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AirflowTaskStuckScheduled
+        exp_alerts:
+          - exp_labels: {dag_id: read_file_dag, task_id: spark_read_files, queue: default, job: airflow_project_one, severity: warning}
+            exp_annotations:
+              summary: "Task read_file_dag.spark_read_files stuck in `scheduled`"
+              description: "Task spark_read_files of DAG read_file_dag has been `scheduled` for 15 minutes while no task runs or is queued. Two causes: its pool does not exist (`make airflow-init` imports deploy/airflow/pools.json; the scheduler log says `Tasks using non-existent pool ... will not be scheduled`), or its DAG is paused (the scheduler does not queue the tasks of a paused DAG)."

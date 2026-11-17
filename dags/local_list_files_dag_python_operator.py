@@ -59,7 +59,10 @@ BONNES PRATIQUES APPLIQUÉES ICI
    À remplacer par un cron ("0 * * * *") si exécution périodique souhaitée.
 """
 
+import json
+import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -167,6 +170,49 @@ def insert_files_to_db(**kwargs):
 
 # --- Définition du DAG ---
 
+
+# P3-3 : rapport d'échec (une ligne de log structurée `airflow_failure`, voir
+# utils/failure_alert.py). Importé dans le callback, pas à l'analyse du DAG (le
+# DAG processor n'a pas la racine du projet sur sys.path). Ne lève jamais. Si
+# `utils` est introuvable (image de worker sans le projet), une ligne minimale
+# (dag_id, run_id, reason) est journalisée : un échec n'est jamais silencieux.
+# Les quatre fichiers de DAG portent ces mêmes lignes : un module partagé serait
+# lui-même du code du projet.
+def _report_failure(context, scope: str):
+    try:
+        from utils import failure_alert
+    except ImportError:
+        try:
+            get = context.get if isinstance(context, Mapping) else {}.get
+            ti, dag = get("ti"), get("dag")
+            record = {
+                "scope": scope,
+                "dag_id": getattr(ti, "dag_id", None) or getattr(dag, "dag_id", None),
+                "run_id": get("run_id") or getattr(ti, "run_id", None),
+                "reason": get("reason"),
+                "task_id": getattr(ti, "task_id", None),
+            }
+            line = json.dumps(
+                {k: v for k, v in record.items() if v is not None}, sort_keys=True, default=str
+            )
+            logging.getLogger(__name__).error("airflow_failure %s", line)
+        except Exception:
+            pass
+        return
+    report = (
+        failure_alert.log_task_failure if scope == "task" else failure_alert.log_dag_run_failure
+    )
+    report(context)
+
+
+def on_task_failure(context):
+    _report_failure(context, "task")
+
+
+def on_dag_run_failure(context):
+    _report_failure(context, "dag_run")
+
+
 default_args = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -175,6 +221,7 @@ default_args = {
     "email_on_retry": False,
     "retries": 1,  # 1 retry par défaut : absorbe les glitches transitoires
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": on_task_failure,
 }
 
 with DAG(
@@ -183,6 +230,7 @@ with DAG(
     description="List files in the source directory and persist metadata",
     schedule=None,  # Manuel uniquement. Mettre un cron pour exécution périodique.
     catchup=False,
+    on_failure_callback=on_dag_run_failure,
     tags=["extraction", "file-listing", "python-operator"],
 ) as dag:
     list_files = PythonOperator(

@@ -82,6 +82,7 @@ templatée (f-string dans `application_args` passé à `.partial()`,
 depuis un run_id manuel (voir tests/integration/test_p1_4_read_file_dag_e2e.py).
 """
 
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -112,6 +113,49 @@ SPARK_CONN_ID = "spark_default"
 # the scheduler leaves the task in `scheduled` forever.
 SPARK_POOL = "spark"
 
+
+# P3-3: failure reports (one structured `airflow_failure` log line, see
+# utils/failure_alert.py). Imported inside the callbacks: a DAG file imports no
+# project code at parse time (the DAG processor does not have the project root
+# on sys.path). The report never raises. If `utils` cannot be imported (a worker
+# image without the project), a minimal line is logged instead (dag_id, run_id,
+# reason): a failure is never silent. The four DAG files carry the same few
+# lines, because a shared module would itself be project code.
+def _report_failure(context: Any, scope: str) -> None:
+    try:
+        from utils import failure_alert
+    except ImportError:
+        try:
+            get = context.get if isinstance(context, Mapping) else {}.get
+            ti, dag = get("ti"), get("dag")
+            record = {
+                "scope": scope,
+                "dag_id": getattr(ti, "dag_id", None) or getattr(dag, "dag_id", None),
+                "run_id": get("run_id") or getattr(ti, "run_id", None),
+                "reason": get("reason"),
+                "task_id": getattr(ti, "task_id", None),
+            }
+            line = json.dumps(
+                {k: v for k, v in record.items() if v is not None}, sort_keys=True, default=str
+            )
+            logging.getLogger(__name__).error("airflow_failure %s", line)
+        except Exception:
+            pass
+        return
+    report = (
+        failure_alert.log_task_failure if scope == "task" else failure_alert.log_dag_run_failure
+    )
+    report(context)
+
+
+def on_task_failure(context: Any) -> None:
+    _report_failure(context, "task")
+
+
+def on_dag_run_failure(context: Any) -> None:
+    _report_failure(context, "dag_run")
+
+
 DEFAULT_ARGS = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -119,6 +163,7 @@ DEFAULT_ARGS = {
     "email_on_retry": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": on_task_failure,
 }
 
 # P2-5: OpenLineage Spark listener (JVM), from the openlineage-spark jar whose
@@ -200,7 +245,13 @@ class ReadFilesSparkSubmitOperator(SparkSubmitOperator):
     fields, `pre_execute` (P2-5 lineage) and `on_kill` are the provider's.
     In YARN/Kubernetes cluster mode, spark-submit's return code is not the
     driver's: those runs keep retrying, the safe side.
+
+    P3-3: the code read on a failure is kept in `spark_exit_code` (None while
+    spark-submit did not run), for the failure callback of the task, which
+    reports it in its `airflow_failure` line. Nothing else changes.
     """
+
+    spark_exit_code: int | None = None
 
     def execute(self, context: Any) -> None:
         from airflow.sdk.exceptions import AirflowException, AirflowFailException
@@ -209,6 +260,7 @@ class ReadFilesSparkSubmitOperator(SparkSubmitOperator):
             return super().execute(context)
         except AirflowException as exc:
             code = _spark_submit_returncode(self._hook)
+            self.spark_exit_code = code
             meaning = NO_RETRY_EXIT_CODES.get(code) if code is not None else None
             if code is None:
                 self.log.warning(
@@ -524,6 +576,8 @@ def report_file_list_input(context: Any) -> None:
     # tasks `skipped` (a running spark-submit is killed; the job's parent
     # watchdog then stops the Python driver, C-1).
     dagrun_timeout=timedelta(hours=6),
+    # P3-3: also covers what no task callback sees, such as that timeout.
+    on_failure_callback=on_dag_run_failure,
     tags=["processing", "spark", "file-reading"],
     params={
         # UI form + validation of the run conf only: the task reads
@@ -628,7 +682,9 @@ def read_file_dag():
         log.info("%d processed file(s): emitting the `lake_staging` asset", processed)
         return processed
 
-    @task(trigger_rule=TriggerRule.ONE_FAILED, retries=0)
+    # on_failure_callback=None: the failed spark_read_files instance has already
+    # reported itself, and the DAG-level callback reports the run (P3-3).
+    @task(trigger_rule=TriggerRule.ONE_FAILED, retries=0, on_failure_callback=None)
     def fail_if_spark_failed() -> None:
         """Keep the run failed when a spark_read_files instance failed (or was
         upstream_failed): a DagRun takes its state from its leaves, and the

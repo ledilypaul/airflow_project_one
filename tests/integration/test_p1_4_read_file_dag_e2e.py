@@ -173,6 +173,8 @@ def airflow_env(tmp_path_factory):
         AIRFLOW__CORE__UNIT_TEST_MODE="True",
         # P2-5: never any lineage event, unless a test turns it on.
         AIRFLOW__OPENLINEAGE__DISABLED="True",
+        # P3-3: nor any metric.
+        AIRFLOW__METRICS__OTEL_ON="False",
         AIRFLOW__COSMOS__ENABLE_TELEMETRY="False",
     )
     subprocess.run(
@@ -261,6 +263,9 @@ def _run_dag_test(
         timeout=600,
     )
     logs = proc.stdout[-5000:] + proc.stderr[-5000:]
+    # P3-3: the whole output, for assertions on a line that the tail above
+    # may not keep.
+    (tmp_path / "dag_test_output.log").write_text(proc.stdout + proc.stderr)
     assert proc.returncode == 0, logs
     return json.loads(result_file.read_text()), logs
 
@@ -568,3 +573,73 @@ def test_p2_6_read_file_dag_e2e_exit_1_is_still_retried(airflow_env, fake_spark_
     assert states["first_publish"] == "success", logs
     assert states["first_guard"] == "failed", logs
     assert states["first"] == "failed", logs
+
+
+# ---------------------------------------------------------------------------
+# P3-3 - the failure of spark_read_files is reported with the job's exit code
+# ---------------------------------------------------------------------------
+
+
+def _failure_lines(tmp_path):
+    """The `airflow_failure` records (utils/failure_alert.py) of the run. The
+    log renderer appends its own suffix after the JSON: decode the first
+    JSON value only."""
+    marker = "airflow_failure "
+    records = []
+    for line in (tmp_path / "dag_test_output.log").read_text().splitlines():
+        if marker + "{" in line:
+            start = line.index(marker + "{") + len(marker)
+            record, _ = json.JSONDecoder().raw_decode(line[start:])
+            records.append(record)
+    return records
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "attempts", "meaning"),
+    [(6, 1, "quality"), (1, 2, "at least one file failed")],
+    ids=["exit-6-no-retry", "exit-1-after-retry"],
+)
+def test_p3_3_read_file_dag_e2e_failure_line_names_the_spark_exit_code(
+    airflow_env, fake_spark_submit, tmp_path, exit_code, attempts, meaning
+):
+    """One line for the task, on its final failure only (exit 1: after the
+    retry, not on each attempt), with the exit code of spark-submit and what
+    it means. The sentinel task `fail_if_spark_failed` does not report a
+    second time."""
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        f"manual__p3_3_exit_{exit_code}",
+        exit_code=exit_code,
+        chain_second=False,
+        statuses=["processed", "failed"],
+        keep_spark_retries=True,
+    )
+
+    assert states["first_spark_tries"] == [attempts], logs
+    task_lines = [r for r in _failure_lines(tmp_path) if r["scope"] == "task"]
+    assert len(task_lines) == 1, task_lines
+    (record,) = task_lines
+    assert record["dag_id"] == "read_file_dag"
+    assert record["run_id"], record
+    assert record["task_id"] == "spark_read_files"
+    assert record["map_index"] == 0
+    assert record["try_number"] == attempts
+    assert record["spark_exit_code"] == exit_code
+    assert meaning in record["spark_exit_code_meaning"]
+    # C-2: the exception's type only, never its text (the task log has it,
+    # masked by Airflow).
+    # exit 6 is never retried (AirflowFailException), exit 1 is (AirflowException).
+    assert record["exception_type"] == (
+        "AirflowFailException" if exit_code == 6 else "AirflowException"
+    )
+    assert "exception" not in record, record
+    # C-7: the run reports once as well, with the reason the scheduler gives;
+    # the sentinel task (`fail_if_spark_failed`) reports nothing by itself.
+    run_lines = [r for r in _failure_lines(tmp_path) if r["scope"] == "dag_run"]
+    assert len(run_lines) == 1, run_lines
+    assert run_lines[0]["dag_id"] == "read_file_dag"
+    assert run_lines[0]["run_id"] == record["run_id"]
+    assert run_lines[0]["reason"] == "task_failure"
+    assert not [r for r in _failure_lines(tmp_path) if r.get("task_id") == "fail_if_spark_failed"]

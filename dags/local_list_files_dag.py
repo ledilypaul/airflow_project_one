@@ -1,7 +1,10 @@
+import json
 import logging
 import os
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from airflow.sdk import Asset, dag, task
 
@@ -17,6 +20,49 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 CONFIG_PATH = str(PROJECT_ROOT / "config" / "extractor_config.yaml")
 
+
+# P3-3: failure reports (one structured `airflow_failure` log line, see
+# utils/failure_alert.py). Imported inside the callbacks: a DAG file imports no
+# project code at parse time (the DAG processor does not have the project root
+# on sys.path). The report never raises. If `utils` cannot be imported (a worker
+# image without the project), a minimal line is logged instead (dag_id, run_id,
+# reason): a failure is never silent. The four DAG files carry the same few
+# lines, because a shared module would itself be project code.
+def _report_failure(context: Any, scope: str) -> None:
+    try:
+        from utils import failure_alert
+    except ImportError:
+        try:
+            get = context.get if isinstance(context, Mapping) else {}.get
+            ti, dag = get("ti"), get("dag")
+            record = {
+                "scope": scope,
+                "dag_id": getattr(ti, "dag_id", None) or getattr(dag, "dag_id", None),
+                "run_id": get("run_id") or getattr(ti, "run_id", None),
+                "reason": get("reason"),
+                "task_id": getattr(ti, "task_id", None),
+            }
+            line = json.dumps(
+                {k: v for k, v in record.items() if v is not None}, sort_keys=True, default=str
+            )
+            logging.getLogger(__name__).error("airflow_failure %s", line)
+        except Exception:
+            pass
+        return
+    report = (
+        failure_alert.log_task_failure if scope == "task" else failure_alert.log_dag_run_failure
+    )
+    report(context)
+
+
+def on_task_failure(context: Any) -> None:
+    _report_failure(context, "task")
+
+
+def on_dag_run_failure(context: Any) -> None:
+    _report_failure(context, "dag_run")
+
+
 DEFAULT_ARGS = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -24,6 +70,7 @@ DEFAULT_ARGS = {
     "email_on_retry": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": on_task_failure,
 }
 
 log = logging.getLogger(__name__)
@@ -36,6 +83,7 @@ log = logging.getLogger(__name__)
     start_date=datetime(2024, 12, 18),
     schedule=None,
     catchup=False,
+    on_failure_callback=on_dag_run_failure,
     tags=["extraction", "file-listing"],
 )
 def list_files_dag():

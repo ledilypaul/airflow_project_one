@@ -110,6 +110,49 @@ LAKE_STAGING_SOURCE = "lake_staging"
 STAGING_ZONE = "staging"
 LINEAGE_TASK_ID = "lineage_lake_staging"
 
+
+# P3-3: failure reports (one structured `airflow_failure` log line, see
+# utils/failure_alert.py). Imported inside the callbacks: a DAG file imports no
+# project code at parse time (the DAG processor does not have the project root
+# on sys.path). The report never raises. If `utils` cannot be imported (a worker
+# image without the project), a minimal line is logged instead (dag_id, run_id,
+# reason): a failure is never silent. The four DAG files carry the same few
+# lines, because a shared module would itself be project code.
+def _report_failure(context: Any, scope: str) -> None:
+    try:
+        from utils import failure_alert
+    except ImportError:
+        try:
+            get = context.get if isinstance(context, Mapping) else {}.get
+            ti, dag = get("ti"), get("dag")
+            record = {
+                "scope": scope,
+                "dag_id": getattr(ti, "dag_id", None) or getattr(dag, "dag_id", None),
+                "run_id": get("run_id") or getattr(ti, "run_id", None),
+                "reason": get("reason"),
+                "task_id": getattr(ti, "task_id", None),
+            }
+            line = json.dumps(
+                {k: v for k, v in record.items() if v is not None}, sort_keys=True, default=str
+            )
+            logging.getLogger(__name__).error("airflow_failure %s", line)
+        except Exception:
+            pass
+        return
+    report = (
+        failure_alert.log_task_failure if scope == "task" else failure_alert.log_dag_run_failure
+    )
+    report(context)
+
+
+def on_task_failure(context: Any) -> None:
+    _report_failure(context, "task")
+
+
+def on_dag_run_failure(context: Any) -> None:
+    _report_failure(context, "dag_run")
+
+
 DEFAULT_ARGS = {
     "owner": "airflow",
     "depends_on_past": False,
@@ -119,6 +162,7 @@ DEFAULT_ARGS = {
     # reruns `dbt build` on a retry (Cosmos skips it on purpose).
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": on_task_failure,
 }
 
 log = logging.getLogger(__name__)
@@ -329,6 +373,8 @@ transform_dag = DbtDag(
     # A stuck producer or sensor must not block the next `lake_staging`
     # events forever (max_active_runs=1).
     dagrun_timeout=timedelta(hours=2),
+    # P3-3: also covers what no task callback sees, such as that timeout.
+    on_failure_callback=on_dag_run_failure,
     tags=["transform", "dbt", "duckdb"],
     project_config=ProjectConfig(
         dbt_project_path=TRANSFORM_DIR,

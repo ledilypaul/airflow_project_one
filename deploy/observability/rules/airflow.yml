@@ -1,0 +1,110 @@
+# P3-3: alert rules on the metrics Airflow sends through OpenTelemetry
+# (collector's Prometheus exporter: dots become `_`, counters end in `_total`,
+# timers are histograms in milliseconds). Unit-tested by promtool:
+# tests/airflow_rules_test.yml, run by tests/integration/test_p3_3_promtool.py.
+#
+# Three signals, picked for the failures this pipeline already documents
+# (CLAUDE.md). No Alertmanager: an alert is read in the Prometheus UI.
+#
+# Every Airflow series is selected with job="airflow_project_one": the
+# OTEL_SERVICE_NAME `make airflow` sets, which the scrape keeps as `job`
+# (`honor_labels`). The collector accepts OTLP from anyone who can reach it:
+# another service's series, with the same names, must not fire these alerts
+# nor hide a dead scheduler. If you change OTEL_SERVICE_NAME, change it here.
+#
+# Why AirflowDagRunFailed is not simply `increase()`: the scheduler creates a
+# counter or a histogram at its first event, so the first failure of a DAG is
+# the first sample of a series, and `increase()` needs two. The rule therefore
+# also takes the series that appeared inside the window. A series can also
+# "appear" without any failure: after a break of the scrape (collector down, a
+# network cut) it comes back with its old value. That branch is only trusted
+# when Prometheus scraped the collector without a break over the window (and
+# was already scraping 15 minutes ago): for its first 15 minutes, Prometheus
+# misses a first failure, which is the price of not raising a false alert.
+groups:
+  - name: airflow
+    rules:
+      # A DAG run ended `failed` (one of its leaf tasks failed, or the run
+      # timed out). Emitted by the scheduler when it marks the run failed.
+      # The 16 minute look-back of the gate covers the instant (now - 15m)
+      # that `offset 15m` reads; 28 samples of 32 at a 30 s scrape interval.
+      - alert: AirflowDagRunFailed
+        expr: |
+          sum by (dag_id) (
+            increase(airflow_dagrun_duration_failed_milliseconds_count{job="airflow_project_one"}[15m])
+          ) > 0
+          or
+          sum by (dag_id) (
+            (
+              airflow_dagrun_duration_failed_milliseconds_count{job="airflow_project_one"}
+              unless
+              airflow_dagrun_duration_failed_milliseconds_count{job="airflow_project_one"} offset 15m
+            )
+            and on ()
+            (
+              min_over_time(up{job="otel-collector"}[16m]) == 1
+              and
+              count_over_time(up{job="otel-collector"}[16m]) >= 28
+              and
+              up{job="otel-collector"} offset 15m == 1
+            )
+          ) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "A run of DAG {{ $labels.dag_id }} failed"
+          description: >-
+            DAG {{ $labels.dag_id }} had a run in the `failed` state during the last 15
+            minutes. See the task logs; for read_file_dag, the Spark exit code
+            (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job
+            standalone') and the structured line `airflow_failure` of the task log.
+
+      # The scheduler loop beats every few seconds (`scheduler_heartbeat_sec`).
+      # A frozen counter means a hung scheduler; an absent one means a dead
+      # scheduler (the collector drops a series 5 minutes after its last update)
+      # or Airflow that never started with metrics on. It fires about 6 minutes
+      # after the counter last moved (5 minute window, 2 minutes of `for`), i.e.
+      # 7 minutes or more after the scheduler stopped (measured: 7 to 8).
+      - alert: AirflowSchedulerHeartbeatMissing
+        expr: |
+          sum(increase(airflow_scheduler_heartbeat_total{job="airflow_project_one"}[5m])) == 0
+          or
+          absent_over_time(airflow_scheduler_heartbeat_total{job="airflow_project_one"}[5m])
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No Airflow scheduler heartbeat for 5 minutes"
+          description: >-
+            No new `scheduler_heartbeat` for 5 minutes: the scheduler is down or stuck,
+            or Airflow is not running with `OTEL_EXPORTER_OTLP_ENDPOINT` set. No DAG
+            run is created or scheduled meanwhile (Asset events pile up).
+
+      # A task that stays `scheduled` while nothing runs or is queued is not
+      # waiting for a slot: it can never get one. Two causes: a missing pool
+      # (`spark`, `dbt_duckdb`, CLAUDE.md: the DAG parses, the run looks fine and
+      # stays stuck until dagrun_timeout, 6 h / 2 h; a pool that does not exist
+      # exports no pool metric at all, hence this signal), or a paused DAG (the
+      # scheduler does not queue the tasks of a paused DAG).
+      # Not raised while another task runs (a busy `spark` pool is a normal
+      # queue): the dagrun_timeout still catches a hung one.
+      - alert: AirflowTaskStuckScheduled
+        expr: |
+          (airflow_ti_scheduled{job="airflow_project_one"} > 0)
+          and on ()
+          (
+            (sum(airflow_ti_running{job="airflow_project_one"}) or vector(0))
+            + (sum(airflow_ti_queued{job="airflow_project_one"}) or vector(0)) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task {{ $labels.dag_id }}.{{ $labels.task_id }} stuck in `scheduled`"
+          description: >-
+            Task {{ $labels.task_id }} of DAG {{ $labels.dag_id }} has been `scheduled`
+            for 15 minutes while no task runs or is queued. Two causes: its pool does
+            not exist (`make airflow-init` imports deploy/airflow/pools.json; the
+            scheduler log says `Tasks using non-existent pool ... will not be
+            scheduled`), or its DAG is paused (the scheduler does not queue the tasks
+            of a paused DAG).
