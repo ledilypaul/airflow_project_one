@@ -21,6 +21,9 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MARQUEZ_SERVICES = {"marquez-db", "marquez-api", "marquez-web"}
+# P3-3: the other optional stack, under its own profile (guarded by
+# tests/unit/test_p3_3_observability_setup.py).
+OBSERVABILITY_SERVICES = {"otel-collector", "prometheus"}
 PROJECT_HOST_PORTS = {"5434", "6379", "8080"}
 
 
@@ -34,6 +37,8 @@ def test_p2_5_marquez_only_runs_with_the_lineage_profile():
     for name, service in services.items():
         if name in MARQUEZ_SERVICES:
             assert service.get("profiles") == ["lineage"], name
+        elif name in OBSERVABILITY_SERVICES:
+            assert service.get("profiles") == ["observability"], name
         else:  # `make db-up` (docker compose up -d) starts these only.
             assert "profiles" not in service, name
 

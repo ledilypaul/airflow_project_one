@@ -104,9 +104,72 @@ services:
     depends_on:
       - marquez-api
 
+  # P3-3: metrics of Airflow (optional). Profile `observability`: `make db-up` /
+  # `docker compose up` never start it, `make observability-up` does. Then
+  # `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 make airflow`.
+  # - Airflow (OpenTelemetry) -> otel-collector (OTLP/HTTP) -> prometheus
+  #   (scrape, alert rules of deploy/observability/rules/).
+  # - Published on 127.0.0.1 only (neither service has authentication): OTLP
+  #   4318 (the standard port), Prometheus UI 9092. The collector's Prometheus
+  #   exporter (8889) is reached by service name, never published.
+  # - Own network `observability`.
+  # - Images pinned by tag (for the reader) and digest (what is pulled), checked
+  #   on 2026-11-17 with `docker buildx imagetools inspect`. Prometheus 3.13 is
+  #   the LTS line.
+  # - The configuration is mounted read-only from deploy/observability/.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+    container_name: airflow_otel_collector
+    profiles: ["observability"]
+    networks: ["observability"]
+    # No healthcheck: the image has no shell nor curl.
+    # Hardening (SEC-3): nothing to write (everything is in memory), no
+    # capability (it listens on 4318), no privilege gain, memory capped (its own
+    # limiter, 256 MiB, stays below).
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+
+  prometheus:
+    image: prom/prometheus:v3.13.5@sha256:aafa9d694e6a883c02db516d9f6e5b84e14195f49a2a6456a4cca815edda72b9
+    container_name: airflow_prometheus
+    profiles: ["observability"]
+    networks: ["observability"]
+    # Hardening: no capability, no privilege gain, data capped in size as well as
+    # in time (7 days or 1 GB, whichever comes first). The UI is the only origin
+    # allowed to call the API from a browser: Prometheus' default is `.*`, i.e.
+    # any page the developer opens could query 127.0.0.1:9092 (SEC-1).
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=1GB
+      - '--web.cors.origin=https?://(127\.0\.0\.1|localhost):9092'
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9092:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      retries: 5
+    depends_on:
+      - otel-collector
+
 networks:
   lineage:
+  observability:
 
 volumes:
   postgres-data:
   marquez-data:
+  prometheus-data:

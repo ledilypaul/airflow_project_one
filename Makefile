@@ -66,6 +66,35 @@ $(AIRFLOW_TARGETS): export AIRFLOW__LINEAGE__MAX_ASSETS_PER_COLLECTOR := 1000
 airflow lineage-transport lineage-clean: export LINEAGE_EVENTS_DIR := $(LINEAGE_EVENTS_DIR)
 airflow lineage-transport: export OPENLINEAGE_URL := $(OPENLINEAGE_URL)
 
+# --- Metrics (OpenTelemetry, P3-3) -------------------------------------------------
+# Airflow's native OpenTelemetry metrics, configured for `make airflow` only
+# (`make test` keeps the CI environment, where metrics are off). Off unless
+# OTEL_EXPORTER_OTLP_ENDPOINT is set: with no endpoint, nothing below is
+# exported and Airflow keeps its own default (`[metrics] otel_on = False`).
+#   make observability-up                                   # collector + Prometheus
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 make airflow
+# Airflow >= 3.2 reads the standard OTEL_* variables (the [metrics] otel_host /
+# otel_port options are deprecated). A value exported by the shell wins, so
+# does OTEL_EXPORTER_OTLP_HEADERS (credentials of a remote collector: never in
+# the endpoint, Airflow logs it: an endpoint with user info or a query string is
+# refused, `make airflow` then starts without metrics). `make metrics-env`
+# prints what is exported, user info and query string masked.
+# A collector that is down never fails a task, but every process waits about
+# 10 s at exit: `make airflow` checks the endpoint first and starts without
+# metrics when it does not answer (scripts/otel_endpoint_check.py,
+# docs/architecture/2026-11-17-p3-3-observability.md).
+OTEL_EXPORTER_OTLP_ENDPOINT ?=
+METRICS_TARGETS := airflow metrics-env
+ifneq ($(strip $(OTEL_EXPORTER_OTLP_ENDPOINT)),)
+$(if $(findstring @,$(OTEL_EXPORTER_OTLP_ENDPOINT)),$(warning OTEL_EXPORTER_OTLP_ENDPOINT contains `@`: Airflow logs the endpoint, pass credentials in OTEL_EXPORTER_OTLP_HEADERS instead))
+$(METRICS_TARGETS): export AIRFLOW__METRICS__OTEL_ON ?= True
+$(METRICS_TARGETS): export OTEL_EXPORTER_OTLP_ENDPOINT := $(strip $(OTEL_EXPORTER_OTLP_ENDPOINT))
+$(METRICS_TARGETS): export OTEL_EXPORTER_OTLP_PROTOCOL ?= http/protobuf
+$(METRICS_TARGETS): export OTEL_SERVICE_NAME ?= $(OPENLINEAGE_NAMESPACE)
+# Airflow's default is 60 s; Prometheus scrapes the collector every 30 s.
+$(METRICS_TARGETS): export OTEL_METRIC_EXPORT_INTERVAL ?= 15000
+endif
+
 # Env file with DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME for the
 # file_list_db Connection. Empty = the script's default (.env).
 ENV_FILE ?=
@@ -98,7 +127,7 @@ PG_CONTAINER := airflow_postgres
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
 	airflow-init airflow spark-job transform-sync dbt-parse dbt-build \
 	lineage-jar lineage-show lineage-transport lineage-clean \
-	lineage-up lineage-down
+	lineage-up lineage-down metrics-env observability-up observability-down
 
 ##@ Help
 
@@ -169,11 +198,17 @@ airflow-init: ## Migrate the metadata DB, create/update Connections, import pool
 # The lineage jar is fetched (or re-checked) once; a failed download
 # (offline) only warns: Spark then runs without its listener, the pipeline is
 # unchanged.
+# Same rule for the metrics (P3-3): with an endpoint that accepts no connection
+# (collector not started), Airflow starts with its metrics off and a warning,
+# instead of every process waiting for a final flush that cannot succeed.
 airflow: dbt-parse ## Run Airflow standalone (api-server, scheduler, dag-processor, triggerer)
 	@mkdir -p -- "$$LINEAGE_EVENTS_DIR"
 	@$(if $(filter true TRUE True 1 t T,$(strip $(OPENLINEAGE_DISABLED))),true,\
 		$(MAKE) --no-print-directory lineage-jar || \
 		echo "warning: no OpenLineage Spark jar, Spark runs without its listener" >&2)
+	case "$$AIRFLOW__METRICS__OTEL_ON" in True|true|TRUE|1|t|T) \
+		$(PYTHON) scripts/otel_endpoint_check.py || export AIRFLOW__METRICS__OTEL_ON=False ;; \
+	esac; \
 	AIRFLOW__OPENLINEAGE__TRANSPORT="$${AIRFLOW__OPENLINEAGE__TRANSPORT:-$$($(PYTHON) scripts/openlineage_transport.py)}" \
 		$(UV) run airflow standalone
 
@@ -239,3 +274,20 @@ lineage-up: ## Start Marquez (API 127.0.0.1:5002, web UI http://127.0.0.1:3002),
 
 lineage-down: ## Stop and remove the Marquez containers (keeps their data volume)
 	docker compose --profile lineage rm --stop --force marquez-web marquez-api marquez-db
+
+##@ Metrics and alerts (OpenTelemetry + Prometheus, P3-3)
+
+# The user info of a URL and its query string are masked (`***`): an endpoint
+# that carries credentials is refused by `make airflow` (scripts/otel_endpoint_check.py),
+# but this target must not print them either. *_HEADERS are never printed.
+metrics-env: ## Print the OpenTelemetry variables `make airflow` exports (metrics are off without OTEL_EXPORTER_OTLP_ENDPOINT)
+	@vars="$$(env | grep -E '^(AIRFLOW__METRICS__|OTEL_)' | grep -v '_HEADERS=' \
+		| sed -E 's|(://)[^/?[:space:]]*@|\1***@|; s|\?.*|?***|' | sort || true)"; \
+	if [ -n "$$vars" ]; then printf '%s\n' "$$vars"; \
+	else echo "metrics off: OTEL_EXPORTER_OTLP_ENDPOINT is not set"; fi
+
+observability-up: ## Start the OTel collector (OTLP 127.0.0.1:4318) and Prometheus (http://127.0.0.1:9092), profile `observability`
+	docker compose --profile observability up -d otel-collector prometheus
+
+observability-down: ## Stop and remove the collector and Prometheus containers (keeps the prometheus-data volume)
+	docker compose --profile observability rm --stop --force otel-collector prometheus

@@ -1,0 +1,38 @@
+# P3-3: OpenTelemetry Collector (contrib distribution: the `prometheus`
+# exporter is not in the core one). Local, optional, started by
+# `make observability-up` (compose profile `observability`).
+#
+# Airflow pushes its metrics here in OTLP over HTTP (port 4318, published on
+# 127.0.0.1 only); Prometheus scrapes them on the compose network (8889,
+# never published). Metrics only: no traces, no logs.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # A cap, so that a runaway emitter cannot make the collector eat the host.
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch: {}
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # A series that stops being updated (a dead scheduler) stays exposed for
+    # this long, then disappears: the alert rules handle both cases.
+    metric_expiration: 5m
+
+service:
+  telemetry:
+    metrics:
+      # The collector's own metrics are not needed (and would open a port).
+      level: none
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
