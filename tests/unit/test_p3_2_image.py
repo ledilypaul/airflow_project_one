@@ -71,7 +71,10 @@ def test_p3_2_airflow_base_is_the_version_of_the_lock():
     assert values["airflowVersion"] == "3.3.2"
     # PySpark of the lock, Python of the image: the driver and the executors run
     # this same image, hence the same versions.
-    assert (PROJECT_ROOT / ".python-version").read_text().strip() == "3.12"
+    # .python-version is gitignored (absent in CI): compare with the tracked
+    # Python of the CI workflow instead.
+    ci = (PROJECT_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    assert set(re.findall(r'python-version: "([^"]+)"', ci)) == {"3.12"}
     lock = (PROJECT_ROOT / "uv.lock").read_text()
     assert re.search(r'name = "pyspark"\nversion = "4\.3\.0"', lock)
 
