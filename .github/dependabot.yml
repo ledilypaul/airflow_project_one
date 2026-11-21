@@ -51,8 +51,9 @@ updates:
         patterns: ["*"]
         update-types: ["minor", "patch"]
     ignore:
-      # apache-airflow==3.3.2 exact : seuls les correctifs sont proposés ; une
-      # nouvelle mineure se prépare à la main (providers, Cosmos, Task SDK).
+      # apache-airflow==3.4.0 exact (P3-5) : seuls les correctifs 3.4.x sont
+      # proposés ; une nouvelle mineure se prépare à la main (providers, Cosmos,
+      # Task SDK, image du Dockerfile, chart Helm, sémantique des Assets).
       - dependency-name: "apache-airflow"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # Providers : pas de nouvelle majeure automatique (openlineage est borné <3).

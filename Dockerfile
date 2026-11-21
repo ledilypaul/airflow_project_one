@@ -1,4 +1,4 @@
-# Project image for Kubernetes (P3-2): Airflow 3.3.2 + the project + dbt + Spark.
+# Project image for Kubernetes (P3-2): Airflow 3.4.0 + the project + dbt + Spark.
 #
 # One image for every pod of the deployment:
 # - the Airflow pods of the official Helm chart (api-server, scheduler,
@@ -11,13 +11,17 @@
 # See docs/architecture/2026-11-19-p3-2-kubernetes.md and CLAUDE.md, "Kubernetes".
 #
 # Base images are pinned by tag AND digest (index digests, read with
-# `docker buildx imagetools inspect` on 2026-11-19):
-# - apache/airflow:slim-3.3.2-python3.12: the official image, slim variant (Airflow
-#   core only, no extra providers): the providers come from uv.lock instead.
+# `docker buildx imagetools inspect` on 2026-11-19, and on 2026-11-21 for Airflow):
+# - apache/airflow:slim-3.4.0-python3.12: the official image, slim variant (Airflow
+#   core only, no extra providers): the providers come from uv.lock instead. Its
+#   Airflow MUST be the one of uv.lock (`uv sync --frozen` below replaces the
+#   image's packages with the lock's; a test keeps both equal). Since 3.4 it is a
+#   Docker Hardened Image on Debian 13: `make image` builds on it unchanged
+#   (checked on 2026-11-21, P3-5); the revalidation on kind is P3-6.
 # - eclipse-temurin:17.0.21_9-jre-noble: the JRE of the official Spark 4.3.0 images
 #   (apache/spark-docker builds on eclipse-temurin:17); only /opt/java/openjdk
 #   is copied.
-ARG AIRFLOW_IMAGE=apache/airflow:slim-3.3.2-python3.12@sha256:a54e7bd6c4d7a17e55cd14b0ead257877b8f8111680d2692cbdba2ff32bd3ff3
+ARG AIRFLOW_IMAGE=apache/airflow:slim-3.4.0-python3.12@sha256:2d3e42b9de0eca948b9a869817068fedcb8a8eac9827b1e6215de3329d59335f
 ARG JRE_IMAGE=eclipse-temurin:17.0.21_9-jre-noble@sha256:853d06b546da4eadfa7226e7ab5692b3745857cad782255830e230036b5f3889
 
 # --- OpenLineage Spark listener (P2-5): pinned version, checked by SHA-256 ----------

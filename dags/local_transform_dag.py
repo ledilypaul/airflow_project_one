@@ -7,8 +7,11 @@ Third stage of the pipeline: list_files_dag -> `file_list` -> read_file_dag
 -> `lake_staging` -> transform_dag -> `dbt_marts`.
 
 - Schedule: the `lake_staging` Asset, emitted by read_file_dag once every
-  Spark application of its run succeeded. `max_active_runs=1`; events that
-  arrive during a run are consumed by the next one. Each run rebuilds the
+  Spark application of its run succeeded. `max_active_runs=1` and
+  `batch_asset_events=True` (P3-5: Airflow 3.4 creates one run per event by
+  default): the events that arrive during a run are consumed together by the
+  next one. An event emitted while the DAG is paused is not queued and no
+  run consumes it (the next event rebuilds everything). Each run rebuilds the
   current state of the whole staging zone (`stg_*__current`, same rule as
   `latest_snapshot`), so it is idempotent and does not need the source run id.
 - Rendering: `LoadMode.DBT_MANIFEST`, from `transform/target/manifest.json`
@@ -78,7 +81,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from airflow.sdk import Asset, BaseOperator, task
+from airflow.sdk import Asset, AssetTriggeredTimetable, BaseOperator, task
 from cosmos import DbtDag, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
 from cosmos.constants import (
     PRODUCER_WATCHER_TASK_ID,
@@ -367,7 +370,11 @@ transform_dag = DbtDag(
     description="dbt build (DuckDB) of the lake's staging zone, rendered by Cosmos",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2023, 1, 1),
-    schedule=[LAKE_STAGING_ASSET],
+    # P3-5: the `lake_staging` events queued during a run are consumed
+    # together by ONE next run: each run rebuilds the whole staging zone, one
+    # `dbt build` per event would repeat the same work. Explicit, because
+    # Airflow 3.4 creates one run per event by default.
+    schedule=AssetTriggeredTimetable(LAKE_STAGING_ASSET, batch_asset_events=True),
     catchup=False,
     max_active_runs=1,
     # A stuck producer or sensor must not block the next `lake_staging`

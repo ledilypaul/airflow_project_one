@@ -10,8 +10,10 @@ enregistré au moins un fichier.
 
 1. `resolve_source_run_ids` détermine les run ids sources à traiter :
    - run déclenché par l'Asset : le `source_run_id` de **tous** les événements
-     `file_list` consommés (Airflow peut en regrouper plusieurs dans un seul
-     run), dédupliqués, dans l'ordre ;
+     `file_list` consommés, dédupliqués, dans l'ordre. Avec
+     `batch_asset_events=False` (P3-5, Airflow 3.4) un run consomme un seul
+     événement, donc un seul listing ; la boucle reste correcte si le
+     regroupement est réactivé ;
    - déclenchement manuel (aucun événement) : `dag_run.conf["run_id"]`, sans
      espaces autour ;
    - ni l'un ni l'autre : échec explicite (jamais de succès silencieux).
@@ -63,8 +65,11 @@ enregistré au moins un fichier.
    sinon rendu vert un run dont une application Spark a échoué. Elle est
    `skipped` quand tout a réussi.
 4. `max_active_runs=1` : deux runs ne traitent jamais le même run source en
-   parallèle ; les événements arrivés pendant un run sont regroupés dans le
-   suivant.
+   parallèle. Les événements arrivés pendant un run restent en file et
+   donnent chacun leur run, l'un après l'autre (P3-5 : un run par événement,
+   `batch_asset_events=False`). Un événement émis pendant que le DAG est en
+   pause n'est pas mis en file : aucun run ne le consomme ensuite (Airflow
+   3.4, `catchup=False`), voir CLAUDE.md.
 5. Lignage OpenLineage (P2-5), configuré par l'environnement seulement :
    - `openlineage_spark_settings()` active le listener JVM
      (`OpenLineageSparkListener`) par la conf de `spark-submit`, jamais par un
@@ -98,7 +103,7 @@ from pathlib import Path
 from typing import Any
 
 from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
-from airflow.sdk import Asset, Param, TriggerRule, dag, task
+from airflow.sdk import Asset, AssetTriggeredTimetable, Param, TriggerRule, dag, task
 
 # Same name as in the listing DAGs: Airflow matches Assets by name/URI, not by
 # object identity. Declared here rather than in a shared `dags.*` module, which
@@ -760,7 +765,11 @@ def report_file_list_input(context: Any) -> None:
     description="Submit a Spark job to read files listed in the database",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2023, 1, 1),
-    schedule=[FILE_LIST_ASSET],
+    # P3-5: one run per `file_list` event, i.e. per listing: one Spark
+    # application per source run, with its own retries and state. Explicit,
+    # because Airflow 3.4's default comes from `[scheduler] batch_asset_events`
+    # (False) and 3.3 batched every queued event into one run.
+    schedule=AssetTriggeredTimetable(FILE_LIST_ASSET, batch_asset_events=False),
     catchup=False,
     max_active_runs=1,
     # P1-5 / C-3: without it, a missing `spark` pool (task left in

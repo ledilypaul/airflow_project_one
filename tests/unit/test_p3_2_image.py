@@ -64,9 +64,18 @@ def test_p3_2_every_base_image_is_pinned_by_tag_and_digest():
 
 
 def test_p3_2_airflow_base_is_the_version_of_the_lock():
+    # P3-5: `uv sync --frozen` replaces the base image's Airflow with the lock's,
+    # so the base must carry the same version (its entrypoint, AIRFLOW_VERSION).
+    lock = (PROJECT_ROOT / "uv.lock").read_text()
+    locked = re.search(r'name = "apache-airflow"\nversion = "([^"]+)"', lock).group(1)
+    assert locked == "3.4.0"
     airflow_image = _arg_defaults()["AIRFLOW_IMAGE"]
-    assert airflow_image.startswith("apache/airflow:slim-3.3.2-python3.12@sha256:")
-    assert '"apache-airflow==3.3.2"' in (PROJECT_ROOT / "pyproject.toml").read_text()
+    assert airflow_image.startswith(f"apache/airflow:slim-{locked}-python3.12@sha256:")
+    assert f'"apache-airflow=={locked}"' in (PROJECT_ROOT / "pyproject.toml").read_text()
+    # P3-6: the chart (1.22.0) is not revalidated with 3.4 yet and keeps the
+    # version it was validated with. Its templates only compare airflowVersion
+    # with 2.11.0 and 3.0.0 (checked on the 1.22.0 archive): 3.3.2 and 3.4.0
+    # render the same manifests. Set it to the image's version in P3-6.
     values = yaml.safe_load(AIRFLOW_VALUES.read_text())
     assert values["airflowVersion"] == "3.3.2"
     # PySpark of the lock, Python of the image: the driver and the executors run

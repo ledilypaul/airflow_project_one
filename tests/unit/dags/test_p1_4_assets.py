@@ -145,7 +145,9 @@ def test_p1_4_file_list_asset_name_shared_by_producers_and_consumer(dagbag):
         dagbag.dags["list_files_dag"].get_task("insert_files").outlets,
         dagbag.dags["list_files_dag_classic"].get_task("insert_files_to_db").outlets,
     ]
-    consumer_schedule = dagbag.dags["read_file_dag"].schedule
+    # P3-5: the schedule is an AssetTriggeredTimetable (explicit
+    # batch_asset_events) whose condition is the Asset itself.
+    consumer_schedule = [dagbag.dags["read_file_dag"].timetable.asset_condition]
 
     for assets in [*producer_outlets, consumer_schedule]:
         assert [type(a) for a in assets] == [Asset]
@@ -174,7 +176,9 @@ def test_p1_4_read_file_dag_is_scheduled_on_file_list_asset(dagbag):
 
     dag = dagbag.dags["read_file_dag"]
     assert isinstance(dag.timetable, AssetTriggeredTimetable)
-    assert [a.name for a in dag.timetable.asset_condition.objects] == [FILE_LIST_ASSET_NAME]
+    # P3-5: the condition is the Asset itself (it was AssetAll([asset]) with
+    # `schedule=[asset]`); the batching itself is test_p3_5_asset_batching.py.
+    assert dag.timetable.asset_condition == Asset(name=FILE_LIST_ASSET_NAME)
 
 
 def test_p1_4_read_file_dag_task_ids(dagbag):
