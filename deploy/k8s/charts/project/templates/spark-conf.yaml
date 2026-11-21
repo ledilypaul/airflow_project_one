@@ -1,0 +1,93 @@
+{{- /*
+Spark on Kubernetes configuration of this environment (P3-2), mounted at
+spark.confDir in the Airflow worker pods (SPARK_CONF_DIR): spark-submit reads
+spark-defaults.conf there. Nothing of it is in the DAG: read_file_dag only gets
+the master, deploy mode and namespace from the Connection spark_default.
+
+- Image, ServiceAccount, pod templates (security context) of the driver and
+  executors.
+- Driver environment: ENV=prod (utils/spark_session.py then keeps the k8s master
+  instead of forcing local[*]), LAKE_ROOT on the shared volume, DB_* of
+  file_list; DB_PASSWORD from the Secret, by secretKeyRef (never in a Spark
+  property: spark-submit logs them).
+- The shared volume at the same path in the driver and the executors.
+- spark.kubernetes.submission.waitAppCompletion=true (Spark's default, written
+  out): spark-submit waits for the driver and logs its container exit code, which
+  read_file_dag reads (ReadFilesSparkSubmitOperator).
+- Least privilege for the driver (Role `spark-driver`: pods only), three Spark
+  4.3.0 cleanups turned off, each of which needed a broader Role:
+  - service.deleteOnTermination=false: the driver's Service is owned by the
+    driver pod (ownerReference), Kubernetes removes it with the pod; otherwise
+    the driver deletes Services by label (deletecollection on services);
+  - ownPersistentVolumeClaim=false: no on-demand PVC here (the shared volume is
+    a named claim); otherwise the driver lists and deletes PVCs by label, a
+    deletecollection that could reach the Postgres volume;
+  - executor.disableConfigMap=true: the executors need no file of the driver's
+    SPARK_CONF_DIR; otherwise the driver creates and deletes a ConfigMap.
+*/ -}}
+{{- $image := include "project.image" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.spark.configMapName }}
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+data:
+  spark-defaults.conf: |
+    spark.kubernetes.container.image                                       {{ $image }}
+    spark.kubernetes.container.image.pullPolicy                            {{ .Values.image.pullPolicy }}
+    spark.kubernetes.authenticate.driver.serviceAccountName                {{ .Values.spark.serviceAccountName }}
+    spark.kubernetes.driver.podTemplateFile                                {{ .Values.spark.confDir }}/driver-pod-template.yaml
+    spark.kubernetes.executor.podTemplateFile                              {{ .Values.spark.confDir }}/executor-pod-template.yaml
+    spark.kubernetes.submission.waitAppCompletion                          true
+    spark.kubernetes.driver.service.deleteOnTermination                    false
+    spark.kubernetes.driver.ownPersistentVolumeClaim                       false
+    spark.kubernetes.executor.disableConfigMap                             true
+    spark.kubernetes.driverEnv.ENV                                         prod
+    spark.kubernetes.driverEnv.LAKE_ROOT                                   {{ .Values.spark.lakeRoot }}
+    spark.kubernetes.driverEnv.DB_HOST                                     {{ .Values.postgres.serviceName }}
+    spark.kubernetes.driverEnv.DB_PORT                                     {{ .Values.fileListDb.port }}
+    spark.kubernetes.driverEnv.DB_NAME                                     {{ .Values.fileListDb.name }}
+    spark.kubernetes.driverEnv.DB_USER                                     {{ .Values.fileListDb.user }}
+    spark.kubernetes.driver.secretKeyRef.DB_PASSWORD                       {{ .Values.fileListDb.secretName }}:{{ .Values.fileListDb.secretKey }}
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.shared.mount.path      {{ .Values.shared.mountPath }}
+    spark.kubernetes.driver.volumes.persistentVolumeClaim.shared.options.claimName   {{ .Values.shared.claimName }}
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.shared.mount.path    {{ .Values.shared.mountPath }}
+    spark.kubernetes.executor.volumes.persistentVolumeClaim.shared.options.claimName {{ .Values.shared.claimName }}
+    spark.driver.cores                                                     {{ .Values.spark.driver.cores }}
+    spark.kubernetes.driver.request.cores                                  {{ .Values.spark.driver.requestCores }}
+    spark.driver.memory                                                    {{ .Values.spark.driver.memory }}
+    spark.executor.instances                                               {{ .Values.spark.executor.instances }}
+    spark.executor.cores                                                   {{ .Values.spark.executor.cores }}
+    spark.kubernetes.executor.request.cores                                {{ .Values.spark.executor.requestCores }}
+    spark.executor.memory                                                  {{ .Values.spark.executor.memory }}
+  driver-pod-template.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: airflow-project-one
+        app.kubernetes.io/component: spark-driver
+    spec:
+      securityContext:
+        {{- include "project.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: spark-kubernetes-driver
+          securityContext:
+            {{- include "project.containerSecurityContext" . | nindent 12 }}
+  executor-pod-template.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      labels:
+        app.kubernetes.io/part-of: airflow-project-one
+        app.kubernetes.io/component: spark-executor
+    spec:
+      # Executors never call the Kubernetes API.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "project.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: spark-kubernetes-executor
+          securityContext:
+            {{- include "project.containerSecurityContext" . | nindent 12 }}

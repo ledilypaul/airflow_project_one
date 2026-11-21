@@ -42,6 +42,13 @@ enregistré au moins un fichier.
      `LAKE_ROOT` n'est pas fixé ici : le job le lit dans l'environnement du
      worker, hérité par `spark-submit` en mode local/client (en mode cluster,
      le passer au driver par la conf Spark de l'environnement).
+   - Kubernetes (P3-2) : seule la Connection change (master `k8s://...`,
+     `deploy-mode` cluster, `namespace`) ; le reste vient du
+     `spark-defaults.conf` de l'environnement (deploy/k8s/charts/project).
+     Le job est alors passé en `local://<chemin>` (il est dans l'image du
+     pod driver) et le code de sortie est celui du conteneur driver, lu par
+     le hook dans la sortie de spark-submit (qui, lui, sort en 0) : mêmes
+     codes sans retry qu'en local.
 3. `publish_lake_staging` (P2-4) émet l'Asset `lake_staging`, qui planifie
    `transform_dag` (dbt). Règle `all_done` (C-2) : elle s'exécute une fois
    toutes les instances `spark_read_files` terminées, réussies ou non. Un seul
@@ -230,6 +237,95 @@ def _spark_submit_returncode(hook: Any) -> int | None:
     return returncode if isinstance(returncode, int) else None
 
 
+# P3-2 / C-1: label put on every driver pod of one task instance (dag, run,
+# task, map index), the same on every try: a retry finds and deletes a driver
+# of an earlier try that is still alive before submitting its own.
+K8S_TI_LABEL = "airflow-project-one/task-instance"
+# Phases of a driver pod that may still write to the lake.
+_LIVE_POD_PHASES = {"Pending", "Running"}
+# Seconds to wait for a deleted orphan driver to be gone.
+_ORPHAN_DELETE_TIMEOUT = 120
+
+
+def _is_k8s_cluster_mode(hook: Any) -> bool:
+    """True when `hook` submits to Kubernetes in cluster deploy mode (P3-2):
+    master with the `k8s://` scheme and `deploy-mode` cluster, both from the
+    Connection. By the scheme, not by the provider's `_is_kubernetes` (any
+    master containing "k8s", `spark://k8s-master:7077` included, C-3)."""
+    connection = getattr(hook, "_connection", None) or {}
+    master = str(connection.get("master") or "")
+    return master.startswith("k8s://") and connection.get("deploy_mode") == "cluster"
+
+
+def _job_exit_code(hook: Any) -> int | None:
+    """Exit code of read_files_job for the submission `hook` ran, or None
+    when it is unknown (the job's failures are then retried, the safe side).
+
+    - Local/client mode: spark-submit's return code (the driver's).
+    - Kubernetes cluster mode (P3-2): the driver runs in its own pod, and
+      spark-submit 4.3.0 exits 0 whatever the driver's exit code (checked on
+      kind, docs/architecture/2026-11-19-p3-2-kubernetes.md). The provider's
+      hook reads the driver container's code from spark-submit's log (Spark's
+      pod watcher prints `exit code: N` when the driver pod ends, as long as
+      spark.kubernetes.submission.waitAppCompletion is true, Spark's
+      default) into `_spark_exit_code` and fails the task when it is not 0.
+      None when the line never came (submission refused, watcher cut, driver
+      pod deleted).
+    """
+    if _is_k8s_cluster_mode(hook):
+        code = getattr(hook, "_spark_exit_code", None)
+        return code if isinstance(code, int) else None
+    return _spark_submit_returncode(hook)
+
+
+def k8s_cluster_application(application: str) -> str:
+    """`application` as the driver pod sees it in Kubernetes cluster mode.
+
+    A path without a scheme is a file of the submitting machine, which
+    spark-submit would have to upload (spark.kubernetes.file.upload.path);
+    the job is in the image, at the same path, so it is given as
+    `local://<path>`. A value with a scheme is kept.
+    """
+    if "://" in application or application.startswith("local:"):
+        return application
+    return f"local://{application}"
+
+
+def k8s_task_instance_label(ti: Any) -> str:
+    """Value of `K8S_TI_LABEL` for a task instance: 40 hex characters, a
+    valid label value whatever the run id (free text for a manual run)."""
+    import hashlib
+
+    key = "\0".join(str(part) for part in (ti.dag_id, ti.run_id, ti.task_id, ti.map_index))
+    return hashlib.sha256(key.encode()).hexdigest()[:40]
+
+
+def _kube_client() -> Any:
+    """CoreV1Api of the cluster the worker runs in (provider cncf.kubernetes,
+    as SparkSubmitHook.on_kill uses it)."""
+    from airflow.providers.cncf.kubernetes import kube_client
+
+    return kube_client.get_kube_client()
+
+
+def _wait_pod_gone(client: Any, namespace: str, name: str, timeout: float) -> bool:
+    import time
+
+    from kubernetes.client.exceptions import ApiException
+
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            client.read_namespaced_pod(name, namespace)
+        except ApiException as exc:
+            if exc.status == 404:
+                return True
+            raise
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(2)
+
+
 class ReadFilesSparkSubmitOperator(SparkSubmitOperator):
     """SparkSubmitOperator that never retries a deterministic failure of
     read_files_job (P2-6).
@@ -243,8 +339,24 @@ class ReadFilesSparkSubmitOperator(SparkSubmitOperator):
 
     Only `execute` is overridden: `.partial().expand()`, the templated
     fields, `pre_execute` (P2-5 lineage) and `on_kill` are the provider's.
-    In YARN/Kubernetes cluster mode, spark-submit's return code is not the
-    driver's: those runs keep retrying, the safe side.
+    In YARN cluster mode, spark-submit's return code is not the driver's:
+    those runs keep retrying, the safe side.
+
+    P3-2, Kubernetes cluster mode (master `k8s://...` and `deploy-mode`
+    cluster in the Connection, nothing in the DAG), before the submission:
+    - the job is given as `local://<path>` (it is in the driver's image);
+    - Spark lineage is removed, with a warning (C-6): the listener jar would
+      be a file of the worker to upload, and the `file` transport writes in
+      the driver pod;
+    - the driver gets the label `K8S_TI_LABEL` of the task instance, and the
+      live drivers (Pending, Running) carrying it, left by an earlier try
+      whose worker pod died, are deleted (C-1). When they cannot be listed,
+      nothing is submitted and the try fails (retried).
+    After it, the exit code is the driver container's, read by the hook from
+    spark-submit's log (see `_job_exit_code`): the same codes are not
+    retried. When that code is unknown, the driver pod the hook identified
+    is deleted, so that the retry never runs next to it.
+    Local/client mode is unchanged.
 
     P3-3: the code read on a failure is kept in `spark_exit_code` (None while
     spark-submit did not run), for the failure callback of the task, which
@@ -256,23 +368,105 @@ class ReadFilesSparkSubmitOperator(SparkSubmitOperator):
     def execute(self, context: Any) -> None:
         from airflow.sdk.exceptions import AirflowException, AirflowFailException
 
+        # The mode comes from the Connection: a hook built only to read it
+        # (the provider builds the one that submits, from the final conf).
+        probe = self._hook if self._hook is not None else super()._get_hook()
+        k8s_cluster = _is_k8s_cluster_mode(probe)
+        if k8s_cluster:
+            self._prepare_k8s_cluster(context, probe)
         try:
             return super().execute(context)
         except AirflowException as exc:
-            code = _spark_submit_returncode(self._hook)
+            code = _job_exit_code(self._hook)
             self.spark_exit_code = code
             meaning = NO_RETRY_EXIT_CODES.get(code) if code is not None else None
             if code is None:
                 self.log.warning(
-                    "spark-submit return code unavailable (hook._submit_sp "
-                    "missing or not started): deterministic failures of "
-                    "read_files_job will be retried."
+                    "read_files_job exit code unavailable (spark-submit did not "
+                    "start, or in Kubernetes cluster mode no driver exit code in "
+                    "its log): deterministic failures of read_files_job will be "
+                    "retried."
                 )
+                if k8s_cluster:
+                    self._delete_identified_driver()
             if meaning is None:
                 raise
             raise AirflowFailException(
                 f"read_files_job exit code {code} ({meaning}): deterministic, not retried. {exc}"
             ) from exc
+
+    def _k8s_namespace(self, hook: Any) -> str:
+        return (getattr(hook, "_connection", None) or {}).get("namespace") or "default"
+
+    def _prepare_k8s_cluster(self, context: Any, probe: Any) -> None:
+        from airflow.sdk.exceptions import AirflowException
+
+        self.application = k8s_cluster_application(self.application)
+        conf = self.conf or {}
+        if conf.get("spark.extraListeners") == OPENLINEAGE_SPARK_LISTENER or any(
+            key.startswith("spark.openlineage.") for key in conf
+        ):
+            log.warning(
+                "OpenLineage: Spark lineage is not supported in Kubernetes cluster mode "
+                "(the listener jar would have to be uploaded, the file transport writes "
+                "in the driver pod): Spark runs without its listener"
+            )
+        _strip_lineage(self)
+
+        ti = context.get("ti") if hasattr(context, "get") else None
+        if ti is None:
+            self.log.warning(
+                "no task instance in the context: driver not labelled, orphan drivers "
+                "of earlier tries not checked"
+            )
+            return
+        label = k8s_task_instance_label(ti)
+        self.conf = {**(self.conf or {}), f"spark.kubernetes.driver.label.{K8S_TI_LABEL}": label}
+        namespace = self._k8s_namespace(probe)
+        try:
+            client = _kube_client()
+            pods = client.list_namespaced_pod(
+                namespace, label_selector=f"{K8S_TI_LABEL}={label},spark-role=driver"
+            )
+            for pod in pods.items:
+                if pod.status.phase not in _LIVE_POD_PHASES:
+                    continue
+                name = pod.metadata.name
+                self.log.warning(
+                    "Deleting driver pod %s (%s) of an earlier try of this task instance "
+                    "before submitting a new one",
+                    name,
+                    pod.status.phase,
+                )
+                client.delete_namespaced_pod(name, namespace)
+                if not _wait_pod_gone(client, namespace, name, _ORPHAN_DELETE_TIMEOUT):
+                    raise RuntimeError(f"driver pod {name} still present after deletion")
+        except Exception as exc:
+            raise AirflowException(
+                f"could not check or delete the orphan Spark drivers of this task instance "
+                f"in namespace {namespace!r} ({type(exc).__name__}: {exc}): not submitting, "
+                "a second driver could run next to the first one"
+            ) from exc
+
+    def _delete_identified_driver(self) -> None:
+        """Delete the driver pod spark-submit created, when its outcome is
+        unknown. Never raises."""
+        hook = self._hook
+        name = getattr(hook, "_kubernetes_driver_pod", None)
+        if not name:
+            return
+        namespace = self._k8s_namespace(hook)
+        try:
+            from kubernetes.client.exceptions import ApiException
+
+            try:
+                _kube_client().delete_namespaced_pod(name, namespace)
+                self.log.warning("Deleted driver pod %s: its outcome is unknown", name)
+            except ApiException as exc:
+                if exc.status != 404:
+                    raise
+        except Exception:
+            self.log.warning("could not delete driver pod %s", name, exc_info=True)
 
 
 def _lineage_off() -> dict[str, Any]:

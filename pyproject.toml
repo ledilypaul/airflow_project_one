@@ -29,6 +29,7 @@ airflow = [
     "apache-airflow-providers-apache-spark>=6.3",
     "astronomer-cosmos>=1.16,<1.17",
     "apache-airflow-providers-openlineage>=2.21,<3",
+    "apache-airflow-providers-cncf-kubernetes>=11.0,<12",
 ]
 dev = [
     "pytest>=8.4",

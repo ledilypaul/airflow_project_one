@@ -1,0 +1,11 @@
+apiVersion: v2
+name: airflow-project-one-infra
+description: >-
+  What the official Airflow chart does not provide for airflow_project_one on
+  Kubernetes (P3-2): a dev Postgres (Airflow metadata + file_list), the shared
+  volume (source files, lake, DuckDB warehouse), the Airflow logs volume, the
+  Spark on Kubernetes configuration (spark-defaults.conf, pod templates) and the
+  RBAC of the Spark driver and of spark-submit. Dev only (kind).
+type: application
+version: 0.2.0
+appVersion: "3.3.2"

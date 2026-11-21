@@ -1,0 +1,48 @@
+{{- /*
+Toolbox (P3-2): one small pod with the shared volume mounted, so that source
+files can be copied in (`make k8s-load-data`) and the lake read
+(`kubectl exec deploy/project-toolbox -- ls ...`). No ServiceAccount token, no
+privilege. It also creates the data/ directory of the shared volume, which the
+listing DAG reads (config/extractor_config.yaml: ./data/ -> shared/data).
+*/ -}}
+{{- if .Values.toolbox.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: project-toolbox
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+    app.kubernetes.io/name: toolbox
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: airflow-project-one
+      app.kubernetes.io/name: toolbox
+  template:
+    metadata:
+      labels:
+        {{- include "project.labels" . | nindent 8 }}
+        app.kubernetes.io/name: toolbox
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "project.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: toolbox
+          image: {{ include "project.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # `bash -c` goes through the Airflow image's entrypoint unchanged.
+          args: ["bash", "-c", "mkdir -p {{ .Values.shared.mountPath }}/data && exec sleep infinity"]
+          securityContext:
+            {{- include "project.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.toolbox.resources | nindent 12 }}
+          volumeMounts:
+            - name: shared
+              mountPath: {{ .Values.shared.mountPath }}
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: {{ .Values.shared.claimName }}
+{{- end }}

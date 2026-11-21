@@ -1,0 +1,19 @@
+# kind cluster of `make kind-up` (P3-2): one node, sober, local only.
+# - The API server listens on 127.0.0.1 only (random port, written to the kind
+#   context of ~/.kube/config).
+# - No extraPortMappings: nothing of the cluster is published on the host. The
+#   Airflow UI is reached with `make k8s-ui` (kubectl port-forward on 127.0.0.1).
+# - The node image is pinned by digest in the Makefile (KIND_NODE_IMAGE).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  apiServerAddress: "127.0.0.1"
+nodes:
+  - role: control-plane
+# Docker under WSL2 (kernel 5.15) still runs cgroup v1, which the kubelet refuses
+# by default since Kubernetes 1.35 (KubeletConfiguration.failCgroupV1). Ignored by
+# a cgroup v2 host.
+kubeadmConfigPatches:
+  - |
+    kind: KubeletConfiguration
+    failCgroupV1: false
