@@ -1,0 +1,130 @@
+{{- /*
+RBAC of Spark on Kubernetes and of the KubernetesExecutor (P3-2). Namespaced
+Roles only, no wildcard, no `secrets` resource in any rule. That does not mean
+no access to Secrets: pods:create lets the holder start a pod that mounts or
+reads any Secret of the namespace (SEC-2). For the two Spark ServiceAccounts,
+admission-policy.yaml limits what such a pod may be (ServiceAccount `spark`,
+project image, no Secret but the file_list password, which the driver reads by
+secretKeyRef, resolved by the kubelet). The scheduler's pods are the chart's
+worker pod template.
+
+1. `spark-driver`, bound to the ServiceAccount `spark` of the driver pods: creates,
+   watches and deletes its executor pods (and reads its own pod), nothing else.
+   Three Spark cleanups that need more (Services, PVCs, ConfigMaps) are turned
+   off in spark-defaults.conf (spark-conf.yaml).
+2. `spark-submit`, bound to the ServiceAccount of the Airflow worker pods, which
+   run `spark-submit --deploy-mode cluster`: creates the driver pod and, by
+   server-side apply (create + patch), its ConfigMaps (Spark properties, pod
+   template), its headless Service and the NetworkPolicy of its executors
+   (Spark >= 4.2); watches the driver until it ends
+   (spark.kubernetes.submission.waitAppCompletion); deletes what it created when
+   the submission fails, and the driver pod when Airflow kills the task
+   (SparkSubmitHook.on_kill).
+Checked by real runs on kind (docs/architecture/2026-11-19-p3-2-kubernetes.md):
+without `networkpolicies` spark-submit fails with a 403; with these rules a run
+logs no 403. The Airflow chart's pod-launcher Role is off (allowPodLaunching:
+false): this Role is all the worker ServiceAccount gets. Its pods `list` and
+`delete` also serve the orphan-driver check of a retry (C-1).
+*/ -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.spark.serviceAccountName }}
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-driver
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete", "deletecollection"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-driver
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-driver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.spark.serviceAccountName }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: spark-submit
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps", "services"]
+    verbs: ["create", "patch", "delete"]
+  # Spark >= 4.2 (SPARK-55653, NetworkPolicyFeatureStep) also applies a
+  # NetworkPolicy that only lets the application's own pods reach its executors.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: spark-submit
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: spark-submit
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.spark.submitterServiceAccountName }}
+    namespace: {{ .Release.Namespace }}
+---
+{{- /*
+SEC-2: the KubernetesExecutor of the scheduler launches, watches, labels and
+deletes the worker pods. The official chart's pod-launcher Role is not created
+(allowPodLaunching: false in values-airflow.yaml): it also gave pods/exec, and
+pods to every worker. No pods/log: the api-server reads the logs of running
+tasks with the chart's pod-log-reader Role.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: airflow-scheduler
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: airflow-scheduler
+  labels:
+    {{- include "project.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: airflow-scheduler
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.spark.schedulerServiceAccountName }}
+    namespace: {{ .Release.Namespace }}

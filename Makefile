@@ -124,10 +124,64 @@ $(DBT_TARGETS): export DBT_SEND_ANONYMOUS_USAGE_STATS := False
 PG_HOST_PORT := 5434
 PG_CONTAINER := airflow_postgres
 
+# --- Kubernetes (kind + Helm, P3-2) -------------------------------------------------
+# Optional: nothing below is used by `make airflow`, `make test` or `make check`.
+# Design note: docs/architecture/2026-11-19-p3-2-kubernetes.md.
+# Tools are installed in K8S_TOOLS_DIR (default ~/.local/bin), downloaded over
+# HTTPS only, each checked against the SHA-256 pinned here. Provenance
+# (2026-11-19): every digest equals the checksum file published next to the
+# binary (kind: GitHub release asset `.sha256sum`; kubectl: dl.k8s.io `.sha256`;
+# Helm: get.helm.sh `.sha256sum`, also listed in the release notes, and the
+# tarball's `.asc` verifies with the Helm KEYS file).
+K8S_TOOLS_DIR ?= $(HOME)/.local/bin
+KIND_VERSION := v0.33.0
+KIND_SHA256 := aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+KUBECTL_VERSION := v1.37.2
+KUBECTL_SHA256 := c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+HELM_VERSION := v4.3.2
+HELM_SHA256 := d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983
+# SHA-256 of the `helm` binary inside that tarball (computed from the verified
+# tarball), so that an installed helm can be re-checked like kind and kubectl.
+HELM_BIN_SHA256 := 876242ea89b1fc07692e179d9abdc47028979fb64b20d85448e85193c8b04931
+KIND := $(K8S_TOOLS_DIR)/kind
+KUBECTL := $(K8S_TOOLS_DIR)/kubectl
+HELM := $(K8S_TOOLS_DIR)/helm
+# Node image of kind v0.33.0 for Kubernetes 1.37.0 (digest from the kind release
+# notes: "You *must* use the @sha256 digest").
+KIND_NODE_IMAGE := kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+KIND_CLUSTER ?= airflow-project-one
+K8S_NAMESPACE ?= airflow-project-one
+K8S_CONTEXT := kind-$(KIND_CLUSTER)
+# Official Apache Airflow chart: version, SHA-256 (= the `digest` of
+# https://airflow.apache.org/index.yaml, and the .sha512 published next to it
+# matches; its .asc verifies with the Airflow KEYS file).
+AIRFLOW_CHART_VERSION := 1.22.0
+AIRFLOW_CHART_SHA256 := 1f7d1dfe3d58e2c54899950aba907a43625a18c8b6fb3c54760c21592129a5b6
+AIRFLOW_CHART_URL := https://archive.apache.org/dist/airflow/helm-chart/$(AIRFLOW_CHART_VERSION)/airflow-$(AIRFLOW_CHART_VERSION).tgz
+K8S_CACHE_DIR := $(CURDIR)/.k8s
+AIRFLOW_CHART := $(K8S_CACHE_DIR)/airflow-$(AIRFLOW_CHART_VERSION).tgz
+K8S_RELEASE_AIRFLOW := airflow
+K8S_RELEASE_PROJECT := project
+# The project chart; overridable to install a copy with another version (the
+# chart-version upgrade check of P3-2).
+PROJECT_CHART ?= deploy/k8s/charts/project
+# Pod Security Admission (SEC-1): the namespace enforces, warns and audits the
+# `restricted` standard, pinned to the cluster's minor version (kind node 1.37).
+PSA_LEVEL := restricted
+PSA_VERSION := v1.37
+# The project image (Dockerfile): Airflow 3.3.2 + the project + dbt + Spark (JRE,
+# PySpark's spark-submit, Spark's Kubernetes entrypoint). One image for the
+# Airflow pods and for the Spark driver and executors.
+IMAGE_REPOSITORY ?= airflow-project-one
+IMAGE_TAG ?= dev
+IMAGE := $(IMAGE_REPOSITORY):$(IMAGE_TAG)
+
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
 	airflow-init airflow spark-job transform-sync dbt-parse dbt-build \
 	lineage-jar lineage-show lineage-transport lineage-clean \
-	lineage-up lineage-down metrics-env observability-up observability-down
+	lineage-up lineage-down metrics-env observability-up observability-down \
+	k8s-tools kind-up kind-down image kind-load k8s-chart k8s-install \
+	k8s-uninstall k8s-load-data k8s-spark-clean k8s-ui k8s-ui-password
 
 ##@ Help
 
@@ -291,3 +345,134 @@ observability-up: ## Start the OTel collector (OTLP 127.0.0.1:4318) and Promethe
 
 observability-down: ## Stop and remove the collector and Prometheus containers (keeps the prometheus-data volume)
 	docker compose --profile observability rm --stop --force otel-collector prometheus
+
+##@ Kubernetes (kind + Helm, P3-2; optional, never used by make airflow / make check)
+
+# Each tool is kept when the installed file has the pinned SHA-256, else it is
+# downloaded (HTTPS only) into a temporary directory, checked, then installed.
+# linux/amd64 only (the pinned digests).
+k8s-tools: export TOOLS_DIR := $(K8S_TOOLS_DIR)
+k8s-tools: ## Install kind, kubectl and helm (pinned versions, SHA-256 checked) into K8S_TOOLS_DIR (~/.local/bin)
+	@set -e; \
+	if [ "$$(uname -s)-$$(uname -m)" != "Linux-x86_64" ]; then \
+		echo "error: k8s-tools pins linux/amd64 binaries only (this is $$(uname -s)-$$(uname -m))" >&2; exit 1; \
+	fi; \
+	mkdir -p -- "$$TOOLS_DIR"; tmp="$$(mktemp -d)"; \
+	trap 'rm -f -- "$$tmp/kind" "$$tmp/kubectl" "$$tmp/helm.tgz" "$$tmp/linux-amd64/helm"; \
+		rmdir -- "$$tmp/linux-amd64" 2>/dev/null || true; rmdir -- "$$tmp"' EXIT; \
+	fetch() { curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o "$$1" "$$2"; }; \
+	ok() { [ -f "$$2" ] && echo "$$1  $$2" | sha256sum -c --status -; }; \
+	if ok $(KIND_SHA256) "$$TOOLS_DIR/kind"; then echo "kind $(KIND_VERSION): present, SHA-256 OK"; else \
+		fetch "$$tmp/kind" "https://github.com/kubernetes-sigs/kind/releases/download/$(KIND_VERSION)/kind-linux-amd64"; \
+		echo "$(KIND_SHA256)  $$tmp/kind" | sha256sum -c --quiet -; \
+		install -m 0755 "$$tmp/kind" "$$TOOLS_DIR/kind"; echo "kind $(KIND_VERSION): installed, SHA-256 OK"; fi; \
+	if ok $(KUBECTL_SHA256) "$$TOOLS_DIR/kubectl"; then echo "kubectl $(KUBECTL_VERSION): present, SHA-256 OK"; else \
+		fetch "$$tmp/kubectl" "https://dl.k8s.io/release/$(KUBECTL_VERSION)/bin/linux/amd64/kubectl"; \
+		echo "$(KUBECTL_SHA256)  $$tmp/kubectl" | sha256sum -c --quiet -; \
+		install -m 0755 "$$tmp/kubectl" "$$TOOLS_DIR/kubectl"; echo "kubectl $(KUBECTL_VERSION): installed, SHA-256 OK"; fi; \
+	if ok $(HELM_BIN_SHA256) "$$TOOLS_DIR/helm"; then echo "helm $(HELM_VERSION): present, SHA-256 OK"; else \
+		fetch "$$tmp/helm.tgz" "https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz"; \
+		echo "$(HELM_SHA256)  $$tmp/helm.tgz" | sha256sum -c --quiet -; \
+		tar -xzf "$$tmp/helm.tgz" -C "$$tmp" linux-amd64/helm; \
+		echo "$(HELM_BIN_SHA256)  $$tmp/linux-amd64/helm" | sha256sum -c --quiet -; \
+		install -m 0755 "$$tmp/linux-amd64/helm" "$$TOOLS_DIR/helm"; echo "helm $(HELM_VERSION): installed, SHA-256 OK"; fi
+
+# One node, API server on 127.0.0.1 only, no host port mapping: the UI is reached
+# through `make k8s-ui` (kubectl port-forward on 127.0.0.1).
+kind-up: ## Create the local kind cluster (1 node, Kubernetes 1.37.0, pinned node image)
+	@if $(KIND) get clusters 2>/dev/null | grep -qx '$(KIND_CLUSTER)'; then \
+		echo "kind cluster $(KIND_CLUSTER) already exists"; \
+	else \
+		$(KIND) create cluster --name '$(KIND_CLUSTER)' --image '$(KIND_NODE_IMAGE)' \
+			--config deploy/k8s/kind-config.yaml --wait 120s; \
+	fi
+
+kind-down: ## Delete the kind cluster (and everything in it: Postgres, lake, logs)
+	$(KIND) delete cluster --name '$(KIND_CLUSTER)'
+
+image: ## Build the project image (Airflow + project + dbt + Spark), tag IMAGE_REPOSITORY:IMAGE_TAG
+	docker build \
+		--build-arg OPENLINEAGE_SPARK_VERSION=$(OPENLINEAGE_SPARK_VERSION) \
+		--build-arg OPENLINEAGE_SPARK_SHA256=$(OPENLINEAGE_SPARK_SHA256) \
+		-t '$(IMAGE)' .
+
+kind-load: ## Load the project image into the kind cluster's node
+	$(KIND) load docker-image '$(IMAGE)' --name '$(KIND_CLUSTER)'
+
+k8s-chart: export CHART := $(AIRFLOW_CHART)
+k8s-chart: ## Download the official Airflow Helm chart (pinned version, SHA-256 checked) into .k8s/
+	@set -e; \
+	if [ -f "$$CHART" ] && echo "$(AIRFLOW_CHART_SHA256)  $$CHART" | sha256sum -c --status -; then \
+		echo "$$CHART: present, SHA-256 OK"; exit 0; fi; \
+	mkdir -p -- "$$(dirname -- "$$CHART")"; \
+	trap 'rm -f -- "$$CHART.part"' EXIT; \
+	curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 -o "$$CHART.part" '$(AIRFLOW_CHART_URL)'; \
+	echo "$(AIRFLOW_CHART_SHA256)  $$CHART.part" | sha256sum -c --quiet -; \
+	mv -- "$$CHART.part" "$$CHART"; \
+	echo "$$CHART: downloaded, SHA-256 OK"
+
+# Every kubectl / helm command names the kind context explicitly: never another cluster.
+K8S_ARGS := --context '$(K8S_CONTEXT)' --namespace '$(K8S_NAMESPACE)'
+HELM_ARGS := --kube-context '$(K8S_CONTEXT)' --namespace '$(K8S_NAMESPACE)'
+IMAGE_SETS := --set image.repository='$(IMAGE_REPOSITORY)' --set image.tag='$(IMAGE_TAG)'
+AIRFLOW_IMAGE_SETS := --set images.airflow.repository='$(IMAGE_REPOSITORY)' \
+	--set images.airflow.tag='$(IMAGE_TAG)' \
+	--set defaultAirflowRepository='$(IMAGE_REPOSITORY)' --set defaultAirflowTag='$(IMAGE_TAG)'
+
+# 1. the namespace, labelled for Pod Security Admission `restricted` (SEC-1);
+# 2. the Secrets (generated once, never printed: scripts/k8s_secrets.py);
+# 3. the project chart (Postgres, volumes, Spark conf and RBAC, toolbox), then
+#    wait for Postgres and the toolbox (not `helm --wait`: the logs PVC stays
+#    Pending until the Airflow pods use it, local-path binds on first consumer);
+# 4. the official Airflow chart (KubernetesExecutor, DAGs in the image). The
+#    migration Job is a plain Job (values-airflow.yaml): its pod template is
+#    immutable, so the finished Job of the previous install is deleted first and
+#    recreated by the upgrade (`airflow db migrate` is idempotent);
+# 5. the pools of deploy/airflow/pools.json (idempotent, as `make airflow-init`).
+k8s-install: k8s-chart ## Install or upgrade the deployment on the kind cluster (helm upgrade --install)
+	$(KUBECTL) --context '$(K8S_CONTEXT)' create namespace '$(K8S_NAMESPACE)' --dry-run=client -o yaml \
+		| $(KUBECTL) --context '$(K8S_CONTEXT)' apply -f -
+	$(KUBECTL) --context '$(K8S_CONTEXT)' label namespace '$(K8S_NAMESPACE)' --overwrite \
+		pod-security.kubernetes.io/enforce=$(PSA_LEVEL) pod-security.kubernetes.io/enforce-version=$(PSA_VERSION) \
+		pod-security.kubernetes.io/warn=$(PSA_LEVEL) pod-security.kubernetes.io/warn-version=$(PSA_VERSION) \
+		pod-security.kubernetes.io/audit=$(PSA_LEVEL) pod-security.kubernetes.io/audit-version=$(PSA_VERSION)
+	$(PYTHON) scripts/k8s_secrets.py --kubectl '$(KUBECTL)' --context '$(K8S_CONTEXT)' --namespace '$(K8S_NAMESPACE)'
+	$(HELM) upgrade --install $(K8S_RELEASE_PROJECT) '$(PROJECT_CHART)' $(HELM_ARGS) \
+		$(IMAGE_SETS) --set-file fileListSql=utils/SQL/script_tables.sql
+	$(KUBECTL) $(K8S_ARGS) rollout status statefulset/project-postgres --timeout 5m
+	$(KUBECTL) $(K8S_ARGS) rollout status deployment/project-toolbox --timeout 5m
+	$(KUBECTL) $(K8S_ARGS) delete job $(K8S_RELEASE_AIRFLOW)-run-airflow-migrations --ignore-not-found
+	$(HELM) upgrade --install $(K8S_RELEASE_AIRFLOW) '$(AIRFLOW_CHART)' $(HELM_ARGS) \
+		-f deploy/k8s/values-airflow.yaml $(AIRFLOW_IMAGE_SETS) --wait --timeout 15m
+	$(KUBECTL) $(K8S_ARGS) exec deploy/$(K8S_RELEASE_AIRFLOW)-scheduler -c scheduler -- \
+		airflow pools import /opt/airflow/deploy/airflow/pools.json
+
+# Keeps the namespace, the Secrets and the PVCs (Postgres, shared volume, logs):
+# a new `make k8s-install` finds its data again. `make kind-down` removes all.
+k8s-uninstall: ## Uninstall both Helm releases (keeps Secrets and volumes)
+	-$(HELM) uninstall $(K8S_RELEASE_AIRFLOW) $(HELM_ARGS) --wait
+	-$(HELM) uninstall $(K8S_RELEASE_PROJECT) $(HELM_ARGS) --wait
+
+# Into data/ of the shared volume (the listing reads ./data/ = shared/data).
+DATA ?= data/orders_sample.csv
+k8s-load-data: export DATA_FILE := $(DATA)
+k8s-load-data: ## Copy a source file into the shared volume: make k8s-load-data DATA=data/orders_sample.csv
+	@test -f "$$DATA_FILE" || { echo "error: $$DATA_FILE: no such file" >&2; exit 1; }
+	$(KUBECTL) $(K8S_ARGS) cp "$$DATA_FILE" \
+		"$$($(KUBECTL) $(K8S_ARGS) get pod -l app.kubernetes.io/name=toolbox -o jsonpath='{.items[0].metadata.name}'):/opt/airflow/shared/data/$$(basename -- "$$DATA_FILE")" \
+		-c toolbox
+	$(KUBECTL) $(K8S_ARGS) exec deploy/project-toolbox -c toolbox -- ls -l /opt/airflow/shared/data
+
+# A finished driver pod stays (Completed / Error) with its logs, as Spark
+# documents; its Service, ConfigMaps and NetworkPolicy are owned by it and go
+# with it (Kubernetes garbage collection).
+k8s-spark-clean: ## Delete the finished Spark driver pods (and what they own)
+	$(KUBECTL) $(K8S_ARGS) delete pod -l spark-role=driver \
+		--field-selector=status.phase!=Running,status.phase!=Pending
+
+K8S_UI_PORT ?= 8081
+k8s-ui: ## Forward the Airflow UI to http://127.0.0.1:8081 (K8S_UI_PORT), foreground
+	$(KUBECTL) $(K8S_ARGS) port-forward --address 127.0.0.1 svc/$(K8S_RELEASE_AIRFLOW)-api-server '$(K8S_UI_PORT)':8080
+
+k8s-ui-password: ## Print the password of the UI user `admin` (Secret airflow-ui-admin, dev only)
+	@$(KUBECTL) $(K8S_ARGS) get secret airflow-ui-admin -o jsonpath='{.data.password}' | base64 -d; echo

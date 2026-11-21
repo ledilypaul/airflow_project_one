@@ -1,0 +1,111 @@
+# Values of the project's infrastructure chart (P3-2). `make k8s-install` sets
+# image.repository / image.tag and fileListSql (--set-file
+# fileListSql=utils/SQL/script_tables.sql: the DDL of file_list has one source).
+# No secret here: the passwords live in Secrets created by
+# scripts/k8s_secrets.py before the install, never in a values file.
+
+# The project image (Dockerfile): Spark driver/executor pods and the toolbox.
+image:
+  repository: airflow-project-one
+  tag: dev
+  # kind: the image is loaded into the node (`make kind-load`), never pulled.
+  pullPolicy: IfNotPresent
+
+# Pod security applied to every pod of this chart and to the Spark pods.
+# uid 50000 / gid 0: the user of the official Airflow image.
+podSecurity:
+  runAsUser: 50000
+  runAsGroup: 0
+
+# --- Postgres (dev only): Airflow metadata DB and the file_list DB --------------
+postgres:
+  # Official image, tag and index digest read on 2026-11-19
+  # (`docker buildx imagetools inspect postgres:17.12`). Same major as the
+  # docker-compose Postgres.
+  image: postgres:17.12@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
+  serviceName: project-postgres
+  storage: 2Gi
+  # Secret created by scripts/k8s_secrets.py (keys postgres-password, airflow-password).
+  secretName: project-postgres
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+# Database of the pipeline's file_list table (the Spark job reads DB_* from its
+# environment; the Airflow tasks use the Connection file_list_db).
+fileListDb:
+  name: file_list
+  user: file_list
+  port: 5432
+  # Secret created by scripts/k8s_secrets.py (key `password`), also read by the
+  # Spark driver through spark.kubernetes.driver.secretKeyRef.DB_PASSWORD.
+  secretName: file-list-db
+  secretKey: password
+
+# DDL of file_list (utils/SQL/script_tables.sql), passed with --set-file.
+fileListSql: ""
+
+# --- Shared volume: source files (data/), lake, DuckDB warehouse ----------------
+# Mounted at the same path in the Airflow worker pods and in the Spark driver and
+# executor pods. ReadWriteOnce is enough on a one-node kind cluster (every pod
+# runs on that node); a multi-node cluster needs ReadWriteMany (NFS, EFS,
+# Filestore...) or an object-store lake.
+shared:
+  claimName: project-shared
+  mountPath: /opt/airflow/shared
+  storage: 5Gi
+  accessModes: [ReadWriteOnce]
+  # Empty: the cluster's default StorageClass (local-path on kind).
+  storageClassName: ""
+
+# --- Airflow task logs (logs.persistence.existingClaim of the Airflow chart) ---
+logs:
+  claimName: airflow-logs
+  storage: 2Gi
+  accessModes: [ReadWriteOnce]
+  storageClassName: ""
+
+# --- Spark on Kubernetes ----------------------------------------------------------
+spark:
+  # ConfigMap mounted at confDir in the worker pods (SPARK_CONF_DIR): spark-submit
+  # reads spark-defaults.conf there.
+  configMapName: spark-conf
+  confDir: /opt/spark-conf
+  # ServiceAccount of the driver pod (creates the executor pods).
+  serviceAccountName: spark
+  # ServiceAccount of the Airflow scheduler (KubernetesExecutor: launches the
+  # worker pods), bound to the Role `airflow-scheduler` of this chart: the
+  # Airflow chart's own pod-launcher Role is off (allowPodLaunching: false).
+  schedulerServiceAccountName: airflow-scheduler
+  # ServiceAccount of the Airflow worker pods, which run spark-submit (creates
+  # the driver pod, its ConfigMaps and its Service). Name given by the Airflow
+  # chart to the KubernetesExecutor workers (release `airflow`).
+  submitterServiceAccountName: airflow-worker
+  # LAKE_ROOT of the driver (absolute, on the shared volume).
+  lakeRoot: /opt/airflow/shared/lake
+  driver:
+    cores: 1
+    requestCores: 500m
+    memory: 1g
+  executor:
+    instances: 1
+    cores: 1
+    requestCores: 500m
+    memory: 1g
+
+# --- Admission policy (SEC-2) -------------------------------------------------------
+# A ValidatingAdmissionPolicy (GA since Kubernetes 1.30) on the pods that the
+# ServiceAccounts `spark` (driver) and `airflow-worker` (spark-submit) create:
+# ServiceAccount `spark`, the project image only, no Secret volume, no Secret
+# read but the file_list password. pods:create would otherwise let a
+# compromised task mount any Secret of the namespace.
+admissionPolicy:
+  enabled: true
+
+# --- Toolbox: a pod with the shared volume, to copy source files in and read the
+# lake (`make k8s-load-data`, `kubectl exec`). No ServiceAccount token.
+toolbox:
+  enabled: true
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
