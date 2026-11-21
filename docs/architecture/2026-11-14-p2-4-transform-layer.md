@@ -61,6 +61,7 @@ Chaque étape déclenche la suivante par un **Asset** Airflow, sans planificatio
 ### DAG `transform_dag`
 
 - **Déclenchement et concurrence.** Il est déclenché par l'Asset `lake_staging`. Une seule exécution à la fois (`max_active_runs=1`), et un pool `dbt_duckdb` à 1 slot, parce que DuckDB n'accepte qu'un seul écrivain par fichier.
+  - *Mise à jour P3-5 (Airflow 3.4).* 3.4 crée par défaut un run par événement d'Asset. `transform_dag` fixe donc `batch_asset_events=True` : les événements `lake_staging` arrivés pendant un `dbt build` sont consommés ensemble par **un seul** run suivant, puisque chaque run reconstruit toute la zone staging. `read_file_dag`, lui, passe à un run par listing (`False`). Un événement émis pendant que le DAG est en pause n'est plus consommé par un run ultérieur ; le prochain événement reconstruit tout. Voir `docs/architecture/2026-11-21-p3-5-airflow-3.4.md`.
 - **Exécution.** Mode **watcher** : un producteur lance un unique `dbt build`, puis un capteur par modèle ou test en rapporte le statut. Avec le pool à 1 slot, les capteurs passent après le producteur. C'est le prix d'un rejeu sûr avec un seul écrivain.
 - **Asset publié.** Le DAG publie l'Asset stable **`dbt_marts`** quand tout a réussi : c'est le point d'accroche pour la suite (lignage P2-5, ML P4-2). Les Assets propres à Cosmos sont désactivés, parce que leur URI contient le chemin absolu du fichier DuckDB.
 - **Rendu.** Le DAG est rendu depuis `transform/target/manifest.json` (`LoadMode.DBT_MANIFEST`), si bien que le DAG processor n'exécute jamais dbt.

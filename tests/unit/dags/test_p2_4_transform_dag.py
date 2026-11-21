@@ -175,9 +175,9 @@ def test_p2_4_lake_staging_is_what_transform_dag_waits_for(dagbag, transform_dag
 
     produced = dagbag.dags["read_file_dag"].get_task("publish_lake_staging").outlets
     assert isinstance(transform_dag.timetable, AssetTriggeredTimetable)
-    assert [a.name for a in transform_dag.timetable.asset_condition.objects] == [
-        a.name for a in produced
-    ]
+    # P3-5: the condition is the Asset itself (AssetTriggeredTimetable with
+    # an explicit batch_asset_events).
+    assert [transform_dag.timetable.asset_condition] == list(produced)
     # No URI scheme a provider would try to validate.
     assert "://" not in produced[0].uri
 

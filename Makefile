@@ -169,7 +169,7 @@ PROJECT_CHART ?= deploy/k8s/charts/project
 # `restricted` standard, pinned to the cluster's minor version (kind node 1.37).
 PSA_LEVEL := restricted
 PSA_VERSION := v1.37
-# The project image (Dockerfile): Airflow 3.3.2 + the project + dbt + Spark (JRE,
+# The project image (Dockerfile): Airflow 3.4.0 + the project + dbt + Spark (JRE,
 # PySpark's spark-submit, Spark's Kubernetes entrypoint). One image for the
 # Airflow pods and for the Spark driver and executors.
 IMAGE_REPOSITORY ?= airflow-project-one

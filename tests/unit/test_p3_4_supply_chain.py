@@ -178,7 +178,7 @@ def test_p3_4_dependabot_is_weekly_and_never_merges_itself():
 def test_p3_4_dependabot_keeps_the_project_version_ceilings():
     root = _ignored(_update("uv", "/"))
     minor, major = "version-update:semver-minor", "version-update:semver-major"
-    # apache-airflow==3.3.2 exact, cosmos <1.17, PySpark 4.3 tested: patches only
+    # apache-airflow==3.4.0 exact, cosmos <1.17, PySpark 4.3 tested: patches only
     for name in ("apache-airflow", "astronomer-cosmos", "pyspark"):
         assert {minor, major} <= root[name], name
     # pandas 3 breaks pyspark.pandas
@@ -192,7 +192,7 @@ def test_p3_4_dependabot_keeps_the_project_version_ceilings():
 def test_p3_4_dependabot_ceilings_match_the_pins_of_the_project():
     # If one of these pins is relaxed in pyproject.toml, review the `ignore` rules too.
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
-    assert '"apache-airflow==3.3.2"' in pyproject
+    assert '"apache-airflow==3.4.0"' in pyproject
     assert '"pandas>=2.2,<3"' in pyproject
     assert '"astronomer-cosmos>=1.16,<1.17"' in pyproject
     assert '"pyspark>=4.0,<4.4"' in pyproject
