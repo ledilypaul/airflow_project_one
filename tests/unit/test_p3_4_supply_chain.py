@@ -9,7 +9,8 @@ P3-4 - supply chain: guards on what lives in `.github/` and `.gitleaksignore`.
   github-actions, docker-compose), weekly, never merges on its own, and keeps the
   version ceilings of CLAUDE.md out of its proposals;
 - the CI runs pip-audit on both locks, gitleaks on the whole history and Trivy
-  with an explicit threshold;
+  with an explicit threshold, blocking;
+- every image of docker-compose.yaml is pinned by precise tag and digest (SEC-5);
 - `.gitleaksignore` only lists `commit:file:rule:line` fingerprints, never a value.
 
 The workflows themselves can only run on GitHub: these tests read the YAML.
@@ -138,9 +139,11 @@ def test_p3_4_trivy_has_an_explicit_threshold():
     assert options["ignore-unfixed"] is True
     # explicit, not the action's default (which would drift with its release)
     assert re.fullmatch(r"v\d+\.\d+\.\d+", options["version"])
-    # Non-blocking until a first report has been read (see the comment in ci.yml).
-    # Turning it blocking means changing this value on purpose.
-    assert options["exit-code"] == "0"
+    # Blocking since the first report (no finding) was read, see the comment in ci.yml.
+    # A finding is fixed or listed in .trivyignore, never made non-blocking again.
+    assert options["exit-code"] == "1"
+    assert not any(s.get("continue-on-error") for s in steps)
+    assert "continue-on-error" not in _load(WORKFLOWS_DIR / "ci.yml")["jobs"]["trivy"]
 
 
 def test_p3_4_dependabot_covers_the_expected_ecosystems():
@@ -202,6 +205,41 @@ def test_p3_4_compose_databases_do_not_get_major_bumps():
     ignored = _ignored(_update("docker-compose", "/"))
     for image in ("postgres", "redis"):
         assert "version-update:semver-major" in ignored[image]
+
+
+COMPOSE = PROJECT_ROOT / "docker-compose.yaml"
+PINNED_IMAGE = re.compile(r"[\w./-]+:v?\d+(\.\d+)*@sha256:[0-9a-f]{64}")
+PRECISELY_PINNED_IMAGE = re.compile(r"[\w./-]+:v?\d+(\.\d+)+@sha256:[0-9a-f]{64}")
+
+
+def test_p3_4_sec5_every_compose_image_is_pinned_by_precise_tag_and_digest():
+    # SEC-5: postgres and redis were the last two images without a digest. Every
+    # image carries a tag and a digest (the digest is what is pulled); the two
+    # databases of `make db-up` also need a precise tag, not just a major
+    # (`postgres:17`, `redis:7`), which is what a reader (and Dependabot) sees.
+    # `marquez-db` stays on `postgres:14`, the major Marquez documents.
+    services = yaml.safe_load(COMPOSE.read_text())["services"]
+    assert {"postgres", "redis"} <= set(services)
+    for name, service in services.items():
+        assert PINNED_IMAGE.fullmatch(service["image"]), f"{name}: {service['image']}"
+    for name in ("postgres", "redis"):
+        image = services[name]["image"]
+        assert PRECISELY_PINNED_IMAGE.fullmatch(image), f"{name}: {image}"
+
+
+def test_p3_4_sec5_compose_postgres_is_the_one_of_the_kubernetes_chart():
+    # Same image, same index digest, so the two environments do not drift apart.
+    compose = yaml.safe_load(COMPOSE.read_text())["services"]["postgres"]["image"]
+    values = yaml.safe_load((PROJECT_ROOT / "deploy/k8s/charts/project/values.yaml").read_text())
+    assert compose == values["postgres"]["image"]
+
+
+def test_p3_4_sec5_compose_database_majors_match_the_ignored_majors():
+    # The Dependabot rule that keeps the majors out relies on these two being
+    # pinned to a major we mean to stay on (postgres 17 volume, redis 7).
+    services = yaml.safe_load(COMPOSE.read_text())["services"]
+    assert services["postgres"]["image"].startswith("postgres:17.")
+    assert services["redis"]["image"].startswith("redis:7.")
 
 
 def test_p3_4_openlineage_jar_is_not_faked_as_a_dependabot_ecosystem():
