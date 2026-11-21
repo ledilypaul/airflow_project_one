@@ -136,12 +136,16 @@ jobs:
   # docker-compose.yaml : le fichier est couvert par la détection de secrets, pas par la
   # détection de mauvaises configurations (Dockerfile, Kubernetes, Terraform...).
   #
-  # NON BLOQUANT pour l'instant (exit-code 0) : cette étape n'a jamais tourné (aucun
-  # Trivy disponible au moment de l'écrire) et on ne veut pas une CI rouge sur un
-  # constat existant jamais examiné. Seuil explicite : HIGH et CRITICAL avec un
-  # correctif disponible (`ignore-unfixed`). Pour la rendre bloquante : lire le rapport
-  # d'un premier run, traiter ou ignorer (.trivyignore, avec un commentaire) ses
-  # constats, puis passer `exit-code` à "1".
+  # BLOQUANT (exit-code "1") depuis le 2026-11-21 : le rapport du run du push 185a374 sur
+  # develop (Trivy v0.70.0) ne contient aucun constat : 0 vulnérabilité dans uv.lock et
+  # transform/uv.lock, 0 secret, 0 mauvaise configuration dans le Dockerfile. Seuil explicite :
+  # HIGH et CRITICAL avec un correctif disponible (`ignore-unfixed`). Un constat futur
+  # se traite : corriger, ou l'ignorer dans .trivyignore avec un commentaire qui dit
+  # pourquoi et jusqu'à quand (jamais en repassant exit-code à "0").
+  # Limites connues du rapport : le chart Helm du projet (deploy/k8s/charts/project) n'est pas
+  # rendu par Trivy (il exige `--set-file fileListSql=...`), donc pas analysé ; les
+  # dépendances de développement des lockfiles sont ignorées par Trivy (pip-audit les couvre) ;
+  # les images du compose ne sont pas scannées (reste de P3-4).
   # Trivy est épinglé à v0.70.0, postérieur à l'incident de mars 2026 (CVE-2026-33634 :
   # trivy-action et setup-trivy détournés, binaire 0.69.4 malveillant). L'action
   # elle-même est épinglée par SHA de commit ; v0.36.0 épingle setup-trivy par SHA.
@@ -160,7 +164,7 @@ jobs:
           scanners: vuln,secret,misconfig
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          exit-code: "0"
+          exit-code: "1"
           version: v0.70.0
           format: table
 

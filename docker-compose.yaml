@@ -9,7 +9,11 @@
 #   existing `postgres-data` volume, the credentials of that first start remain.
 services:
   postgres:
-    image: postgres:17
+    # Pinned by tag (for the reader) and digest (what is pulled): the multi-arch
+    # index digest, checked on 2026-11-21 with `docker buildx imagetools inspect
+    # postgres:17.12` (same pin as the Kubernetes chart). A new major needs a
+    # pg_upgrade of `postgres-data`, so Dependabot never proposes one.
+    image: postgres:17.12@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
     container_name: airflow_postgres
     environment:
       POSTGRES_USER: ${DB_USER:-airflow}
@@ -25,7 +29,9 @@ services:
       retries: 5
 
   redis:
-    image: redis:7
+    # Pinned like postgres (index digest, checked on 2026-11-21 with
+    # `docker buildx imagetools inspect redis:7.4.12`, last 7.x tag of Docker Hub).
+    image: redis:7.4.12@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
     container_name: airflow_redis
     # The password is read from the container environment by the shell, so it
     # is not written in this file. REDISCLI_AUTH lets redis-cli authenticate
