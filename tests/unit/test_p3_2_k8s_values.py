@@ -154,3 +154,11 @@ def test_p3_2_ui_password_comes_from_a_secret():
     assert init["command"][-1] == path
     assert init["securityContext"]["allowPrivilegeEscalation"] is False
     assert init["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+
+def test_p3_2_sonar_toolbox_has_a_storage_limit():
+    # Sonar kubernetes:S6870 on PR #30: every container of the toolbox has an
+    # ephemeral-storage request and limit.
+    resources = _project()["toolbox"]["resources"]
+    assert resources["requests"]["ephemeral-storage"]
+    assert resources["limits"]["ephemeral-storage"]
