@@ -80,7 +80,7 @@ def test_p3_3_the_alert_rules_are_valid_promql():
     proc = _promtool("check", "rules", "/w/airflow.yml", mounts={RULES: "/w/airflow.yml"})
 
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "SUCCESS: 3 rules found" in proc.stdout + proc.stderr
+    assert "SUCCESS: 5 rules found" in proc.stdout + proc.stderr
 
 
 def test_p3_3_the_alert_rules_behave_as_documented():

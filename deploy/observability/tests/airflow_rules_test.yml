@@ -300,3 +300,217 @@ tests:
             exp_annotations:
               summary: "Task read_file_dag.spark_read_files stuck in `scheduled`"
               description: "Task spark_read_files of DAG read_file_dag has been `scheduled` for 15 minutes while no task runs or is queued. Two causes: its pool does not exist (`make airflow-init` imports deploy/airflow/pools.json; the scheduler log says `Tasks using non-existent pool ... will not be scheduled`), or its DAG is paused (the scheduler does not queue the tasks of a paused DAG)."
+
+  # --- AirflowDagImportErrors (P3-8) --------------------------------------
+  # The gauge is 0 while every file imports, then 2 from minute 5 (a broken
+  # file, or transform_dag without its manifest). `for` is 10 minutes.
+  - name: import errors lasting 10 minutes fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_dag_processing_import_errors{instance="dp1", job="airflow_project_one"}'
+        values: '0x5 2x40'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AirflowDagImportErrors
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "2 DAG file import error(s)"
+              description: "The DAG processor has found 2 import error(s) for 10 minutes: the DAGs of those files are not updated, a new DAG does not appear. List them with `airflow dags list-import-errors` or in the UI (Import Errors). For transform_dag, a missing or stale dbt manifest is the usual cause: run `make dbt-parse` (CLAUDE.md, 'dbt transformation layer')."
+
+  # A file broken for 6 minutes (an edit, a dbt-parse in progress): not an alert.
+  - name: a short-lived import error does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_dag_processing_import_errors{instance="dp1", job="airflow_project_one"}'
+        values: '0x5 1x6 0x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+
+  - name: a healthy DAG processor does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_dag_processing_import_errors{instance="dp1", job="airflow_project_one"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+
+  # No series (Airflow without metrics, processor not started yet, or its series
+  # expired): not an import error. Another Airflow series exists, to show that
+  # the evaluation is not simply empty.
+  - name: an absent series does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="s1", job="airflow_project_one"}'
+        values: '0+12x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+
+  # The processor dies while it reports errors: the series disappears (the
+  # collector drops it) and the alert resolves instead of staying forever.
+  - name: errors that stop being reported resolve
+    interval: 1m
+    input_series:
+      - series: 'airflow_dag_processing_import_errors{instance="dp1", job="airflow_project_one"}'
+        values: '3x20 _x30'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: AirflowDagImportErrors
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "3 DAG file import error(s)"
+              description: "The DAG processor has found 3 import error(s) for 10 minutes: the DAGs of those files are not updated, a new DAG does not appear. List them with `airflow dags list-import-errors` or in the UI (Import Errors). For transform_dag, a missing or stale dbt manifest is the usual cause: run `make dbt-parse` (CLAUDE.md, 'dbt transformation layer')."
+      - eval_time: 30m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+
+  # Restart after a fix: the old instance's last value (2) is still exposed for
+  # a few minutes next to the new instance's 0. `max` would stay at 2 for that
+  # time, which the `for` absorbs (6 minutes here, below 10).
+  - name: a restart after a fix does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_dag_processing_import_errors{instance="old", job="airflow_project_one"}'
+        values: '2x6 _x40'
+      - series: 'airflow_dag_processing_import_errors{instance="new", job="airflow_project_one"}'
+        values: '_x6 0x40'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+
+  # SEC-4: another service's import errors are not this pipeline's.
+  - name: another service's import errors do not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_dag_processing_import_errors{instance="x1", job="someone_elses_airflow"}'
+        values: '4x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AirflowDagImportErrors
+        exp_alerts: []
+
+  # --- AirflowDagRunStuckQueued (P3-8) ------------------------------------
+  # A run queued from minute 5 while nothing runs (manual trigger of a paused
+  # DAG, a stale DAG). `for` is 15 minutes.
+  - name: a run queued with nothing running fires after 15 minutes
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_dagruns_queued{instance="s1", job="airflow_project_one"}'
+        values: '0x5 1x40'
+      - series: 'airflow_scheduler_dagruns_running{instance="s1", job="airflow_project_one"}'
+        values: '0x45'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "A DAG run has been queued for 15 minutes with nothing running"
+              description: "1 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause read_file_dag before running a listing') or check why the DAG is stale (an import error, a removed file)."
+
+  # max_active_runs=1: the next listing's run waits behind a running one.
+  - name: a run queued behind a running one does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_dagruns_queued{instance="s1", job="airflow_project_one"}'
+        values: '2x60'
+      - series: 'airflow_scheduler_dagruns_running{instance="s1", job="airflow_project_one"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts: []
+
+  # The normal case: queued for one scheduler loop, then running.
+  - name: a run that starts at once does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_dagruns_queued{instance="s1", job="airflow_project_one"}'
+        values: '0x5 1 0x40'
+      - series: 'airflow_scheduler_dagruns_running{instance="s1", job="airflow_project_one"}'
+        values: '0x5 0 1x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts: []
+
+  - name: no dagruns series does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_heartbeat_total{instance="s1", job="airflow_project_one"}'
+        values: '0+12x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts: []
+
+  # Per-DAG mode (`dagrun_metrics_per_dag_id`): one series per DAG; the sums
+  # still see a run queued while no DAG runs at all.
+  - name: per-dag series are summed
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_dagruns_queued{dag_id="read_file_dag", instance="s1", job="airflow_project_one"}'
+        values: '1x40'
+      - series: 'airflow_scheduler_dagruns_queued{dag_id="transform_dag", instance="s1", job="airflow_project_one"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "A DAG run has been queued for 15 minutes with nothing running"
+              description: "2 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause read_file_dag before running a listing') or check why the DAG is stale (an import error, a removed file)."
+
+  # SEC-4: another service's running run must not mask a stuck queue of ours,
+  # and another service's queued run must not fire ours.
+  - name: another service's series neither fire nor mask the alert
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_dagruns_queued{instance="s1", job="airflow_project_one"}'
+        values: '1x40'
+      - series: 'airflow_scheduler_dagruns_running{instance="x1", job="someone_elses_airflow"}'
+        values: '3x40'
+      - series: 'airflow_scheduler_dagruns_queued{instance="x1", job="someone_elses_airflow"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "A DAG run has been queued for 15 minutes with nothing running"
+              description: "1 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause read_file_dag before running a listing') or check why the DAG is stale (an import error, a removed file)."
+
+  - name: another service's queued run alone does not fire
+    interval: 1m
+    input_series:
+      - series: 'airflow_scheduler_dagruns_queued{instance="x1", job="someone_elses_airflow"}'
+        values: '5x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AirflowDagRunStuckQueued
+        exp_alerts: []

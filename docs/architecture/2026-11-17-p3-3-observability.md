@@ -22,7 +22,7 @@ Airflow (scheduler, workers, triggerer, dag-processor, api-server)
    ▼
 collecteur OpenTelemetry ──(exposition Prometheus, réseau compose seulement)──▶ Prometheus
                                                                                   │
-                                                       3 règles d'alerte (deploy/observability/rules/)
+                                                       5 règles d'alerte (deploy/observability/rules/)
                                                        visibles dans http://127.0.0.1:9092/alerts
 
 tâche ou run en échec ──▶ une ligne de log `airflow_failure {JSON}`
@@ -61,7 +61,7 @@ tâche ou run en échec ──▶ une ligne de log `airflow_failure {JSON}`
 
   Les histogrammes exponentiels qu'Airflow produit pour ses timers sont bien exposés par l'exporteur du collecteur en histogrammes classiques (`_bucket`). Airflow émet aussi, pour compatibilité, des séries au nom « legacy » qui contiennent le `dag_id` dans le nom (`airflow_dagrun_duration_failed_probe_fail_milliseconds_count`) : les règles ne s'en servent pas.
 
-## 4. Les trois règles d'alerte
+## 4. Les règles d'alerte (trois de P3-3, deux de P3-8)
 
 Fichier `deploy/observability/rules/airflow.yml`, testé par `deploy/observability/tests/airflow_rules_test.yml`.
 
@@ -70,6 +70,8 @@ Fichier `deploy/observability/rules/airflow.yml`, testé par `deploy/observabili
 | `AirflowDagRunFailed` (critical) | `airflow_dagrun_duration_failed_milliseconds_count` | Le scheduler émet ce timer quand il marque un run `failed`. **Le premier échec d'un DAG est le premier échantillon de la série** (valeur 1) : `increase()` ne voit rien. La règle ajoute donc les séries apparues dans la fenêtre de 15 min (`... unless ... offset 15m`). **Cette branche n'est crue que si le scrape du collecteur est resté continu** : après une coupure de scrape (collecteur ou réseau coupé 15 min ou plus), une série revient avec son ancienne valeur et ressemble à une série « née » sans qu'aucun échec ait eu lieu. La porte exige `min_over_time(up{job="otel-collector"}[16m]) == 1`, au moins 28 échantillons de `up` sur 16 min (32 attendus à 30 s) et un `up` valide il y a 15 min. Limite connue : pendant ses 15 premières minutes, Prometheus peut rater un premier échec (le prix d'une fausse alerte en moins). Testé : sans la branche, « premier échec » échoue ; sans la porte, « trou de scrape, même valeur » (`2x20 _x40 2x40`) échoue ; « redémarrage du scheduler (nouvelle instance) » déclenche. Vérifié en réel : `firing` sur le premier échec de `probe_fail`. |
 | `AirflowSchedulerHeartbeatMissing` (critical) | `airflow_scheduler_heartbeat_total` | `sum(increase(...[5m])) == 0` pour un scheduler figé, `absent_over_time(...[5m])` pour un scheduler mort (le collecteur retire une série 5 min après sa dernière mise à jour, `metric_expiration: 5m`). `sum` : après un redémarrage, l'ancienne série reste exposée, constante, pendant 5 minutes, et ne doit pas alerter. Délai : environ 6 minutes après le dernier mouvement du compteur (fenêtre de 5 min, 2 min de `for`), soit **7 minutes ou plus après l'arrêt du scheduler** (7 à 8 mesurés en réel). |
 | `AirflowTaskStuckScheduled` (warning) | `airflow_ti_scheduled` | Une tâche `scheduled` depuis 15 min **alors que rien ne tourne ni n'est en file** ne peut pas obtenir de slot : deux causes : le pool manquant de `CLAUDE.md` (un pool inexistant n'exporte aucune métrique de pool, d'où ce signal), ou un **DAG en pause** (le scheduler ne met pas en file les tâches d'un DAG en pause). Pas d'alerte si une autre tâche tourne : un pool `spark` à 1 slot occupé par une instance mappée est une file normale. |
+| `AirflowDagImportErrors` (warning, P3-8) | `airflow_dag_processing_import_errors` | Gauge posée par le DAG processor à la fin de chaque boucle d'analyse complète (somme des erreurs d'import de tous les fichiers) : rien avant la première boucle, donc pas de fausse alerte au démarrage. `max(...) > 0` pendant 10 min : le `for` absorbe un fichier en cours d'édition ou un `make dbt-parse` pas fini (`transform_dag` ne s'importe pas sans manifest). `max` et non `sum` : après un redémarrage le collecteur garde 5 min la dernière valeur de l'ancienne instance. Une série absente ou expirée ne déclenche pas (un processor mort n'est pas surveillé ici). `warning` : le scheduler continue avec ce qui est déjà chargé. |
+| `AirflowDagRunStuckQueued` (warning, P3-8) | `airflow_scheduler_dagruns_queued`, `airflow_scheduler_dagruns_running` | `queued` est nouvelle en 3.4 (#68068). Un run `queued` pendant que rien ne tourne ne peut pas démarrer : le scheduler ne prend que les runs en file d'un DAG ni en pause ni obsolète (`DagRun.get_queued_dag_runs_to_set_running`), par exemple un déclenchement manuel d'un DAG en pause. Un run derrière `max_active_runs=1` a un run `running` : file normale, pas d'alerte. `AirflowTaskStuckScheduled` ne le voit pas, car aucune instance de tâche n'existe encore. 15 min, `warning`. |
 
 **Filtre sur le service (SEC-4).** Toutes les séries Airflow des règles sont sélectionnées avec `job="airflow_project_one"`, la valeur d'`OTEL_SERVICE_NAME` que `make airflow` fixe et que le scrape conserve (`honor_labels`, label réel vérifié dans Prometheus). Le collecteur accepte de l'OTLP de quiconque l'atteint : une autre instance qui lui enverrait les mêmes noms de séries ne doit ni déclencher ces alertes ni masquer un scheduler mort (cas testés). Si vous changez `OTEL_SERVICE_NAME`, changez-le aussi dans `rules/airflow.yml` (un test compare avec le Makefile).
 
@@ -148,7 +150,7 @@ make observability-down                                    # arrête les deux co
 ## 9. Hors périmètre, à reprendre
 
 - **Notification.** Alertmanager (Slack, e-mail) ou un `Notifier` Airflow, avec ses secrets dans une `Connection` ou un gestionnaire de secrets, jamais dans le dépôt.
-- **Une règle sur `airflow_dag_processing_import_errors`.** Elle prévient d'un DAG qui disparaît (manifest dbt absent, par exemple). Vérifiée présente dans le run réel, non ajoutée : la demande fixait trois signaux.
+- **Une règle sur `airflow_dag_processing_import_errors`.** Ajoutée par P3-8 (voir ci-dessous).
 - **Plusieurs schedulers.** `sum` masque la panne de l'un d'eux tant que l'autre bat. Il faudra des règles par instance et une durée de vie de série adaptée.
 - **Premières 15 minutes de Prometheus.** La porte de `AirflowDagRunFailed` est fermée tant qu'il n'a pas 15 minutes de scrape continu : un premier échec dans cette fenêtre n'est pas signalé.
 - **Métriques du job Spark.** Le job est un processus à part, sans Airflow : ses métriques (lignes écrites, échecs qualité) demanderaient un autre chemin (listener Spark, ou lecture des résultats `quality/` du lake).
@@ -156,3 +158,22 @@ make observability-down                                    # arrête les deux co
 - **Grafana, rétention longue.** Prometheus garde 7 jours ou 1 GB, le premier atteint.
 - **CI.** `promtool` passe par l'image Prometheus : les runners GitHub ont Docker, aucune étape à ajouter. Dependabot (`docker-compose`) suivra les deux nouvelles images ; il proposera Prometheus 3.16 (hors LTS) : ajoutez une règle `ignore` si la ligne LTS doit rester.
 - **Instrumentation supplémentaire d'Airflow.** `airflow.cfg` du dépôt n'est pas touché : tout passe par l'environnement.
+
+## 10. P3-8 : règles complémentaires (2026-11-22)
+
+Noms vérifiés sur Airflow 3.4.0 installé : lus dans son `metrics_template.yaml`, puis observés sur le vrai collecteur 0.165.0 (conteneur jetable, config du projet, métriques émises par le client de stats d'Airflow) : `airflow_dag_processing_import_errors`, `airflow_scheduler_dagruns_queued` et `airflow_scheduler_dagruns_running` sont des gauges sans suffixe, `airflow_scheduler_loop_exceptions_total` un compteur, avec `job="airflow_project_one"`.
+
+Métriques nouvelles de 3.4 par rapport à 3.3.2 (diff des deux `metrics_template.yaml`), et décision :
+
+| Métrique | Décision |
+|---|---|
+| `scheduler.dagruns.queued` | **Retenue** (`AirflowDagRunStuckQueued`), voir ci-dessus. |
+| `scheduler.loop_exceptions` (compteur) | Écartée. L'exception est relancée : le scheduler sort, ce que `AirflowSchedulerHeartbeatMissing` voit déjà (7 à 8 min). Elle n'ajouterait que `exception_class`, et, comme le premier échec d'un DAG, sa série naît à 1 : il faudrait recopier la porte de scrape de `AirflowDagRunFailed`. Le trou réel est un scheduler qui redémarre en boucle sous un superviseur (le heartbeat reprend), mais les métriques OTel ne sont pas déployées sur Kubernetes. À reprendre avec elles. |
+| `scheduler.executor_events.failed` | Écartée : l'exception est relancée, elle devient une `loop_exceptions`. |
+| `scheduler.zombies.detected` | Écartée : une tâche sans heartbeat est échouée puis relancée (`retries=1`) ; si elle échoue pour de bon, le run échoue et `AirflowDagRunFailed` alerte. Une alerte par zombie rattrapé par un retry serait du bruit. |
+| `scheduler.executor_events.processed` / `batch_size` | Écartées : débit, pas de seuil sensé. |
+| `task_state_store.*`, `asset_state_store.*`, `dag.serialization.*`, `triggerer.*`, `kubernetes_executor.*`, `managed_agent.*`, `common_ai.*`, `deadline_alerts.*` | Hors périmètre (le projet n'utilise pas ces fonctions ; ce ne sont pas des métriques de scheduler). |
+
+`scheduler.orphaned_tasks.*`, `scheduler.tasks.killed_externally` et `scheduler.tasks.starving` existaient déjà en 3.3.2 : non nouvelles, non retenues (un pool plein est une file normale).
+
+Limite : la gauge d'erreurs d'import n'est posée qu'à la fin d'une boucle d'analyse. Si une boucle dure plus de 5 min (très gros dossier de DAGs), la série expire côté collecteur et l'alerte ne se déclenche plus (absence = pas d'alerte). Non mesuré ici : le projet n'a que quatre fichiers.

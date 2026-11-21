@@ -25,6 +25,9 @@ EXPECTED_ALERTS = {
     "AirflowDagRunFailed",
     "AirflowSchedulerHeartbeatMissing",
     "AirflowTaskStuckScheduled",
+    # P3-8
+    "AirflowDagImportErrors",
+    "AirflowDagRunStuckQueued",
 }
 SEVERITIES = {"critical", "warning"}
 
@@ -71,7 +74,7 @@ def _metric_names(expr: str) -> set[str]:
     return set(re.findall(r"\bairflow_\w+", re.sub(r"\{[^}]*\}", "", expr)))
 
 
-def test_p3_3_the_three_documented_signals_are_there():
+def test_p3_3_the_documented_signals_are_there():
     assert {rule["alert"] for rule in _rules()} == EXPECTED_ALERTS
 
 
@@ -111,8 +114,10 @@ def test_p3_3_every_metric_used_exists_in_airflow():
 
 def test_p3_3_metric_names_follow_what_prometheus_really_received():
     """Names seen in Prometheus on 2026-11-17 (Airflow 3.3.2, collector
-    0.165.0), through the same mapping as `_airflow_metrics`: a guard on the
-    mapping itself, so that `test_p3_3_every_metric_used_exists_in_airflow`
+    0.165.0), and the P3-8 ones seen on the collector's exporter on 2026-11-22
+    (Airflow 3.4.0, same collector image, metrics emitted through Airflow's own
+    stats client), through the same mapping as `_airflow_metrics`: a guard on
+    the mapping itself, so that `test_p3_3_every_metric_used_exists_in_airflow`
     keeps meaning something."""
     known = _airflow_metrics()
     for observed, kind in {
@@ -123,6 +128,11 @@ def test_p3_3_metric_names_follow_what_prometheus_really_received():
         "airflow_pool_scheduled_slots": "gauge",
         "airflow_dagrun_duration_failed_milliseconds_count": "timer",
         "airflow_dagrun_duration_failed_milliseconds_bucket": "timer",
+        # P3-8
+        "airflow_dag_processing_import_errors": "gauge",
+        "airflow_scheduler_dagruns_queued": "gauge",
+        "airflow_scheduler_dagruns_running": "gauge",
+        "airflow_scheduler_loop_exceptions_total": "counter",
     }.items():
         assert known.get(observed) == kind, observed
 
@@ -188,3 +198,29 @@ def test_p3_3_c4_stuck_scheduled_names_both_causes():
     rule = next(r for r in _rules() if r["alert"] == "AirflowTaskStuckScheduled")
     description = rule["annotations"]["description"]
     assert "pool" in description and "paused" in description
+
+
+def test_p3_8_the_new_rules_use_the_metrics_of_the_installed_airflow():
+    """P3-8: each new rule names the gauges it reads, and Airflow 3.4's registry
+    (the one installed, pinned by P3-5) has them as gauges. `scheduler.dagruns.queued`
+    is new in 3.4: a downgrade or a rename breaks this test, not the alert."""
+    known = _airflow_metrics()
+    expected = {
+        "AirflowDagImportErrors": {"airflow_dag_processing_import_errors"},
+        "AirflowDagRunStuckQueued": {
+            "airflow_scheduler_dagruns_queued",
+            "airflow_scheduler_dagruns_running",
+        },
+    }
+    rules = {rule["alert"]: rule for rule in _rules()}
+    for alert, metrics in expected.items():
+        assert _metric_names(rules[alert]["expr"]) == metrics, alert
+        for metric in metrics:
+            assert known.get(metric) == "gauge", metric
+
+
+def test_p3_8_import_errors_waits_before_alerting():
+    """A file being edited, or `make dbt-parse` still running, must not page:
+    the rule keeps a `for` of at least 5 minutes."""
+    rule = next(r for r in _rules() if r["alert"] == "AirflowDagImportErrors")
+    assert int(rule["for"].removesuffix("m")) >= 5
