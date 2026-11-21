@@ -48,6 +48,9 @@ ENV UV_PYTHON_DOWNLOADS=never \
     DBT_SEND_ANONYMOUS_USAGE_STATS=False
 WORKDIR /opt/airflow/transform
 COPY --chown=airflow:0 transform/pyproject.toml transform/uv.lock ./
+# No --no-build (Sonar docker:S8541, reviewed): dbt-core-experimental-parser is
+# published as an sdist only, so uv must build it. Its hash is pinned in
+# transform/uv.lock and --frozen refuses any other file.
 RUN --mount=type=cache,target=/tmp/.cache/uv,uid=50000,gid=0 \
     uv sync --frozen --python /usr/python/bin/python3.12
 COPY --chown=airflow:0 transform/ ./
@@ -95,6 +98,9 @@ WORKDIR /opt/airflow
 # backend is not in the lock): PYTHONPATH below plays the role of the editable
 # install, and keeps config/ and transform/ next to the code that resolves them.
 COPY --chown=airflow:0 pyproject.toml uv.lock README.md ./
+# No --no-build (Sonar docker:S8541, reviewed): pyspark and pyspark-client are
+# published as sdists only, so uv must build them. Their hashes are pinned in
+# uv.lock and --frozen refuses any other file.
 RUN --mount=type=cache,target=/tmp/.cache/uv,uid=50000,gid=0 \
     uv sync --frozen --no-dev --no-install-project
 

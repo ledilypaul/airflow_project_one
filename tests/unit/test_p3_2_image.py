@@ -203,3 +203,15 @@ def test_p3_2_entrypoint_dispatches_spark_and_airflow(tmp_path, args, expected):
     else:
         # The Airflow image's entrypoint, under dumb-init, with the arguments.
         assert out.strip() == " ".join(["airflow", "/entrypoint", *args])
+
+
+def test_p3_2_sonar_uv_sync_without_no_build_is_justified():
+    # Sonar docker:S8541 on PR #30: `uv sync` builds the sdist-only packages of
+    # the locks. Each such sync stays --frozen (hashes of the lock) and says why.
+    dockerfile = _dockerfile()
+    syncs = re.findall(r"((?:#[^\n]*\n)*)RUN [^\n]*\\\n\s*(uv sync [^\n]*)", dockerfile)
+    assert len(syncs) == 2, syncs
+    for comment, command in syncs:
+        assert "--frozen" in command, command
+        assert "--no-build" not in command or "--no-build-package" in command
+        assert "docker:S8541" in comment, command

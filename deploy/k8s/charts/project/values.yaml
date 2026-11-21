@@ -107,5 +107,7 @@ admissionPolicy:
 toolbox:
   enabled: true
   resources:
-    requests: {cpu: 10m, memory: 32Mi}
-    limits: {memory: 128Mi}
+    # ephemeral-storage (Sonar kubernetes:S6870): the toolbox writes to the
+    # shared volume only, never to its own filesystem.
+    requests: {cpu: 10m, memory: 32Mi, ephemeral-storage: 16Mi}
+    limits: {memory: 128Mi, ephemeral-storage: 256Mi}
