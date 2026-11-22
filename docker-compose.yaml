@@ -142,7 +142,7 @@ services:
       - "127.0.0.1:4318:4318"
 
   prometheus:
-    image: prom/prometheus:v3.13.5@sha256:aafa9d694e6a883c02db516d9f6e5b84e14195f49a2a6456a4cca815edda72b9
+    image: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
     container_name: airflow_prometheus
     profiles: ["observability"]
     networks: ["observability"]
