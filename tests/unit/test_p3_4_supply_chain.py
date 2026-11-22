@@ -207,6 +207,14 @@ def test_p3_4_compose_databases_do_not_get_major_bumps():
         assert "version-update:semver-major" in ignored[image]
 
 
+def test_p3_4_prometheus_stays_on_its_lts_line():
+    ignored = _ignored(_update("docker-compose", "/"))
+    assert {"version-update:semver-minor", "version-update:semver-major"} <= ignored[
+        "prom/prometheus"
+    ]
+    assert "prom/prometheus:v3.13." in (PROJECT_ROOT / "docker-compose.yaml").read_text()
+
+
 COMPOSE = PROJECT_ROOT / "docker-compose.yaml"
 PINNED_IMAGE = re.compile(r"[\w./-]+:v?\d+(\.\d+)*@sha256:[0-9a-f]{64}")
 PRECISELY_PINNED_IMAGE = re.compile(r"[\w./-]+:v?\d+(\.\d+)+@sha256:[0-9a-f]{64}")
