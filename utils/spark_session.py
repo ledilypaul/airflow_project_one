@@ -1,9 +1,11 @@
-from pyspark.sql import SparkSession
-import os 
+import os
 
-def get_spark_session(app_name="DataPipelineApp") -> SparkSession:  
+from pyspark.sql import SparkSession
+
+
+def get_spark_session(app_name="DataPipelineApp") -> SparkSession:
     spark_builder = SparkSession.builder.appName(app_name)
-    spark_builder.config("spark.sql.shuffle.partitions","4")
+    spark_builder.config("spark.sql.shuffle.partitions", "4")
     spark_builder.config("spark.sql.ansi.enabled", "false")
 
     if os.getenv("ENV") == "prod":

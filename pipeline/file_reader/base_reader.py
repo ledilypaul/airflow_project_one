@@ -1,46 +1,58 @@
-import os
-import yaml
-from pyspark.sql import SparkSession
-from .reader_factory import ReaderFactory
-from utils.path_utils import normalize_spark_path
+import logging
 from pathlib import Path
 
+from pyspark.sql import DataFrame, SparkSession
+
+from pipeline.config import DEFAULT_CONFIG_ROOT, SourceConfig, SourceRegistry
+from utils.path_utils import normalize_spark_path
+
+from .reader_factory import ReaderFactory
+
+log = logging.getLogger(__name__)
+
+
 class BaseFileReader:
-    def __init__(self, spark: SparkSession,config_path: Path=None):  
+    """Routeur : trouve la config de lecture d'un fichier et délègue au reader
+    de son `source.format`.
+
+    Les configs viennent soit d'un `registry` déjà chargé (le job Spark le
+    charge avant de démarrer Spark, C-2), soit de `config_path`
+    (`<config_path>/sources`, `<config_path>/defaults`, par défaut
+    `DEFAULT_CONFIG_ROOT`), chargé et validé ici une fois : une config
+    invalide fait alors échouer la construction, avant la lecture du moindre
+    fichier.
+    """
+
+    def __init__(
+        self,
+        spark: SparkSession,
+        config_path: Path | None = None,
+        registry: SourceRegistry | None = None,
+    ):
+        if registry is not None and config_path is not None:
+            raise ValueError("passer config_path ou registry, pas les deux")
         self.spark = spark
-        if config_path is not None:
-            self.config_path = config_path
+        if registry is not None:
+            self.config_path = None
+            self.registry = registry
         else:
-            self.base_path = Path(__file__).resolve().parent.parent.parent
-            self.config_path = self.base_path / "config"
+            self.config_path = Path(config_path) if config_path is not None else DEFAULT_CONFIG_ROOT
+            self.registry = SourceRegistry.from_directory(self.config_path)
 
-    def get_config_file(self, file_name: str):
-        file_basename = os.path.basename(file_name).lower()
-        file_extension = file_name.split(".")[-1].lower()
-        # Search for a specific config file
-        for config_file in os.listdir(self.config_path):
-            if config_file.endswith(".yaml") and config_file.split("_")[0] in file_basename:
-                with open(self.config_path / config_file, 'r') as f:
-                    return yaml.safe_load(f)
+    def get_config(self, file_path: str) -> SourceConfig:
+        """Config de lecture du fichier (voir `SourceRegistry.match`).
 
-        # Fallback on basic_reading_config.yaml
-        default_config_path = self.config_path / "basic_reading_config.yaml"
-        with open(default_config_path, 'r') as f:
-            all_defaults = yaml.safe_load(f)
-        # Search for specific section to the extension
-        if file_extension in all_defaults:
-            return all_defaults[file_extension]
+        Raises:
+            NoMatchingConfigError / AmbiguousConfigError (des `ConfigError`).
+        """
+        return self.registry.match(file_path)
 
-        # Sinon fallback sur le format par défaut (ex: 'csv')
-        default_format = all_defaults.get("default_format")
-        if default_format and default_format in all_defaults:
-            return all_defaults[default_format]
-
-        raise ValueError(f"Aucune configuration valide trouvée pour le fichier : {file_name}")
-
-    def read_file(self, file_path: str):
-        file_path = normalize_spark_path(file_path)
-        file_config = self.get_config_file(file_path)
-        extension_file = file_config["source"]["format"]
-        reader_instance = ReaderFactory.get_reader(file_config, extension_file, self.spark)
-        return reader_instance.read(file_path, file_config)
+    def read_file(self, file_path: str, config: SourceConfig | None = None) -> DataFrame:
+        """Lit `file_path` avec `config`, ou avec sa config résolue ici si
+        `config` est absent. Le job Spark résout la config une seule fois
+        et la passe : la même sert à la lecture et à l'écriture (P2-2 / C-8)."""
+        if config is None:
+            config = self.get_config(file_path)
+        log.info("%s: source %r (format %s)", file_path, config.source.name, config.source.format)
+        reader_instance = ReaderFactory.get_reader(config.source.format, self.spark)
+        return reader_instance.read(normalize_spark_path(file_path), config)

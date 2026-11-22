@@ -1,30 +1,181 @@
-version: '3.9'
+# P3-1: hardening of the two services `make db-up` starts (Marquez is separate,
+# see below). Not the full Airflow stack: there is still no Airflow service here.
+# - Host ports bound to 127.0.0.1: neither service is reachable from the network.
+# - Credentials come from the environment, which `docker compose` also reads
+#   from `.env` (the file the project already uses for `DB_*`), so the server
+#   and its clients (utils/db_connection.py, `make airflow-init`) agree. The
+#   fallbacks are for local development only; set real values in `.env`.
+# - Postgres applies POSTGRES_* only when it creates its data directory: with an
+#   existing `postgres-data` volume, the credentials of that first start remain.
 services:
   postgres:
-    image: postgres:17
+    # Pinned by tag (for the reader) and digest (what is pulled): the multi-arch
+    # index digest, checked on 2026-11-21 with `docker buildx imagetools inspect
+    # postgres:17.12` (same pin as the Kubernetes chart). A new major needs a
+    # pg_upgrade of `postgres-data`, so Dependabot never proposes one.
+    image: postgres:17.12@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
     container_name: airflow_postgres
     environment:
-      POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
-      POSTGRES_DB: airflow
+      POSTGRES_USER: ${DB_USER:-airflow}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-airflow}
+      POSTGRES_DB: ${DB_NAME:-airflow}
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5434:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       retries: 5
 
   redis:
-    image: redis:7
+    # Pinned like postgres (index digest, checked on 2026-11-21 with
+    # `docker buildx imagetools inspect redis:7.4.12`, last 7.x tag of Docker Hub).
+    image: redis:7.4.12@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
     container_name: airflow_redis
+    # The password is read from the container environment by the shell, so it
+    # is not written in this file. REDISCLI_AUTH lets redis-cli authenticate
+    # without `-a` (which prints a warning and exposes it in the process list).
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-airflow}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-airflow}
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Without the right password `redis-cli ping` prints NOAUTH and still
+      # exits 0: only PONG means healthy.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       retries: 5
 
+  # P2-5: Marquez, to browse the OpenLineage graph (optional). Profile
+  # `lineage`: `make db-up` / `docker compose up` never start it, `make
+  # lineage-up` does. Then `OPENLINEAGE_URL=http://localhost:5002 make airflow`.
+  # - Published on 127.0.0.1 only (Marquez has no authentication): API 5002,
+  #   web UI 3002, away from the project's 5434, 6379 and 8080. The admin port
+  #   and the database are not published.
+  # - Own network `lineage`: the web UI reaches the API by its service name.
+  # - Images pinned by tag (for the reader) and digest (what is pulled),
+  #   checked on 2026-11-14 with `docker buildx imagetools inspect`.
+  # - The marquez / marquez credentials are imposed by the image's
+  #   development config (marquez.dev.yml): local use only.
+  marquez-db:
+    # PostgreSQL 14: the version Marquez 0.50.0 documents; its Flyway 8.5.13
+    # predates PostgreSQL 17 and was never tested with it.
+    image: postgres:14@sha256:980b7cb415aa0f812f65bdec8f6f599be408d8ed9c83ffcaa12650eac397b264
+    container_name: marquez_db
+    profiles: ["lineage"]
+    networks: ["lineage"]
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    volumes:
+      - marquez-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquez -d marquez"]
+      interval: 5s
+      retries: 10
+
+  marquez-api:
+    image: marquezproject/marquez:0.50.0@sha256:6d8a2c2cdb28a4f6d13f9ca6f8cc055d8312c4dee204ebeb848efdd76e6ab30e
+    container_name: marquez_api
+    profiles: ["lineage"]
+    networks: ["lineage"]
+    environment:
+      MARQUEZ_PORT: 5000
+      MARQUEZ_ADMIN_PORT: 5001
+      POSTGRES_HOST: marquez-db
+      POSTGRES_PORT: 5432
+      SEARCH_ENABLED: "false"
+    ports:
+      - "127.0.0.1:5002:5000"
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.50.0@sha256:e8d53e10ab141cde1b121b01ff47776a58b407813fb6e10f490842d20c184346
+    container_name: marquez_web
+    profiles: ["lineage"]
+    networks: ["lineage"]
+    environment:
+      MARQUEZ_HOST: marquez-api
+      MARQUEZ_PORT: 5000
+      WEB_PORT: 3000
+      REACT_APP_ADVANCED_SEARCH: "false"
+    ports:
+      - "127.0.0.1:3002:3000"
+    depends_on:
+      - marquez-api
+
+  # P3-3: metrics of Airflow (optional). Profile `observability`: `make db-up` /
+  # `docker compose up` never start it, `make observability-up` does. Then
+  # `OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 make airflow`.
+  # - Airflow (OpenTelemetry) -> otel-collector (OTLP/HTTP) -> prometheus
+  #   (scrape, alert rules of deploy/observability/rules/).
+  # - Published on 127.0.0.1 only (neither service has authentication): OTLP
+  #   4318 (the standard port), Prometheus UI 9092. The collector's Prometheus
+  #   exporter (8889) is reached by service name, never published.
+  # - Own network `observability`.
+  # - Images pinned by tag (for the reader) and digest (what is pulled), checked
+  #   on 2026-11-17 with `docker buildx imagetools inspect`. Prometheus 3.13 is
+  #   the LTS line.
+  # - The configuration is mounted read-only from deploy/observability/.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.165.0@sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+    container_name: airflow_otel_collector
+    profiles: ["observability"]
+    networks: ["observability"]
+    # No healthcheck: the image has no shell nor curl.
+    # Hardening (SEC-3): nothing to write (everything is in memory), no
+    # capability (it listens on 4318), no privilege gain, memory capped (its own
+    # limiter, 256 MiB, stays below).
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    volumes:
+      - ./deploy/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:4318:4318"
+
+  prometheus:
+    image: prom/prometheus:v3.13.5@sha256:aafa9d694e6a883c02db516d9f6e5b84e14195f49a2a6456a4cca815edda72b9
+    container_name: airflow_prometheus
+    profiles: ["observability"]
+    networks: ["observability"]
+    # Hardening: no capability, no privilege gain, data capped in size as well as
+    # in time (7 days or 1 GB, whichever comes first). The UI is the only origin
+    # allowed to call the API from a browser: Prometheus' default is `.*`, i.e.
+    # any page the developer opens could query 127.0.0.1:9092 (SEC-1).
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=1GB
+      - '--web.cors.origin=https?://(127\.0\.0\.1|localhost):9092'
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9092:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      retries: 5
+    depends_on:
+      - otel-collector
+
+networks:
+  lineage:
+  observability:
+
 volumes:
   postgres-data:
+  marquez-data:
+  prometheus-data:

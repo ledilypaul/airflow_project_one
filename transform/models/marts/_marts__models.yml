@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: mart_movies__by_release_year_language
+    description: >-
+      Films de l'état courant (stg_movies__current) par année de sortie et
+      langue originale. Une ligne par (release_year, original_language), nuls
+      compris (test singulier assert_mart_movies__by_release_year_language_grain).
+    columns:
+      - {name: movie_rows, data_tests: [not_null]}
+      - {name: distinct_movies, data_tests: [not_null]}

@@ -3,3 +3,35 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.venv/
+logs/*
+
+.env
+.env.*
+airflow.cfg
+airflow.db
+# SQLite side files of airflow.db (WAL/shared-memory while Airflow runs, rollback journal)
+airflow.db-*
+logs/
+*.generated
+.venv/
+simple_auth_manager_passwords.json.generated
+
+# Coverage (pytest-cov)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Local data files (test inputs for the pipeline): never commit them
+data/
+
+# Local lake (P2-2): Parquet written by the Spark job when LAKE_ROOT is unset
+lake/
+
+# OpenLineage (P2-5): events of the dev `file` transport and the downloaded
+# openlineage-spark jar (`make lineage-jar`)
+lineage/
+
+# Kubernetes (P3-2): the official Airflow Helm chart downloaded by `make k8s-chart`
+.k8s/

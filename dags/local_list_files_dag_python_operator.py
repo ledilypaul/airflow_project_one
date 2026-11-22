@@ -59,22 +59,32 @@ BONNES PRATIQUES APPLIQUÉES ICI
    À remplacer par un cron ("0 * * * *") si exécution périodique souhaitée.
 """
 
+import json
+import logging
 import os
-import sys
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import DAG, Asset
+
+# Même nom dans chaque fichier DAG : Airflow associe les Assets par nom/URI, pas
+# par identité d'objet. Pas d'import depuis un module partagé `dags.*`, qui ne
+# se résout qu'avec la racine du projet sur sys.path (C-1).
+FILE_LIST_ASSET = Asset(name="file_list")
 
 # --- Configuration des chemins (constantes top-level OK : pas d'I/O) ---
+# airflow-project-one est installé en mode éditable (`uv sync`), donc
+# `pipeline.*` / `utils.*` / `storage.*` sont importables sans manipuler
+# sys.path (voir CLAUDE.md, M5).
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.append(str(PROJECT_ROOT))
 
 CONFIG_PATH = str(PROJECT_ROOT / "config" / "extractor_config.yaml")
 
 
 # --- Callables des tasks ---
+
 
 def list_files_task(**kwargs):
     """
@@ -96,22 +106,47 @@ def insert_files_to_db(**kwargs):
     en base de données. Récupère la liste via XCom.
     """
     # Import local : même raison que ci-dessus
-    from utils.functions_utils import insert_into_file_list
+    from airflow.providers.postgres.hooks.postgres import PostgresHook
+    from airflow.sdk.exceptions import AirflowSkipException
 
-    ti = kwargs['ti']
-    file_list = ti.xcom_pull(task_ids='list_files_task')
+    from utils.file_list_lineage import report_file_list_lineage
+    from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
 
+    ti = kwargs["ti"]
+    file_list = ti.xcom_pull(task_ids="list_files_task")
+
+    # « Rien à traiter » n'est pas une erreur, mais ne doit pas non plus
+    # passer pour un succès silencieux : la task apparaît skipped (M2 / P1-6).
     if not file_list:
-        print("Aucun fichier à insérer.")
-        return 0
+        raise AirflowSkipException("No files found in source directories, nothing to insert")
 
+    # Vrai run_id du DagRun courant : clé de contexte de premier niveau,
+    # documentée pour un PythonOperator classique (équivalente à
+    # dag_run.run_id, cf. templates-ref Airflow 3.3). Sans elle, toutes les
+    # lignes insérées par ce DAG partagent dag_run_id="" (défaut de
+    # insert_into_file_list), ce qui, combiné à l'index
+    # UNIQUE(file_path, dag_run_id) + ON CONFLICT DO NOTHING (P1-2),
+    # empêche silencieusement la ré-insertion d'un fichier déjà vu par un
+    # run classique antérieur.
+    run_id = kwargs["run_id"]
+
+    # Un seul engine construit pour toute la task, réutilisé pour chaque
+    # fichier ci-dessous, plutôt qu'un PostgresHook/engine par ligne (M3).
+    hook = PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+    engine = hook.get_sqlalchemy_engine()
+
+    # Fichiers traités sans erreur : insérés, ou déjà présents pour ce run
+    # (retry : ON CONFLICT DO NOTHING n'insère rien mais ne lève pas).
+    # Volontairement pas un rowcount SQL.
     inserted = 0
+    recorded = []
     for filepath in file_list:
         try:
             filename = os.path.basename(filepath)
             mod_time = datetime.fromtimestamp(os.path.getmtime(filepath))
-            insert_into_file_list([filename, filepath, mod_time])
+            insert_into_file_list([filename, filepath, mod_time], dag_run_id=run_id, engine=engine)
             inserted += 1
+            recorded.append(filepath)
         except FileNotFoundError:
             # Fichier supprimé entre le list et l'insert : on skip et on log
             print(f"Fichier introuvable, skip: {filepath}")
@@ -120,39 +155,96 @@ def insert_files_to_db(**kwargs):
             print(f"Erreur insertion {filepath}: {e}")
             raise
 
-    print(f"{inserted}/{len(file_list)} fichiers insérés.")
+    if inserted == 0:
+        # Tous les fichiers listés ont disparu avant l'insertion : aucune ligne
+        # pour ce run, donc pas d'événement d'Asset (C-3).
+        raise AirflowSkipException(
+            f"0/{len(file_list)} listed files could be recorded (all vanished), nothing to process"
+        )
+    # P2-5 : lignage OpenLineage (fichiers enregistrés -> file_list), que le
+    # provider ne voit pas à travers l'engine SQLAlchemy. Ne lève jamais.
+    report_file_list_lineage(hook, role="output", source_files=recorded)
+    print(f"{inserted}/{len(file_list)} fichiers enregistrés.")
     return inserted
 
 
 # --- Définition du DAG ---
 
+
+# P3-3 : rapport d'échec (une ligne de log structurée `airflow_failure`, voir
+# utils/failure_alert.py). Importé dans le callback, pas à l'analyse du DAG (le
+# DAG processor n'a pas la racine du projet sur sys.path). Ne lève jamais. Si
+# `utils` est introuvable (image de worker sans le projet), une ligne minimale
+# (dag_id, run_id, reason) est journalisée : un échec n'est jamais silencieux.
+# Les quatre fichiers de DAG portent ces mêmes lignes : un module partagé serait
+# lui-même du code du projet.
+def _report_failure(context, scope: str):
+    try:
+        from utils import failure_alert
+    except ImportError:
+        try:
+            get = context.get if isinstance(context, Mapping) else {}.get
+            ti, dag = get("ti"), get("dag")
+            record = {
+                "scope": scope,
+                "dag_id": getattr(ti, "dag_id", None) or getattr(dag, "dag_id", None),
+                "run_id": get("run_id") or getattr(ti, "run_id", None),
+                "reason": get("reason"),
+                "task_id": getattr(ti, "task_id", None),
+            }
+            line = json.dumps(
+                {k: v for k, v in record.items() if v is not None}, sort_keys=True, default=str
+            )
+            logging.getLogger(__name__).error("airflow_failure %s", line)
+        except Exception:
+            pass
+        return
+    report = (
+        failure_alert.log_task_failure if scope == "task" else failure_alert.log_dag_run_failure
+    )
+    report(context)
+
+
+def on_task_failure(context):
+    _report_failure(context, "task")
+
+
+def on_dag_run_failure(context):
+    _report_failure(context, "dag_run")
+
+
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2024, 12, 18),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,  # 1 retry par défaut : absorbe les glitches transitoires
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": datetime(2024, 12, 18),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,  # 1 retry par défaut : absorbe les glitches transitoires
+    "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": on_task_failure,
 }
 
 with DAG(
-    dag_id='list_files_dag',
+    dag_id="list_files_dag_classic",
     default_args=default_args,
-    description='List files in the source directory and persist metadata',
+    description="List files in the source directory and persist metadata",
     schedule=None,  # Manuel uniquement. Mettre un cron pour exécution périodique.
     catchup=False,
-    tags=['extraction', 'file-listing', 'python-operator'],
+    on_failure_callback=on_dag_run_failure,
+    tags=["extraction", "file-listing", "python-operator"],
 ) as dag:
-
     list_files = PythonOperator(
-        task_id='list_files_task',
+        task_id="list_files_task",
         python_callable=list_files_task,
     )
 
     insert_files = PythonOperator(
-        task_id='insert_files_to_db',
+        task_id="insert_files_to_db",
         python_callable=insert_files_to_db,
+        # Émet l'Asset `file_list` en cas de succès uniquement, ce qui planifie
+        # read_file_dag (P1-4). Une task skipped (liste vide, P1-6, ou aucun
+        # fichier enregistré, C-3) n'émet rien : événement => au moins 1 ligne.
+        outlets=[FILE_LIST_ASSET],
         # Note : pas besoin de provide_context=True en Airflow 2.x,
         # le contexte (ti, dag_run, etc.) est passé automatiquement via **kwargs.
     )

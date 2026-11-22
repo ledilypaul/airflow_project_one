@@ -1,0 +1,201 @@
+# Values of the official Apache Airflow Helm chart (P3-2), version pinned in the
+# Makefile (AIRFLOW_CHART_VERSION, SHA-256 checked). Dev deployment on kind:
+#   make kind-up image kind-load k8s-install
+# `make k8s-install` sets images.airflow.repository/tag (IMAGE_REPOSITORY,
+# IMAGE_TAG). No secret here: every credential is in a Secret created by
+# scripts/k8s_secrets.py before the install (never in this file, never in git).
+# See docs/architecture/2026-11-19-p3-2-kubernetes.md.
+
+# The chart decides some templates from this version: it must be the image's.
+airflowVersion: "3.3.2"
+defaultAirflowRepository: airflow-project-one
+defaultAirflowTag: dev
+images:
+  airflow:
+    repository: airflow-project-one
+    tag: dev
+    pullPolicy: IfNotPresent
+  pod_template:
+    pullPolicy: IfNotPresent
+  # Migrations run with the project image too (its Airflow is the one of the lock).
+  useDefaultImageForMigration: false
+
+# Each task runs in its own pod, from the chart's pod template (workers.kubernetes).
+executor: KubernetesExecutor
+# SEC-2: the chart's pod-launcher Role (pods with pods/exec, bound to the
+# scheduler AND to the workers, for the KubernetesPodOperator) is not created.
+# The project chart grants the scheduler what the KubernetesExecutor needs (Role
+# `airflow-scheduler`) and the workers what spark-submit needs (Role
+# `spark-submit`). No KubernetesPodOperator in the DAGs.
+allowPodLaunching: false
+allowJobLaunching: false
+
+# --- Databases: the project chart's Postgres (dev), not the chart's subchart -----
+# (its bitnamilegacy/postgresql image is not maintained any more).
+postgresql:
+  enabled: false
+pgbouncer:
+  enabled: false
+data:
+  # Secret `airflow-metadata`, key `connection` (scripts/k8s_secrets.py).
+  metadataSecretName: airflow-metadata
+
+# Generated once by scripts/k8s_secrets.py: stable across `helm upgrade` (the
+# chart would generate new ones otherwise, which invalidates JWTs and the
+# encrypted Connection fields).
+fernetKeySecretName: airflow-fernet-key
+apiSecretKeySecretName: airflow-api-secret-key
+jwtSecretName: airflow-jwt-secret
+
+# Not used with the KubernetesExecutor.
+redis:
+  enabled: false
+statsd:
+  enabled: false
+# FAB only (the chart's default auth manager): this deployment keeps Airflow 3's
+# Simple Auth Manager, as `make airflow` does.
+createUserJob:
+  enabled: false
+# `make k8s-install` runs `helm --wait`: with the default post-install hook, Helm
+# waits for the Airflow pods, which wait for the migrations, which the hook would
+# only start afterwards. As a plain Job, the migration starts with the release.
+migrateDatabaseJob:
+  useHelmHooks: false
+
+config:
+  core:
+    auth_manager: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    simple_auth_manager_users: admin:admin
+    # SEC-3 / C-9: the password comes from the Secret airflow-ui-passwords
+    # (scripts/k8s_secrets.py), copied at start into this emptyDir: the
+    # api-server neither generates nor logs one, and it survives restarts.
+    # `make k8s-ui-password` prints it.
+    simple_auth_manager_passwords_file: /opt/airflow/simple-auth/passwords.json
+    load_examples: "False"
+  kubernetes_executor:
+    # Failed worker pods are kept for inspection (`kubectl logs`), successful
+    # ones deleted (the task log is on the logs volume).
+    delete_worker_pods: "True"
+    delete_worker_pods_on_failure: "False"
+
+# Same paths in the worker pods (dbt, listing) and in the Spark driver (its
+# LAKE_ROOT is set by spark-defaults.conf of the project chart). The Dockerfile
+# parses the dbt manifest with the same two values.
+env:
+  - name: LAKE_ROOT
+    value: /opt/airflow/shared/lake
+  - name: DBT_DUCKDB_PATH
+    value: /opt/airflow/shared/warehouse.duckdb
+  - name: DBT_SEND_ANONYMOUS_USAGE_STATS
+    value: "False"
+  - name: AIRFLOW__COSMOS__ENABLE_TELEMETRY
+    value: "False"
+
+# Task logs on the project chart's PVC (ReadWriteOnce, one node): the UI reads
+# them after the worker pod is deleted.
+logs:
+  persistence:
+    enabled: true
+    existingClaim: airflow-logs
+
+# Airflow pods: non-root (uid 50000 of the official image), no privilege.
+securityContexts:
+  pod:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+
+workers:
+  kubernetes:
+    serviceAccount:
+      create: true
+      # Bound to the Role `spark-submit` of the project chart.
+      name: airflow-worker
+    env:
+      # spark-submit reads $SPARK_CONF_DIR/spark-defaults.conf (project chart).
+      - name: SPARK_CONF_DIR
+        value: /opt/spark-conf
+      # SEC-5: Connections spark_default and file_list_db, as AIRFLOW_CONN_*
+      # variables from the Secret `airflow-connections` (scripts/k8s_secrets.py),
+      # in the worker pods only: the scheduler, api-server, dag-processor and
+      # triggerer never use them. spark_default: master
+      # k8s://https://kubernetes.default.svc:443, deploy-mode cluster, this namespace.
+      - name: AIRFLOW_CONN_FILE_LIST_DB
+        valueFrom:
+          secretKeyRef:
+            name: airflow-connections
+            key: AIRFLOW_CONN_FILE_LIST_DB
+      - name: AIRFLOW_CONN_SPARK_DEFAULT
+        valueFrom:
+          secretKeyRef:
+            name: airflow-connections
+            key: AIRFLOW_CONN_SPARK_DEFAULT
+    extraVolumes:
+      - name: shared
+        persistentVolumeClaim:
+          claimName: project-shared
+      - name: spark-conf
+        configMap:
+          name: spark-conf
+    extraVolumeMounts:
+      - name: shared
+        mountPath: /opt/airflow/shared
+      - name: spark-conf
+        mountPath: /opt/spark-conf
+        readOnly: true
+    resources:
+      requests: {cpu: 100m, memory: 512Mi}
+      limits: {memory: 2Gi}
+
+scheduler:
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {memory: 1Gi}
+apiServer:
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {memory: 1536Mi}
+  # SEC-3 / C-9: passwords file of the Simple Auth Manager. It opens the file
+  # for writing (a+), so a Secret volume (read-only) cannot be used directly:
+  # an init container copies it into an emptyDir.
+  extraInitContainers:
+    - name: ui-passwords
+      image: '{{ .Values.images.airflow.repository }}:{{ .Values.images.airflow.tag }}'
+      imagePullPolicy: IfNotPresent
+      command: ["cp", "/opt/airflow/simple-auth-secret/passwords.json", "/opt/airflow/simple-auth/passwords.json"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests: {cpu: 10m, memory: 16Mi}
+        limits: {memory: 64Mi}
+      volumeMounts:
+        - name: ui-passwords-secret
+          mountPath: /opt/airflow/simple-auth-secret
+          readOnly: true
+        - name: ui-passwords
+          mountPath: /opt/airflow/simple-auth
+  extraVolumes:
+    - name: ui-passwords-secret
+      secret:
+        secretName: airflow-ui-passwords
+    - name: ui-passwords
+      emptyDir: {}
+  extraVolumeMounts:
+    - name: ui-passwords
+      mountPath: /opt/airflow/simple-auth
+dagProcessor:
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {memory: 1Gi}
+# Required by transform_dag: its Cosmos watcher sensors are deferrable.
+triggerer:
+  enabled: true
+  resources:
+    requests: {cpu: 50m, memory: 256Mi}
+    limits: {memory: 1Gi}

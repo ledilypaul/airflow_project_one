@@ -1,28 +1,25 @@
 """
 Unit tests for utils/functions_utils.py.
-Fixes the original test which mocked psycopg2 cursors instead of SQLAlchemy.
 """
-import sys
-import pytest
-from unittest.mock import patch, MagicMock
 
-# psycopg2 is not installed in this venv. Stub it with a real Exception subclass
-# so that `except psycopg2.DatabaseError` in functions_utils.py works correctly.
-_psycopg2_stub = MagicMock()
-_psycopg2_stub.DatabaseError = type("DatabaseError", (Exception,), {})
-sys.modules.setdefault("psycopg2", _psycopg2_stub)
+import sys
+from unittest.mock import MagicMock, patch
+
+import pytest
 from sqlalchemy.exc import SQLAlchemyError
+
+# Real location of PostgresHook, imported lazily by insert_into_file_list().
+POSTGRES_HOOK_PATH = "airflow.providers.postgres.hooks.postgres.PostgresHook"
 
 
 def _make_engine_mock(fetchall_return=None):
-    """Build a mock SQLAlchemy engine with a usable context-manager connection."""
+    """Build a mock SQLAlchemy engine with a usable engine.begin() context manager."""
     mock_engine = MagicMock()
     mock_conn = MagicMock()
-    # Support: with engine.connect() as conn:
-    mock_engine.connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
-    mock_engine.connect.return_value.__exit__ = MagicMock(return_value=False)
+    mock_engine.begin.return_value.__enter__ = MagicMock(return_value=mock_conn)
+    mock_engine.begin.return_value.__exit__ = MagicMock(return_value=False)
     if fetchall_return is not None:
-        mock_conn.execute.return_value.fetchall.return_value = fetchall_return
+        mock_conn.execute.return_value.mappings.return_value.fetchall.return_value = fetchall_return
     return mock_engine, mock_conn
 
 
@@ -30,69 +27,146 @@ def _make_engine_mock(fetchall_return=None):
 # insert_into_file_list
 # ---------------------------------------------------------------------------
 
+
+def _patch_postgres_hook(mock_engine):
+    """Patch PostgresHook at its real location so that building it (when no
+    explicit `engine` is passed to insert_into_file_list) returns mock_engine
+    via .get_sqlalchemy_engine(), without touching real Airflow Connections.
+
+    utils.functions_utils imports PostgresHook lazily, inside the call (the
+    Spark job imports that module and must never import Airflow): patching
+    `utils.functions_utils.PostgresHook` would not exist anymore."""
+    mock_hook_cls = MagicMock()
+    mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
+    return patch(POSTGRES_HOOK_PATH, mock_hook_cls)
+
+
 def test_insert_calls_execute():
-    """insert_into_file_list() executes an INSERT via the SQLAlchemy connection."""
     mock_engine, mock_conn = _make_engine_mock()
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
+
         insert_into_file_list(["orders.csv", "/data/orders.csv", "2024-01-01"])
 
     mock_conn.execute.assert_called_once()
-    call_args = mock_conn.execute.call_args
-    query = call_args[0][0]
+    query = str(mock_conn.execute.call_args[0][0])
     assert "INSERT INTO file_list" in query
 
 
 def test_insert_passes_correct_values():
-    """The three data values are forwarded correctly to execute()."""
     mock_engine, mock_conn = _make_engine_mock()
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
+
         insert_into_file_list(["file.csv", "/path/file.csv", "2024-06-15"])
 
-    params = mock_conn.execute.call_args[0][1]  # second positional arg = tuple of values
-    assert params[0] == "file.csv"
-    assert params[1] == "/path/file.csv"
+    params = mock_conn.execute.call_args[0][1]
+    assert params["file_name"] == "file.csv"
+    assert params["file_path"] == "/path/file.csv"
+    assert params["status"] == "pending"
 
 
-def test_insert_db_error_propagates_uncaught():
-    """
-    BUG documentation: the except clause catches psycopg2.DatabaseError,
-    but SQLAlchemy raises sqlalchemy.exc.SQLAlchemyError.
-    Result: DB errors are NOT caught and propagate as the original exception.
-    Fix: replace `except psycopg2.DatabaseError` with `except SQLAlchemyError`.
-    """
+def test_insert_sets_dag_run_id():
     mock_engine, mock_conn = _make_engine_mock()
-    mock_conn.execute.side_effect = Exception("connection refused")
 
-    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+    with _patch_postgres_hook(mock_engine):
         from utils.functions_utils import insert_into_file_list
-        # The original exception propagates because except psycopg2.DatabaseError
-        # never matches a generic Exception raised by SQLAlchemy.
-        with pytest.raises(Exception, match="connection refused"):
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"], dag_run_id="run_20240101")
+
+    params = mock_conn.execute.call_args[0][1]
+    assert params["dag_run_id"] == "run_20240101"
+
+
+def test_insert_dag_run_id_defaults_to_empty_string():
+    mock_engine, mock_conn = _make_engine_mock()
+
+    with _patch_postgres_hook(mock_engine):
+        from utils.functions_utils import insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+    params = mock_conn.execute.call_args[0][1]
+    assert params["dag_run_id"] == ""
+
+
+def test_insert_sqlalchemy_error_is_raised():
+    mock_engine, mock_conn = _make_engine_mock()
+    mock_conn.execute.side_effect = SQLAlchemyError("connection refused")
+
+    with _patch_postgres_hook(mock_engine):
+        from utils.functions_utils import insert_into_file_list
+
+        with pytest.raises(SQLAlchemyError):
             insert_into_file_list(["file.csv", "/path/file.csv", "2024-01-01"])
+
+
+# ---------------------------------------------------------------------------
+# P1-2 — insert_into_file_list: PostgresHook, reused engine, ON CONFLICT
+# ---------------------------------------------------------------------------
+
+
+def test_p1_2_insert_uses_postgres_hook_with_correct_conn_id():
+    mock_engine, _ = _make_engine_mock()
+    mock_hook_cls = MagicMock()
+    mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
+
+    with patch(POSTGRES_HOOK_PATH, mock_hook_cls):
+        from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+    mock_hook_cls.assert_called_once_with(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+    assert FILE_LIST_POSTGRES_CONN_ID == "file_list_db"
+
+
+def test_p1_2_insert_reuses_passed_engine_without_building_hook():
+    mock_engine, mock_conn = _make_engine_mock()
+    mock_hook_cls = MagicMock()
+
+    with patch(POSTGRES_HOOK_PATH, mock_hook_cls):
+        from utils.functions_utils import insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"], engine=mock_engine)
+
+    mock_hook_cls.assert_not_called()
+    mock_conn.execute.assert_called_once()
+
+
+def test_p1_2_insert_query_has_on_conflict_do_nothing():
+    mock_engine, mock_conn = _make_engine_mock()
+
+    with _patch_postgres_hook(mock_engine):
+        from utils.functions_utils import insert_into_file_list
+
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+    query = str(mock_conn.execute.call_args[0][0])
+    assert "ON CONFLICT" in query
+    assert "DO NOTHING" in query
+    assert "ON CONFLICT (file_path, dag_run_id)" in query
 
 
 # ---------------------------------------------------------------------------
 # list_file_from_db
 # ---------------------------------------------------------------------------
 
+
 def test_list_file_returns_rows():
-    """list_file_from_db() returns the rows fetched from DB."""
-    rows = [(1, "a.csv", "/data/a.csv", None, None, None, None, None)]
+    rows = [{"id": 1, "file_name": "a.csv", "file_path": "/data/a.csv"}]
     mock_engine, mock_conn = _make_engine_mock(fetchall_return=rows)
 
     with patch("utils.functions_utils.db_connection", return_value=mock_engine):
         from utils.functions_utils import list_file_from_db
-        result = list_file_from_db()
+
+        result = list_file_from_db("run_123")
 
     assert result == rows
-    mock_conn.execute.assert_called_once()
-    query = mock_conn.execute.call_args[0][0]
+    query = str(mock_conn.execute.call_args[0][0])
     assert "SELECT" in query
-    assert "CURRENT_DATE" in query
+    assert "file_name" in query
 
 
 def test_list_file_returns_empty_list():
@@ -100,17 +174,195 @@ def test_list_file_returns_empty_list():
 
     with patch("utils.functions_utils.db_connection", return_value=mock_engine):
         from utils.functions_utils import list_file_from_db
-        result = list_file_from_db()
+
+        result = list_file_from_db("run_123")
 
     assert result == []
 
 
-def test_list_file_db_error_propagates_uncaught():
-    """Same bug as insert: SQLAlchemy errors bypass the except clause."""
+def test_list_file_sqlalchemy_error_is_raised():
     mock_engine, mock_conn = _make_engine_mock()
-    mock_conn.execute.side_effect = Exception("timeout")
+    mock_conn.execute.side_effect = SQLAlchemyError("timeout")
 
     with patch("utils.functions_utils.db_connection", return_value=mock_engine):
         from utils.functions_utils import list_file_from_db
-        with pytest.raises(Exception, match="timeout"):
-            list_file_from_db()
+
+        with pytest.raises(SQLAlchemyError):
+            list_file_from_db("run_123")
+
+
+# ---------------------------------------------------------------------------
+# P1-3 — list_file_from_db filters by dag_run_id, not by date/status
+# ---------------------------------------------------------------------------
+
+
+def test_p1_3_list_file_from_db_filters_by_run_id():
+    rows = [{"id": 1, "file_name": "a.csv", "file_path": "/data/a.csv"}]
+    mock_engine, mock_conn = _make_engine_mock(fetchall_return=rows)
+
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        from utils.functions_utils import list_file_from_db
+
+        list_file_from_db("run_123")
+
+    query = str(mock_conn.execute.call_args[0][0])
+    assert "dag_run_id" in query
+    assert "CURRENT_DATE" not in query
+    params = mock_conn.execute.call_args[0][1]
+    assert params["run_id"] == "run_123"
+
+
+def test_p1_3_list_file_from_db_includes_processed_and_failed():
+    """The query must NOT filter on status: a 'Clear' that reruns the same
+    dag_run_id must pick up files already marked processed/failed so they
+    get reprocessed (failed files must never be stuck forever)."""
+    rows = [{"id": 1, "file_name": "a.csv", "file_path": "/data/a.csv"}]
+    mock_engine, mock_conn = _make_engine_mock(fetchall_return=rows)
+
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        from utils.functions_utils import list_file_from_db
+
+        list_file_from_db("run_123")
+
+    query = str(mock_conn.execute.call_args[0][0])
+    assert "WHERE status" not in query
+    assert "status =" not in query
+
+
+# ---------------------------------------------------------------------------
+# update_file_status
+# ---------------------------------------------------------------------------
+
+
+def test_p1_3_update_file_status_marks_processed():
+    mock_engine, mock_conn = _make_engine_mock()
+
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        from utils.functions_utils import update_file_status
+
+        update_file_status(1, "processed")
+
+    query = str(mock_conn.execute.call_args[0][0])
+    assert "UPDATE file_list" in query
+    params = mock_conn.execute.call_args[0][1]
+    assert params["id"] == 1
+    assert params["status"] == "processed"
+    assert params["error_message"] is None
+
+
+def test_p1_3_update_file_status_marks_failed_with_message():
+    mock_engine, mock_conn = _make_engine_mock()
+
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        from utils.functions_utils import update_file_status
+
+        update_file_status(2, "failed", error_message="boom")
+
+    params = mock_conn.execute.call_args[0][1]
+    assert params["id"] == 2
+    assert params["status"] == "failed"
+    assert params["error_message"] == "boom"
+
+
+def test_p1_3_update_file_status_never_touches_dag_run_id():
+    mock_engine, mock_conn = _make_engine_mock()
+
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        from utils.functions_utils import update_file_status
+
+        update_file_status(1, "processed")
+
+    query = str(mock_conn.execute.call_args[0][0])
+    params = mock_conn.execute.call_args[0][1]
+    assert "dag_run_id" not in query
+    assert "dag_run_id" not in params
+
+
+def test_p1_3_update_file_status_sqlalchemy_error_is_raised():
+    mock_engine, mock_conn = _make_engine_mock()
+    mock_conn.execute.side_effect = SQLAlchemyError("connection refused")
+
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        from utils.functions_utils import update_file_status
+
+        with pytest.raises(SQLAlchemyError):
+            update_file_status(1, "failed", error_message="boom")
+
+
+def test_insert_without_engine_and_without_postgres_provider_raises_clear_error():
+    """Spark-only environment (`uv sync --no-group airflow`): the provider is
+    missing, so the default (engine=None) path must fail with an explicit
+    message instead of a bare ImportError."""
+    from utils.functions_utils import insert_into_file_list
+
+    # A None entry in sys.modules makes `import` raise ImportError.
+    with (
+        patch.dict(sys.modules, {"airflow.providers.postgres.hooks.postgres": None}),
+        pytest.raises(RuntimeError, match="apache-airflow-providers-postgres"),
+    ):
+        insert_into_file_list(["f.csv", "/f.csv", "2024-01-01"])
+
+
+# ---------------------------------------------------------------------------
+# P2-4 / C-2 — count_processed_files: what publish_lake_staging decides on
+# ---------------------------------------------------------------------------
+
+
+def _file_list_sqlite(tmp_path, rows):
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'file_list.db'}")
+    with engine.begin() as conn:
+        conn.execute(text("CREATE TABLE file_list (id INTEGER, dag_run_id TEXT, status TEXT)"))
+        for i, (run_id, status) in enumerate(rows):
+            conn.execute(
+                text("INSERT INTO file_list VALUES (:id, :run_id, :status)"),
+                {"id": i, "run_id": run_id, "status": status},
+            )
+    return engine
+
+
+def test_p2_4_c2_count_processed_files_counts_processed_rows_of_the_run_ids(tmp_path):
+    from utils.functions_utils import count_processed_files
+
+    engine = _file_list_sqlite(
+        tmp_path,
+        [
+            ("run_a", "processed"),
+            ("run_a", "failed"),
+            ("run_b", "processed"),
+            ("run_b", "processed"),
+            ("run_c", "processed"),  # not asked for
+            ("run_a'; DROP TABLE file_list; --", "processed"),
+        ],
+    )
+
+    assert count_processed_files(["run_a", "run_b", "run_a"], engine=engine) == 3
+    assert count_processed_files(["run_a"], engine=engine) == 1
+    assert count_processed_files(["run_missing"], engine=engine) == 0
+    # Bound parameters, never string formatting.
+    assert count_processed_files(["run_a'; DROP TABLE file_list; --"], engine=engine) == 1
+    assert count_processed_files(["run_c"], engine=engine) == 1
+
+
+def test_p2_4_c2_count_processed_files_without_run_id_does_not_query():
+    from utils.functions_utils import count_processed_files
+
+    engine = MagicMock()
+    assert count_processed_files([], engine=engine) == 0
+    engine.connect.assert_not_called()
+
+
+def test_p2_4_c2_count_processed_files_uses_the_file_list_connection():
+    mock_engine = MagicMock()
+    mock_conn = mock_engine.connect.return_value.__enter__.return_value
+    mock_conn.execute.return_value.scalar_one.return_value = 2
+    mock_hook_cls = MagicMock()
+    mock_hook_cls.return_value.get_sqlalchemy_engine.return_value = mock_engine
+
+    with patch(POSTGRES_HOOK_PATH, mock_hook_cls):
+        from utils.functions_utils import FILE_LIST_POSTGRES_CONN_ID, count_processed_files
+
+        assert count_processed_files(["run_a"]) == 2
+
+    mock_hook_cls.assert_called_once_with(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)

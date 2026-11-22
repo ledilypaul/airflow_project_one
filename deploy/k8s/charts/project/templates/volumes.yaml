@@ -1,0 +1,25 @@
+{{- /*
+Shared volume (source files, lake, DuckDB warehouse) and Airflow logs volume.
+`helm.sh/resource-policy: keep`: `helm uninstall` (make k8s-uninstall) keeps the
+data, as `make db-down` keeps the compose volume; `make kind-down` removes it.
+*/ -}}
+{{- range $volume := list .Values.shared .Values.logs }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $volume.claimName }}
+  labels:
+    {{- include "project.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml $volume.accessModes | nindent 4 }}
+  {{- if $volume.storageClassName }}
+  storageClassName: {{ $volume.storageClassName }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $volume.storage }}
+{{- end }}

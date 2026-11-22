@@ -1,0 +1,27 @@
+# Projet dbt de la couche transformation (P2-4), voir README.md.
+name: lake_transform
+version: "0.1.0"
+config-version: 2
+profile: lake_transform
+require-dbt-version: [">=1.12.0", "<1.13.0"]
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+# Pas `tests/` : évite toute confusion avec la suite pytest du dépôt.
+test-paths: ["data_tests"]
+target-path: target
+clean-targets: ["target", "dbt_packages"]
+
+flags:
+  send_anonymous_usage_stats: false
+
+# Vérifie LAKE_ROOT et DBT_DUCKDB_PATH avant tout modèle (macros/lake.sql) :
+# s'applique à `make dbt-build` comme aux tâches Cosmos (repli compris).
+on-run-start:
+  - "{{ check_lake_environment() }}"
+
+models:
+  lake_transform:
+    # Tables, vues exclues : l'entrepôt reflète l'état du lake au dernier
+    # `dbt build`, pas au moment de la requête.
+    +materialized: table

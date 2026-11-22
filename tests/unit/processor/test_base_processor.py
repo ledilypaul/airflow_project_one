@@ -2,22 +2,11 @@
 Unit tests for pipeline/processor/base_processor.py.
 Requires a Spark session (local mode).
 """
+
 import pytest
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from pyspark.sql.types import IntegerType, StringType
 
 from pipeline.processor.base_processor import BaseProcessor
-
-
-@pytest.fixture(scope="module")
-def spark():
-    return (
-        SparkSession.builder
-        .master("local[1]")
-        .appName("test_processor")
-        .config("spark.sql.shuffle.partitions", "1")
-        .getOrCreate()
-    )
 
 
 @pytest.fixture
@@ -29,6 +18,7 @@ def simple_df(spark):
 # ---------------------------------------------------------------------------
 # remove_empty_rows
 # ---------------------------------------------------------------------------
+
 
 def test_remove_empty_rows_drops_all_null_row(simple_df):
     result = BaseProcessor(simple_df).remove_empty_rows().df
@@ -46,6 +36,7 @@ def test_remove_empty_rows_keeps_partial_null(spark):
 # drop_na_rows
 # ---------------------------------------------------------------------------
 
+
 def test_drop_na_rows_no_subset(simple_df):
     # simple_df has 4 rows; only (None, None) has nulls → dropped → 3 rows remain
     result = BaseProcessor(simple_df).drop_na_rows().df
@@ -61,6 +52,7 @@ def test_drop_na_rows_with_subset(simple_df):
 # fill_na
 # ---------------------------------------------------------------------------
 
+
 def test_fill_na_replaces_nulls(spark):
     data = [("Alice", None), (None, 30)]
     df = spark.createDataFrame(data, ["name", "age"])
@@ -74,21 +66,18 @@ def test_fill_na_replaces_nulls(spark):
 # remove_duplicates  ← BUG documenté
 # ---------------------------------------------------------------------------
 
-def test_remove_duplicates_bug(simple_df):
-    """
-    BUG: BaseProcessor.remove_duplicates() calls self.df.dropDuplicates()
-    without reassigning the result, so duplicates are NOT removed.
-    Fix: change to  self.df = self.df.dropDuplicates()
-    When the bug is fixed, update assertion to count() == 3.
-    """
+
+def test_remove_duplicates(simple_df):
+    # simple_df: ("Alice",30), ("Bob",25), ("Alice",30), (None,None) → 4 rows
+    # After dedup: 3 distinct rows
     result = BaseProcessor(simple_df).remove_duplicates().df
-    # Current (buggy) behaviour: count stays at 4 instead of 3
-    assert result.count() == 4
+    assert result.count() == 3
 
 
 # ---------------------------------------------------------------------------
 # cast_column
 # ---------------------------------------------------------------------------
+
 
 def test_cast_column_int_to_string(spark):
     df = spark.createDataFrame([(1,), (2,)], ["value"])
@@ -105,6 +94,7 @@ def test_cast_column_string_to_int(spark):
 # ---------------------------------------------------------------------------
 # rename_columns
 # ---------------------------------------------------------------------------
+
 
 def test_rename_columns(simple_df):
     rename_map = {"name": "full_name", "age": "years"}
@@ -123,6 +113,7 @@ def test_rename_columns_partial(simple_df):
 # ---------------------------------------------------------------------------
 # Method chaining
 # ---------------------------------------------------------------------------
+
 
 def test_method_chaining(simple_df):
     # remove_empty_rows: drops (None,None) → 3 rows

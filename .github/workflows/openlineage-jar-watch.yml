@@ -1,0 +1,60 @@
+# P3-4 : rappel hebdomadaire pour le jar openlineage-spark.
+#
+# Le jar est épinglé par OPENLINEAGE_SPARK_VERSION et OPENLINEAGE_SPARK_SHA256 dans le
+# Makefile. Dependabot ne peut pas le suivre : aucun de ses écosystèmes ne lit un
+# Makefile. Ce workflow compare la version épinglée à la dernière release plain
+# (X.Y.Z) de Maven Central et, s'il y en a une plus récente, ouvre UNE issue (pas de
+# doublon tant qu'elle est ouverte). Il ne modifie rien : le nouveau SHA-256 se vérifie à
+# la main (digest `.sha256` et signature `.asc` de Maven Central, cf. le Makefile),
+# puis `make lineage-jar` et les tests `REQUIRE_LINEAGE=1` valident la montée.
+name: OpenLineage jar watch
+
+on:
+  schedule:
+    - cron: "43 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    name: Newer openlineage-spark release?
+    runs-on: ubuntu-latest
+    # `issues: write` n'est donné qu'à ce job, pour ouvrir l'issue de rappel.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Échoue (code 1) si le contrôle n'a pas pu tourner : une vérification cassée
+      # ne doit pas passer pour "à jour".
+      - name: Compare the pinned version with Maven Central
+        id: watch
+        run: |
+          result="$(python3 scripts/openlineage_jar_watch.py)"
+          echo "$result"
+          {
+            echo "pinned=$(jq -r .pinned <<<"$result")"
+            echo "latest=$(jq -r .latest <<<"$result")"
+            echo "outdated=$(jq -r .outdated <<<"$result")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Open a reminder issue
+        if: steps.watch.outputs.outdated == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PINNED: ${{ steps.watch.outputs.pinned }}
+          LATEST: ${{ steps.watch.outputs.latest }}
+        run: |
+          title="openlineage-spark $LATEST is available (pinned: $PINNED)"
+          existing="$(gh issue list --state open --search "openlineage-spark is available in:title" --json number --jq length)"
+          if [ "$existing" != "0" ]; then
+            echo "A reminder issue is already open; nothing to do."
+            exit 0
+          fi
+          gh issue create --title "$title" --body "Maven Central has openlineage-spark_2.13 $LATEST; the Makefile pins $PINNED.
+
+          To upgrade: set OPENLINEAGE_SPARK_VERSION and OPENLINEAGE_SPARK_SHA256 in the Makefile (the digest must equal the .sha256 file Maven Central publishes next to the jar, and the .asc signature must verify, see the provenance comment there), run make lineage-jar, then the suite with REQUIRE_LINEAGE=1 (tests/integration/test_p2_5_spark_lineage.py). Check the release notes for the Spark versions supported."

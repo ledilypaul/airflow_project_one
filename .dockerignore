@@ -1,0 +1,43 @@
+# Build context of the project image (Dockerfile, P3-2): an allow-list.
+# Everything is excluded, then only what the image needs is let back in. Never in
+# the context: .env and every secret, the local lake (lake/), the SQLite metadata
+# DB (airflow.db*), airflow.cfg, logs, the local virtualenvs (.venv,
+# transform/.venv), source data (data/), lineage events, the DuckDB warehouse.
+# tests/unit/test_p3_2_image.py checks these rules, and
+# tests/integration/test_p3_2_image_context.py the real build context (Docker).
+*
+
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!dags/
+!pipeline/
+!utils/
+!storage/
+!config/
+!transform/
+!deploy/airflow/pools.json
+!deploy/k8s/image/
+
+# Generated or local files inside the allowed directories.
+**/__pycache__/
+**/*.pyc
+**/.env
+**/.env.*
+transform/.venv/
+transform/target/
+transform/logs/
+transform/dbt_packages/
+transform/*.duckdb
+transform/*.duckdb.wal
+transform/.user.yml
+utils/script_shell/
+# Secrets or local state that could end up in an allowed directory (SEC-8).
+**/airflow.cfg
+**/*.generated
+**/*.db
+**/*.pem
+**/*.key
+**/*credentials*
+**/.user.yml

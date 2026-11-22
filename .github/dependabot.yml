@@ -1,0 +1,143 @@
+# P3-4 : mises à jour de dépendances proposées par Dependabot (version updates).
+# Dependabot ne fait que OUVRIR des pull requests : aucune fusion automatique,
+# un humain relit chacune et la CI (lint, tests, DAGs, dbt, lignage) les valide.
+#
+# - Hebdomadaire, le lundi. `cooldown` : une release publiée depuis moins de
+#   7 jours n'est pas proposée (une version détournée est en général retirée
+#   dans les jours qui suivent). Les mises à jour de SÉCURITÉ ignorent le cooldown.
+# - `uv` : deux projets, donc deux entrées. La racine (Spark + Airflow + dev) et
+#   `transform/` (dbt + DuckDB) ont chacun leur pyproject.toml et leur uv.lock.
+# - `ignore` : reprend les bornes de CLAUDE.md ("Version pins worth knowing"), pour
+#   qu'une PR ne propose pas une montée que le projet refuse volontairement.
+#   Dependabot respecte déjà les bornes de pyproject.toml pour le choix de la version ;
+#   les règles ci-dessous évitent aussi qu'il propose de LES relever.
+# - Le jar OpenLineage Spark (Makefile : OPENLINEAGE_SPARK_VERSION + SHA-256) n'est
+#   PAS suivi ici : aucun écosystème Dependabot ne lit un Makefile, et inventer une
+#   fausse entrée (maven, docker...) ne verrait rien. Il est surveillé par
+#   .github/workflows/openlineage-jar-watch.yml (voir CLAUDE.md, "CI and supply chain").
+# - L'écosystème `docker-compose` lit `docker-compose.yaml` (le nom est reconnu par
+#   dependabot-core : `(docker-)?compose(-x)?(.x)?.ya?ml`) et met à jour aussi les
+#   images épinglées `tag@sha256:digest` (tag et digest ensemble).
+# - Dépendances de la CI : `github-actions` garde les `uses:` épinglées par SHA
+#   et met à jour le commentaire de version.
+version: 2
+
+updates:
+  # --- Python : racine (Spark job, Airflow, dev) --------------------------------
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Airflow + providers + Cosmos bougent ensemble (contraintes croisées).
+      airflow-stack:
+        patterns:
+          - "apache-airflow*"
+          - "astronomer-cosmos"
+        update-types: ["minor", "patch"]
+      dev-tools:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "pre-commit"
+        update-types: ["minor", "patch"]
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # apache-airflow==3.4.0 exact (P3-5) : seuls les correctifs 3.4.x sont
+      # proposés ; une nouvelle mineure se prépare à la main (providers, Cosmos,
+      # Task SDK, image du Dockerfile, chart Helm, sémantique des Assets).
+      - dependency-name: "apache-airflow"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # Providers : pas de nouvelle majeure automatique (openlineage est borné <3).
+      - dependency-name: "apache-airflow-providers-*"
+        update-types: ["version-update:semver-major"]
+      # astronomer-cosmos>=1.16,<1.17 : 1.16 utilise encore des imports Airflow
+      # dépréciés (voir pyproject.toml) ; une autre mineure se teste à la main.
+      - dependency-name: "astronomer-cosmos"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # PySpark 4.3 est la version testée : les listes d'options de lecture
+      # (pipeline/config/reader_options.py) et le test qui l'épingle sont à revoir
+      # à chaque mineure.
+      - dependency-name: "pyspark"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # pandas 3 casse pyspark.pandas (vérifié avec PySpark 4.3.0).
+      - dependency-name: "pandas"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pydantic"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sqlalchemy"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+
+  # --- Python : transform/ (dbt + DuckDB, uv.lock séparé) -----------------------
+  - package-ecosystem: "uv"
+    directory: "/transform"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      dbt-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # dbt-core ~=1.12, dbt-duckdb ~=1.11 : le manifeste lu par transform_dag et
+      # les contrats des modèles suivent la mineure de dbt ; on la change à la main.
+      - dependency-name: "dbt-core"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "dbt-duckdb"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # DuckDB 2 changera le format de fichier et des API (duckdb<2).
+      - dependency-name: "duckdb"
+        update-types: ["version-update:semver-major"]
+
+  # --- CI : actions épinglées par SHA -------------------------------------------
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- docker-compose.yaml : images Postgres, Redis, Marquez --------------------
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "chore(compose)"
+    groups:
+      # L'API et l'interface Marquez doivent rester sur la même version.
+      marquez:
+        patterns: ["marquezproject/*"]
+    ignore:
+      # Une nouvelle majeure d'une base ne s'installe pas sur le volume existant
+      # (pg_upgrade pour Postgres, format RDB pour Redis) : migration manuelle.
+      # `postgres:14` (backend de Marquez, version exigée par Marquez) est concerné aussi.
+      - dependency-name: "postgres"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "redis"
+        update-types: ["version-update:semver-major"]

@@ -1,0 +1,98 @@
+version: 2
+
+# Zone staging du lake Parquet écrite par le job Spark (ParquetLakeWriter,
+# P2-2) : <LAKE_ROOT>/staging/<table>/lake_run_id=<run>/lake_source_file=<fichier>/*.parquet
+# Un instantané par listing ; l'état courant est calculé par les modèles
+# stg_*__current (équivalent de storage.parquet_lake_writer.latest_snapshot).
+#
+# Lecture (validée contre Spark, voir README.md) :
+# - glob explicite lake_run_id=*/lake_source_file=*/*.parquet : ignore
+#   _SUCCESS, .crc, .spark-staging-* et _temporary ;
+# - hive_types VARCHAR obligatoire : sans lui, DuckDB type un run id
+#   purement numérique ("0042") en entier ;
+# - union_by_name : les fichiers d'une table peuvent avoir des colonnes
+#   différentes (colonnes absentes -> NULL).
+# formatter: template : substitution $identifier (string.Template), qui
+# laisse intactes les accolades de hive_types (le formatter par défaut,
+# str.format, les interpréterait).
+#
+# Ne pas lire ces sources par source() directement : passer par la macro
+# lake_staging() (macros/lake.sql), qui renvoie une relation vide typée par
+# les colonnes déclarées ici quand la table n'a encore aucun fichier
+# (DuckDB échoue sur un glob vide).
+sources:
+  - name: lake_staging
+    description: Zone staging du lake (fichiers lus par le job Spark, nettoyés, contrôlés).
+    config:
+      formatter: template
+      external_location: >-
+        read_parquet('{{ env_var('LAKE_ROOT').strip().rstrip('/') }}/staging/$identifier/lake_run_id=*/lake_source_file=*/*.parquet',
+        hive_partitioning = true, union_by_name = true,
+        hive_types = {'lake_run_id': 'VARCHAR', 'lake_source_file': 'VARCHAR'})
+    tables:
+      - name: movies
+        description: >-
+          staging/movies (config/sources/imdb.yaml). Colonnes métier dans l'ordre et
+          avec les types de reader.columns_type (test pytest qui le vérifie), puis
+          les colonnes techniques dans l'ordre où DuckDB les relit.
+        columns:
+          - {name: id, data_type: INTEGER}
+          - {name: title, data_type: VARCHAR}
+          - {name: vote_average, data_type: FLOAT}
+          - {name: vote_count, data_type: INTEGER}
+          - {name: status, data_type: VARCHAR}
+          - {name: release_date, data_type: DATE}
+          - {name: revenue, data_type: FLOAT}
+          - {name: runtime, data_type: INTEGER}
+          - {name: adult, data_type: BOOLEAN}
+          - {name: backdrop_path, data_type: VARCHAR}
+          - {name: budget, data_type: INTEGER}
+          - {name: homepage, data_type: VARCHAR}
+          - {name: imdb_db, data_type: VARCHAR}
+          - {name: original_language, data_type: VARCHAR}
+          - {name: original_title, data_type: VARCHAR}
+          - {name: overview, data_type: VARCHAR}
+          - {name: popularity, data_type: FLOAT}
+          - {name: poster_path, data_type: VARCHAR}
+          - {name: tagline, data_type: VARCHAR}
+          - {name: production_companies, data_type: VARCHAR}
+          - {name: production_countries, data_type: VARCHAR}
+          - {name: spoken_languages, data_type: VARCHAR}
+          - {name: keywords, data_type: VARCHAR}
+          - {name: release_year, data_type: INTEGER}
+          - {name: Director, data_type: VARCHAR}
+          - {name: AverageRating, data_type: FLOAT}
+          - {name: Poster_Link, data_type: VARCHAR}
+          - {name: Certificate, data_type: VARCHAR}
+          - {name: IMDB_Rating, data_type: FLOAT}
+          - {name: Metascore, data_type: FLOAT}
+          - {name: Star1, data_type: VARCHAR}
+          - {name: Star2, data_type: VARCHAR}
+          - {name: Star3, data_type: VARCHAR}
+          - {name: Star4, data_type: VARCHAR}
+          - {name: Writer, data_type: VARCHAR}
+          - {name: Director_of_Photography, data_type: VARCHAR}
+          - {name: Producer, data_type: VARCHAR}
+          - {name: Music_Composer, data_type: VARCHAR}
+          - {name: genre_list, data_type: VARCHAR}
+          - {name: Cast_list, data_type: VARCHAR}
+          - {name: overview_sentiment, data_type: VARCHAR}
+          - {name: all_combined_keywords, data_type: VARCHAR}
+          - {name: lake_file_id, data_type: BIGINT}
+          - {name: lake_ingested_at, data_type: TIMESTAMP}
+          - {name: lake_run_id, data_type: VARCHAR}
+          - {name: lake_source_file, data_type: VARCHAR}
+      - name: orders
+        description: >-
+          staging/orders (config/sources/orders.yaml). Colonnes métier dans l'ordre et
+          avec les types de reader.columns_type (P2-6, test pytest qui le vérifie), puis
+          les colonnes techniques dans l'ordre où DuckDB les relit.
+        columns:
+          - {name: order_id, data_type: INTEGER}
+          - {name: customer, data_type: VARCHAR}
+          - {name: amount, data_type: DOUBLE}
+          - {name: order_date, data_type: DATE}
+          - {name: lake_file_id, data_type: BIGINT}
+          - {name: lake_ingested_at, data_type: TIMESTAMP}
+          - {name: lake_run_id, data_type: VARCHAR}
+          - {name: lake_source_file, data_type: VARCHAR}

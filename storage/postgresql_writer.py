@@ -1,33 +1,37 @@
-from .base_writer import BaseWriter
-from utils.db_connection import db_connection, jdbc_connection_props
-from pyspark.sql import DataFrame
-import pandas as pd
+import logging
 
-class PostgresWroter(BaseWriter):
+import pandas as pd
+from pyspark.sql import DataFrame
+
+from utils.db_connection import db_connection, jdbc_connection_props
+
+from .base_writer import BaseWriter
+
+log = logging.getLogger(__name__)
+
+
+class PostgresWriter(BaseWriter):
     def __init__(self):
-        # SQLAlchemy connection (for Pandas / SQL queries)
         self.engine = db_connection()
-        # JDBC connection (for Spark)
         self.jdbc_url, self.jdbc_props = jdbc_connection_props()
 
     def write(self, data, target: str, mode: str = "append", **kwargs):
-         # Spark DataFrame → JDBC
         if isinstance(data, DataFrame):
+            log.info("Writing Spark DataFrame to %s (mode=%s)", target, mode)
             data.write.jdbc(
                 url=self.jdbc_url,
                 table=target,
                 mode=mode,
-                properties=self.jdbc_props
+                properties=self.jdbc_props,
             )
-
-        # Pandas DataFrame → SQLAlchemy
         elif isinstance(data, pd.DataFrame):
+            log.info("Writing Pandas DataFrame to %s (mode=%s)", target, mode)
             data.to_sql(
                 target,
                 self.engine,
                 if_exists="replace" if mode == "overwrite" else "append",
                 index=False,
-                **kwargs
+                **kwargs,
             )
         else:
-            raise TypeError("PostgresWriter.write() only support Spark or Pandas DataFrame")
+            raise TypeError("PostgresWriter.write() only supports Spark or Pandas DataFrame")

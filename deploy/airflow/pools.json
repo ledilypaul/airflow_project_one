@@ -1,0 +1,12 @@
+{
+  "spark": {
+    "slots": 1,
+    "description": "Spark applications (spark-submit) of read_file_dag, see CLAUDE.md",
+    "include_deferred": false
+  },
+  "dbt_duckdb": {
+    "slots": 1,
+    "description": "dbt tasks of transform_dag: DuckDB accepts a single writer per database file, see transform/README.md",
+    "include_deferred": false
+  }
+}
