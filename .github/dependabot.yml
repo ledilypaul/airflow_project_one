@@ -141,3 +141,7 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "redis"
         update-types: ["version-update:semver-major"]
+      # Prometheus reste sur la ligne LTS (3.13.x, marquée LTS dans ses notes de
+      # release) : correctifs seulement. v3.16.0 n'en est pas une (PR #38).
+      - dependency-name: "prom/prometheus"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
