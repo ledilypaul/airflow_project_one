@@ -72,12 +72,12 @@ def test_p3_2_airflow_base_is_the_version_of_the_lock():
     airflow_image = _arg_defaults()["AIRFLOW_IMAGE"]
     assert airflow_image.startswith(f"apache/airflow:slim-{locked}-python3.12@sha256:")
     assert f'"apache-airflow=={locked}"' in (PROJECT_ROOT / "pyproject.toml").read_text()
-    # P3-6: the chart (1.22.0) is not revalidated with 3.4 yet and keeps the
-    # version it was validated with. Its templates only compare airflowVersion
-    # with 2.11.0 and 3.0.0 (checked on the 1.22.0 archive): 3.3.2 and 3.4.0
-    # render the same manifests. Set it to the image's version in P3-6.
+    # P3-6: the chart (1.22.0, the latest published; its default Airflow is 3.2.2)
+    # is told the image's version. Its templates only compare airflowVersion with
+    # 2.11.0 and 3.0.0 (checked on the 1.22.0 archive), and it was revalidated on
+    # kind with 3.4.0.
     values = yaml.safe_load(AIRFLOW_VALUES.read_text())
-    assert values["airflowVersion"] == "3.3.2"
+    assert values["airflowVersion"] == locked
     # PySpark of the lock, Python of the image: the driver and the executors run
     # this same image, hence the same versions.
     # .python-version is gitignored (absent in CI): compare with the tracked

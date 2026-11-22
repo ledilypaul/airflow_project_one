@@ -17,7 +17,7 @@
 #   Airflow MUST be the one of uv.lock (`uv sync --frozen` below replaces the
 #   image's packages with the lock's; a test keeps both equal). Since 3.4 it is a
 #   Docker Hardened Image on Debian 13: `make image` builds on it unchanged
-#   (checked on 2026-11-21, P3-5); the revalidation on kind is P3-6.
+#   (checked on 2026-11-21, P3-5) and revalidated on kind in P3-6.
 # - eclipse-temurin:17.0.21_9-jre-noble: the JRE of the official Spark 4.3.0 images
 #   (apache/spark-docker builds on eclipse-temurin:17); only /opt/java/openjdk
 #   is copied.

@@ -7,7 +7,7 @@
 # See docs/architecture/2026-11-19-p3-2-kubernetes.md.
 
 # The chart decides some templates from this version: it must be the image's.
-airflowVersion: "3.3.2"
+airflowVersion: "3.4.0"
 defaultAirflowRepository: airflow-project-one
 defaultAirflowTag: dev
 images:

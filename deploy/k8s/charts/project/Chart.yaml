@@ -8,4 +8,4 @@ description: >-
   RBAC of the Spark driver and of spark-submit. Dev only (kind).
 type: application
 version: 0.2.0
-appVersion: "3.3.2"
+appVersion: "3.4.0"
