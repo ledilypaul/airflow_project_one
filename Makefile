@@ -182,7 +182,7 @@ IMAGE := $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 	lineage-up lineage-down metrics-env observability-up observability-down \
 	k8s-tools kind-up kind-down image kind-load k8s-chart k8s-install \
 	k8s-uninstall k8s-load-data k8s-spark-clean k8s-ui k8s-ui-password \
-	api-dags api-runs api-trigger
+	api-dags api-runs api-trigger docs docs-serve docs-clean
 
 ##@ Help
 
@@ -276,6 +276,17 @@ spark-job: ## Run the Spark job outside Airflow: make spark-job RUN_ID=<dag_run_
 		exit 1; \
 	fi
 	$(UV) run spark-submit pipeline/jobs/read_files_job.py "--run-id=$$RUN_ID"
+
+##@ Documentation (Sphinx, docs/; only the `docs` group of pyproject.toml, no Spark or Airflow needed)
+
+docs: ## Build the HTML documentation into docs/_build/html (warnings are errors, as in CI)
+	$(UV) run --locked --only-group docs sphinx-build -b html -W --keep-going docs docs/_build/html
+
+docs-serve: ## Serve the documentation on http://127.0.0.1:8000, rebuilt on change
+	$(UV) run --locked --only-group docs sphinx-autobuild --host 127.0.0.1 --port 8000 docs docs/_build/html
+
+docs-clean: ## Remove docs/_build
+	rm -rf docs/_build
 
 ##@ Airflow REST API (P4-1; AIRFLOW_API_URL, AIRFLOW_API_PASSWORD or AIRFLOW_API_TOKEN from the environment)
 
