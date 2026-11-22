@@ -14,7 +14,7 @@ dependencies = [
     "pyarrow>=15",
     "polars>=1.0",
     "openpyxl>=3.1",        # requis par read_excel (pandas / pandas-on-Spark)
-    "sqlalchemy>=2.0,<2.1",
+    "sqlalchemy>=2.0.50,!=2.1.0",
     "psycopg2-binary>=2.9",
     "python-dotenv>=1.0",
     "pydantic>=2.14,<3",    # validation des configs de lecture (P2-1), sans le groupe airflow

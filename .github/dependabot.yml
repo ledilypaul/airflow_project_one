@@ -73,8 +73,9 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "pydantic"
         update-types: ["version-update:semver-major"]
+      # 2.1 validé en P3-10 (Airflow 3.4 : >=2.0.50,!=2.1.0).
       - dependency-name: "sqlalchemy"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+        update-types: ["version-update:semver-major"]
 
   # --- Python : transform/ (dbt + DuckDB, uv.lock séparé) -----------------------
   - package-ecosystem: "uv"
