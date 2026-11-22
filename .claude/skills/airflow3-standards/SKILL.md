@@ -10,7 +10,7 @@ paths:
 
 # Standards Airflow 3 — airflow_project_one
 
-Cible : **Airflow 3.3.x** (Airflow 2 est en fin de vie depuis avril 2026). Toujours vérifier la doc officielle de la version installée avant d'affirmer qu'une API existe.
+Cible : **Airflow 3.4.x** (3.4.0 exact dans le projet ; Airflow 2 est en fin de vie depuis avril 2026). Toujours vérifier la doc officielle de la version installée avant d'affirmer qu'une API existe.
 
 ## 1. Fichier DAG : rien de coûteux au niveau module
 Le DAG processor ré-importe les fichiers en continu. Au top-level : uniquement constantes, imports légers et définition du DAG.
@@ -36,10 +36,13 @@ Relancer un run doit produire exactement le même résultat.
 ## 5. Données entre tâches
 - XCom uniquement pour des **métadonnées** légères (chemins, ids, compteurs). Jamais un DataFrame.
 - Dépendances inter-DAG via **Assets** (`airflow.sdk.Asset`) : le DAG producteur déclare `outlets=[asset]`, le consommateur `schedule=[asset]`.
+- **Planification sur Asset (3.4)** : choisir `AssetTriggeredTimetable(asset, batch_asset_events=...)` **explicitement** (la valeur par défaut est un run par événement). `False` : un run par listing (`read_file_dag`) ; `True` : les événements en file sont consommés ensemble par un seul run (`transform_dag`, qui reconstruit tout).
+- Un événement émis pendant que le DAG consommateur est **en pause** n'est pas mis en file et, depuis 3.4, aucun run ultérieur ne le consomme (hors `catchup=False`) : dépauser avant de lancer, ou déclencher à la main.
 - Un traitement par élément → envisager le **dynamic task mapping** (`.expand()`), en gardant Spark batch quand c'est plus efficace.
 
 ## 6. Échecs et cas vides
 - « Rien à traiter » n'est pas une erreur : `AirflowSkipException` ou short-circuit, pas `ValueError`.
+- Un échec **déterministe** (relancer échouerait pareil) lève `AirflowFailException` : jamais relancé. Les `retry_policy=` de 3.4 existent mais ne sont **jamais consultées** pour cette exception ; ne pas les introduire pour remplacer une lecture de code de sortie sans raison (étude P3-9, `docs/architecture/2026-11-22-p3-9-retry-policy-study.md`).
 - Une tâche ne doit pas réussir si une partie de son travail a échoué silencieusement : agréger les erreurs et échouer à la fin.
 
 ## 7. Connexions et secrets
