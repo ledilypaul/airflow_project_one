@@ -145,7 +145,7 @@ jobs:
   # Limites connues du rapport : le chart Helm du projet (deploy/k8s/charts/project) n'est pas
   # rendu par Trivy (il exige `--set-file fileListSql=...`), donc pas analysé ; les
   # dépendances de développement des lockfiles sont ignorées par Trivy (pip-audit les couvre) ;
-  # les images du compose ne sont pas scannées (reste de P3-4).
+  # les images du compose ont leur propre job (`trivy-images`, rapport seul).
   # Trivy est épinglé à v0.70.0, postérieur à l'incident de mars 2026 (CVE-2026-33634 :
   # trivy-action et setup-trivy détournés, binaire 0.69.4 malveillant). L'action
   # elle-même est épinglée par SHA de commit ; v0.36.0 épingle setup-trivy par SHA.
@@ -167,6 +167,47 @@ jobs:
           exit-code: "1"
           version: v0.70.0
           format: table
+
+  # Trivy sur les images de docker-compose.yaml (reste de P3-4), RAPPORT SEUL : le scan
+  # du 2026-11-22 (Trivy v0.70.0, HIGH et CRITICAL avec correctif) trouve 171 constats dans
+  # marquez-web, 33 dans marquez, 27 dans chacun des deux postgres (17.12 et 14, paquets
+  # Debian et stdlib Go de gosu), 4 dans prometheus, 0 dans le collecteur OTel et redis.
+  # Un scan bloquant échouerait donc dès le premier run ; ces images ne servent qu'au
+  # développement local (ports sur 127.0.0.1). Chaque image est scannée, l'effectif est
+  # annoncé par un `::warning::` et le tableau est dans le journal. Passer en bloquant se
+  # décide image par image, après tri (mise à jour de l'image, ou .trivyignore daté).
+  # Une erreur du scan lui-même (réseau, base de vulnérabilités) fait en revanche échouer
+  # le job. La liste des images est lue dans le compose : rien à tenir à jour ici.
+  # Trivy tourne par son image officielle, épinglée par digest (pas d'action tierce de plus).
+  trivy-images:
+    name: Trivy (images of docker-compose.yaml, report only)
+    runs-on: ubuntu-latest
+    env:
+      TRIVY_IMAGE: ghcr.io/aquasecurity/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Scan every image of docker-compose.yaml
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/trivy-cache"
+          sed -n 's/^[[:space:]]*image:[[:space:]]*//p' docker-compose.yaml | sort -u > "$RUNNER_TEMP/images.txt"
+          test -s "$RUNNER_TEMP/images.txt"
+          while read -r image; do
+            scan() {
+              docker run --rm -v "$RUNNER_TEMP/trivy-cache:/root/.cache" "$TRIVY_IMAGE" \
+                image --quiet --severity HIGH,CRITICAL --ignore-unfixed "$@" "$image"
+            }
+            echo "::group::$image"
+            scan --format table
+            scan --format json > "$RUNNER_TEMP/report.json"
+            echo "::endgroup::"
+            count=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(sum(len(r.get("Vulnerabilities") or []) for r in d.get("Results") or []))' "$RUNNER_TEMP/report.json")
+            if [ "$count" -gt 0 ]; then
+              echo "::warning title=Trivy image::$image : $count HIGH/CRITICAL avec correctif (rapport seul, voir le journal)"
+            fi
+          done < "$RUNNER_TEMP/images.txt"
 
   # P3-4 : gitleaks sur l'historique git (fetch-depth: 0). Bloquant. Les constats déjà
   # présents dans l'historique sont listés, un par un, dans .gitleaksignore avec leur
