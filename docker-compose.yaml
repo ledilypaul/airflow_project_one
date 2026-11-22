@@ -79,7 +79,7 @@ services:
       retries: 10
 
   marquez-api:
-    image: marquezproject/marquez:0.50.0@sha256:6d8a2c2cdb28a4f6d13f9ca6f8cc055d8312c4dee204ebeb848efdd76e6ab30e
+    image: marquezproject/marquez:0.51.1@sha256:0721c976cff17d8b14f7949d85d6dac9c7ea37cb9fe857caa19833730fcb1a50
     container_name: marquez_api
     profiles: ["lineage"]
     networks: ["lineage"]
@@ -96,7 +96,7 @@ services:
         condition: service_healthy
 
   marquez-web:
-    image: marquezproject/marquez-web:0.50.0@sha256:e8d53e10ab141cde1b121b01ff47776a58b407813fb6e10f490842d20c184346
+    image: marquezproject/marquez-web:0.51.1@sha256:7312112ca0e611b0a37b00d3da6a677485ae4a97622b23d3ae24d849a927868b
     container_name: marquez_web
     profiles: ["lineage"]
     networks: ["lineage"]
