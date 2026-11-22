@@ -92,6 +92,23 @@ Priority at the end of a run: 0 if nothing failed, else 6 if every failure is su
 
 It connects through `.env` (`DB_*`), not through Airflow.
 
+### Airflow REST API (P4-1)
+
+Airflow 3 serves `/api/v2` itself. `scripts/airflow_api.py` (standard library only) wraps the three calls the project needs; design note `docs/architecture/2026-11-22-p4-1-airflow-api.md`.
+
+```bash
+export AIRFLOW_API_URL=http://localhost:8080   # default; http://127.0.0.1:8081 for make k8s-ui
+export AIRFLOW_API_PASSWORD=...                # the admin password (make k8s-ui-password; airflow standalone prints it)
+make api-dags                                  # the DAGs, paused or active
+make api-runs DAG=read_file_dag                # latest runs: run id, state, start, end
+make api-trigger DAG=read_file_dag CONF='{"run_id": "<dag_run_id of a listing>"}'
+```
+
+- **Credentials by environment only.** `AIRFLOW_API_PASSWORD` (with `AIRFLOW_API_USER`, default `admin`) is exchanged at `POST /auth/token`, or `AIRFLOW_API_TOKEN` is used as is. Never on a command line; never printed.
+- **Refused before any request:** `http` for a host other than localhost, user info, a query string or a fragment in the URL. Redirections are not followed (urllib would resend the token to the new host).
+- **`trigger` refuses a paused DAG** (`--even-if-paused` to override): Airflow accepts the run but never starts it. `logical_date` is sent as `null`: the API's body requires the key.
+- Exit 0 ok, 1 API refusal or unreachable, 2 wrong argument or configuration. `make` itself reports any failed recipe as 2.
+
 ### Docker
 
 ```bash
