@@ -37,6 +37,16 @@ dev = [
     "ruff>=0.14",
     "pre-commit>=4.0",
 ]
+# Documentation Sphinx (make docs). Hors `default-groups` : ni `uv sync` ni l'image Docker ne l'installent.
+docs = [
+    "furo>=2025.12.19",
+    "myst-parser>=5.2.0",
+    "sphinx>=9.1.1",
+    "sphinx-autobuild>=2025.8.25",
+    "sphinx-autodoc2>=0.5.0",
+    "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-mermaid>=2.1.1",
+]
 
 [tool.uv]
 # `uv sync` installe tout par défaut ; `uv sync --no-group airflow` pour un environnement Spark seul.

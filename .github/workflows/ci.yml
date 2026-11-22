@@ -122,7 +122,7 @@ jobs:
       # airflow et dev sont audités aussi.
       - name: Export the locked requirements
         run: |
-          uv export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/requirements-root.txt"
+          uv export --frozen --no-hashes --no-emit-project --group docs -o "$RUNNER_TEMP/requirements-root.txt"
           uv --directory transform export --frozen --no-hashes --no-emit-project -o "$RUNNER_TEMP/requirements-transform.txt"
 
       - name: pip-audit (root project)
@@ -130,6 +130,27 @@ jobs:
 
       - name: pip-audit (transform/)
         run: uvx --from "pip-audit==2.10.1" pip-audit -r "$RUNNER_TEMP/requirements-transform.txt" --no-deps --disable-pip --progress-spinner off
+
+  # Documentation Sphinx (docs/) : un avertissement est une erreur, comme `make docs`. Le groupe
+  # `docs` de uv.lock seul est installé (`--only-group`) : l'analyse du code est statique
+  # (sphinx-autodoc2), ni PySpark ni Airflow ne sont nécessaires. Ignoré sur le cron du lundi,
+  # réservé aux jobs de sécurité.
+  docs:
+    name: Documentation (Sphinx, warnings are errors)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Build the documentation
+        run: make docs
 
   # P3-4 : Trivy, système de fichiers : CVE des lockfiles (uv.lock des deux projets),
   # secrets et mauvaises configurations. Il n'existe pas de contrôle Trivy intégré pour

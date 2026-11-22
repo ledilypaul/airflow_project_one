@@ -115,6 +115,8 @@ def test_p3_4_pip_audit_covers_both_locks_and_is_blocking():
     job = _load(WORKFLOWS_DIR / "ci.yml")["jobs"]["pip-audit"]
     steps = "\n".join(str(step.get("run", "")) for step in job["steps"])
     assert "uv export --frozen" in steps
+    # the docs group is not a default group: it must be asked for, or it is never audited
+    assert "--group docs" in steps
     assert "uv --directory transform export --frozen" in steps
     assert steps.count("pip-audit -r") == 2
     assert "|| true" not in steps
