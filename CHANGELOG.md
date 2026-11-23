@@ -25,6 +25,43 @@ Versioning : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR
 
 ---
 
+## [0.4.0] — 2026-11-23
+
+Phases 0 à 4-1 du backlog (`docs/audit/2026-11-05-baseline.md`). Chaque entrée a sa note dans `docs/architecture/`.
+
+### Added
+
+- **Assets Airflow** (P1-4, P3-5) — `list_files_dag` → `read_file_dag` (`file_list`, un run par listing) → `transform_dag` (`lake_staging`, événements regroupés) ; `SparkSubmitOperator` avec pool `spark` (P1-5).
+- **Config unique validée** (P2-1) — Pydantic, `extra="forbid"`, liste blanche d'options par format.
+- **Lake Parquet** (P2-2) — zones raw et staging, partitions `(lake_run_id, lake_source_file)`, `latest_snapshot`, écriture idempotente.
+- **Contrôles qualité natifs** (P2-3, P2-6) — six types, sévérités `error`/`warn`, résultats dans le lake, code de sortie 6 sans retry.
+- **Couche dbt** (P2-4) — dbt-duckdb orchestré par Cosmos (mode watcher), contrats sur les tables staging.
+- **Lignage OpenLineage** (P2-5) — Airflow, Spark (listener épinglé par SHA-256) et dbt.
+- **Kubernetes** (P3-2, P3-6) — kind + Helm, KubernetesExecutor, Spark natif `k8s://`, un driver par instance de tâche, RBAC minimal, admission policy, Pod Security `restricted`.
+- **Observabilité** (P3-3, P3-8) — métriques OpenTelemetry, collecteur + Prometheus, cinq règles d'alerte testées par `promtool`, ligne `airflow_failure`.
+- **Chaîne d'approvisionnement** (P3-4) — Dependabot, pip-audit, Trivy (fichiers et images du compose), gitleaks, actions épinglées par SHA.
+- **Client API REST Airflow** (P4-1) — `scripts/airflow_api.py`, cibles `make api-dags`, `api-runs`, `api-trigger`.
+- **Documentation Sphinx** (`docs/`, `make docs`).
+
+### Changed
+
+- Airflow 3.3 → **3.4.0** (P3-5, P3-6), SQLAlchemy `>=2.0.50,!=2.1.0` (P3-10).
+- Packaging par **uv** (`pyproject.toml`, `uv.lock`) ; imports `airflow.sdk` (P0-4, P1-1).
+- Insertion dans `file_list` par Connection Airflow `file_list_db` et `PostgresHook` (P1-2) ; sélection par `dag_run_id` et statuts `processed`/`failed` (P1-3).
+- Postgres et Redis du compose liés à `127.0.0.1`, mot de passe Redis, images épinglées par tag et digest (P3-1 partiel, P3-4).
+
+### Fixed
+
+- Mot de passe admin tourné, fichiers sensibles retirés de l'index (P0-1).
+- B1, B2, B3 et tests de DAG pour Airflow 3 (P0-2, P0-3).
+- Un répertoire vide donne un skip, plus un échec (P1-6).
+
+### Removed
+
+- Déclenchement manuel de `read_file_dag` après chaque listing (remplacé par l'Asset).
+
+---
+
 ## [0.3.0] — 2026-05-04
 
 ### Fixed
