@@ -428,7 +428,7 @@ def test_p2_4_dbt_sources_are_staging_tables_of_the_reading_configs():
     dbt reading a table nobody writes."""
     from pipeline.config.registry import SourceRegistry
 
-    registry = SourceRegistry.from_directory()
+    registry = SourceRegistry.from_directory(PROJECT_ROOT / "examples" / "config")
     staging_tables = {
         loaded.config.storage.staging_path + loaded.config.storage.table_name
         for loaded in registry.sources
@@ -447,7 +447,7 @@ def test_p2_4_movies_source_columns_follow_the_imdb_schema():
     from pipeline.config.registry import load_source_config
 
     columns_type = load_source_config(
-        PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
+        PROJECT_ROOT / "examples" / "config" / "sources" / "imdb.yaml"
     ).reader.columns_type
     (movies,) = [t for t in _dbt_sources()["tables"] if t["name"] == "movies"]
     declared = [(c["name"], c["data_type"]) for c in movies["columns"]]
@@ -463,7 +463,7 @@ def test_p2_6_orders_source_columns_follow_the_orders_schema():
     from pipeline.config.registry import load_source_config
 
     columns_type = load_source_config(
-        PROJECT_ROOT / "config" / "sources" / "orders.yaml"
+        PROJECT_ROOT / "examples" / "config" / "sources" / "orders.yaml"
     ).reader.columns_type
     (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
     declared = [(c["name"], c["data_type"]) for c in orders["columns"]]
@@ -479,7 +479,7 @@ def test_p2_6_every_dbt_source_table_is_typed_like_its_reading_config():
 
     typed = {
         loaded.config.storage.table_name
-        for loaded in SourceRegistry.from_directory().sources
+        for loaded in SourceRegistry.from_directory(PROJECT_ROOT / "examples" / "config").sources
         if loaded.config.reader.columns_type
     }
     assert {t["name"] for t in _dbt_sources()["tables"]} <= typed

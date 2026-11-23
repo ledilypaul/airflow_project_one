@@ -18,6 +18,8 @@ set up for `make airflow` cannot send the tests' DAG runs to a collector.
 
 import os
 
+# P5-1: the suite reads the repo config root, never the shell's.
+os.environ.pop("PIPELINE_CONFIG_ROOT", None)
 os.environ["AIRFLOW__METRICS__OTEL_ON"] = "False"
 os.environ["AIRFLOW__TRACES__OTEL_ON"] = "False"
 for _name in [

@@ -41,7 +41,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MAKEFILE = PROJECT_ROOT / "Makefile"
-IMDB_CONFIG = PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
+IMDB_CONFIG = PROJECT_ROOT / "examples" / "config" / "sources" / "imdb.yaml"
 VENV_BIN = Path(sys.executable).parent
 LISTENER = "io.openlineage.spark.agent.OpenLineageSparkListener"
 

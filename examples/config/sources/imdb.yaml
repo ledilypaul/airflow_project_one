@@ -3,7 +3,7 @@ source:
   name: imdb_movies
   format: csv
   # Motifs fnmatch sur le nom du fichier, insensibles à la casse
-  # (repris de extractor_config.yaml : include_files "*IMDB*"). Limité aux
+  # (motif du fichier d'exemple). Limité aux
   # .csv : cette config décrit un CSV, un IMDB en .parquet ou .xlsx doit
   # prendre son défaut par extension, pas être lu comme du CSV.
   patterns: ["*imdb*.csv"]

@@ -43,7 +43,8 @@ from pipeline.file_reader.reader_factory import READER_CLASSES
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 REPO_CONFIG_ROOT = PROJECT_ROOT / "config"
-REPO_SOURCE_FILES = sorted((REPO_CONFIG_ROOT / "sources").glob("*.yaml"))
+EXAMPLES_CONFIG_ROOT = PROJECT_ROOT / "examples" / "config"
+REPO_SOURCE_FILES = sorted((EXAMPLES_CONFIG_ROOT / "sources").glob("*.yaml"))
 REPO_DEFAULT_FILES = sorted((REPO_CONFIG_ROOT / "defaults").glob("*.yaml"))
 
 
@@ -81,7 +82,7 @@ def _write(path: Path, config: dict) -> Path:
 
 
 def test_p2_1_repo_has_dedicated_sources_and_defaults():
-    assert REPO_SOURCE_FILES, f"no dedicated source config in {REPO_CONFIG_ROOT / 'sources'}"
+    assert REPO_SOURCE_FILES, f"no dedicated source config in {EXAMPLES_CONFIG_ROOT / 'sources'}"
     assert REPO_DEFAULT_FILES, f"no default config in {REPO_CONFIG_ROOT / 'defaults'}"
 
 
@@ -107,7 +108,23 @@ def test_p2_1_default_config_root_is_resolved_from_the_code_not_the_cwd(monkeypa
     monkeypatch.chdir(tmp_path)
     assert DEFAULT_CONFIG_ROOT == REPO_CONFIG_ROOT
     registry = SourceRegistry.from_directory(DEFAULT_CONFIG_ROOT)
+    assert registry.match("orders_2024.csv").source.name == "default_csv"
+
+
+def test_p5_1_config_root_env_and_engine_defaults_fallback(monkeypatch):
+    from pipeline.config import registry as registry_module
+
+    monkeypatch.setenv("PIPELINE_CONFIG_ROOT", str(EXAMPLES_CONFIG_ROOT))
+    assert registry_module._default_config_root() == EXAMPLES_CONFIG_ROOT
+    # examples/config has no defaults/: the engine's are used.
+    registry = SourceRegistry.from_directory(EXAMPLES_CONFIG_ROOT)
     assert registry.match("orders_2024.csv").source.name == "orders"
+    assert registry.match("other.parquet").source.name == "default_parquet"
+    monkeypatch.setenv("PIPELINE_CONFIG_ROOT", "relative/dir")
+    with pytest.raises(ConfigError, match="absolu"):
+        registry_module._default_config_root()
+    monkeypatch.delenv("PIPELINE_CONFIG_ROOT")
+    assert registry_module._default_config_root() == REPO_CONFIG_ROOT
 
 
 # The 42 columns of the IMDB CSV, in the file's order (that of the former
@@ -161,7 +178,7 @@ IMDB_COLUMNS = [
 
 def test_p2_1_migrated_configs_keep_their_information():
     """The migration of the old YAML files lost nothing that mattered."""
-    imdb = load_source_config(REPO_CONFIG_ROOT / "sources" / "imdb.yaml")
+    imdb = load_source_config(EXAMPLES_CONFIG_ROOT / "sources" / "imdb.yaml")
     assert imdb.source.patterns == ["*imdb*.csv"]
     assert imdb.reader.options["encoding"] == "UTF-8"
     assert list(imdb.reader.columns_type) == IMDB_COLUMNS
@@ -169,7 +186,7 @@ def test_p2_1_migrated_configs_keep_their_information():
     assert imdb.reader.columns_type["genre_list"] == "string"
     assert imdb.storage.table_name == "movies"
 
-    orders = load_source_config(REPO_CONFIG_ROOT / "sources" / "orders.yaml")
+    orders = load_source_config(EXAMPLES_CONFIG_ROOT / "sources" / "orders.yaml")
     assert orders.source.patterns == ["orders_*.csv"]
     # P2-6: explicit schema (columns_type) checked against each header;
     # inferSchema, ignored once a schema is given, removed.
@@ -210,14 +227,14 @@ def test_p2_1_migrated_configs_keep_their_information():
     ],
 )
 def test_p2_1_real_registry_matching(file_name, expected_source):
-    registry = SourceRegistry.from_directory(REPO_CONFIG_ROOT)
+    registry = SourceRegistry.from_directory(EXAMPLES_CONFIG_ROOT)
     assert registry.match(file_name).source.name == expected_source
 
 
 def test_p2_1_real_registry_has_no_match_for_unknown_extension():
     """The old `default_format: csv` fallback is gone: an unknown extension is
     an explicit error (a `failed` row in file_list), not a CSV read."""
-    registry = SourceRegistry.from_directory(REPO_CONFIG_ROOT)
+    registry = SourceRegistry.from_directory(EXAMPLES_CONFIG_ROOT)
     with pytest.raises(NoMatchingConfigError, match="notes.json"):
         registry.match("notes.json")
 
