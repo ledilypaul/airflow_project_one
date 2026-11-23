@@ -63,7 +63,7 @@ services:
   marquez-db:
     # PostgreSQL 14: the version Marquez 0.50.0 documents; its Flyway 8.5.13
     # predates PostgreSQL 17 and was never tested with it.
-    image: postgres:14@sha256:980b7cb415aa0f812f65bdec8f6f599be408d8ed9c83ffcaa12650eac397b264
+    image: postgres:14@sha256:c0e9c0e9bac7e4c1834b698217a03ee5c708de30d313c84a506972de0e24b059
     container_name: marquez_db
     profiles: ["lineage"]
     networks: ["lineage"]
