@@ -38,7 +38,9 @@ def _declared_format(config_file: Path) -> str | None:
 REPO_CSV_CONFIGS = [
     path
     for tier in ("sources", "defaults")
-    for path in sorted(((EXAMPLES_CONFIG_ROOT if tier == "sources" else REPO_CONFIG_ROOT) / tier).glob("*.yaml"))
+    for path in sorted(
+        ((EXAMPLES_CONFIG_ROOT if tier == "sources" else REPO_CONFIG_ROOT) / tier).glob("*.yaml")
+    )
     if _declared_format(path) in {"csv", "txt"}
 ]
 

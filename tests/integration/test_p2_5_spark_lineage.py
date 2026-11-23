@@ -144,6 +144,7 @@ def _run_job(tmp_path: Path, conf: dict, csv: Path, lake: Path):
     rows = [{"id": FILE_ID, "file_path": str(csv), "file_name": csv.name}]
 
     env = {k: v for k, v in os.environ.items() if k not in ("ENV", "VIRTUAL_ENV", "SPARK_HOME")}
+    env["PIPELINE_CONFIG_ROOT"] = str(PROJECT_ROOT / "examples" / "config")
     env.update(
         # spark-submit finds Spark through the `python3` of PATH: the venv's
         # one (PySpark 4.3), never another interpreter's PySpark.

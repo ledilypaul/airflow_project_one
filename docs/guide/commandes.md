@@ -27,6 +27,7 @@ range par usage. Un test garde la page à jour : il échoue si une cible du Make
 |---|---|
 | `make airflow-init` | migre la base, crée ou met à jour les Connections et les pools (idempotent) |
 | `make airflow` | génère le manifest dbt, télécharge le jar de lignage, puis lance `airflow standalone` |
+| `make demo` | copie les fichiers de `examples/data/` dans `data/`, puis lance `make airflow` avec `PIPELINE_CONFIG_ROOT=examples/config` (sources d'exemple `imdb_movies` et `orders`) |
 
 ## Spark et dbt, hors d'Airflow
 

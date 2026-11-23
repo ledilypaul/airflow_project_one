@@ -10,7 +10,7 @@ dépend de rien sous `pipeline.file_reader` (C-7 : les readers importent
 Uniquement des types atomiques : `columns_type` n'est appliqué qu'aux formats
 csv/txt (`SCHEMA_FORMATS`), et la source CSV de Spark refuse toute colonne
 ARRAY, MAP ou STRUCT à la lecture (`UNSUPPORTED_DATA_TYPE_FOR_DATASOURCE`).
-Une liste encodée dans une colonne (ex. `genre_list` d'IMDB) se lit en
+Une liste encodée dans une colonne (ex. une liste de genres) se lit en
 `string` et se découpe dans une transformation ultérieure (C-1).
 """
 

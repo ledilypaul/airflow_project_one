@@ -115,6 +115,10 @@ COPY --chown=airflow:0 pipeline/ /opt/airflow/pipeline/
 COPY --chown=airflow:0 utils/ /opt/airflow/utils/
 COPY --chown=airflow:0 storage/ /opt/airflow/storage/
 COPY --chown=airflow:0 config/ /opt/airflow/config/
+# P5-1: the engine ships no source; this dev image carries the example ones
+# (the kind run). A real deployment mounts or bakes its own config/sources.
+COPY --chown=airflow:0 examples/config/ /opt/airflow/examples/config/
+ENV PIPELINE_CONFIG_ROOT=/opt/airflow/examples/config
 COPY --chown=airflow:0 deploy/airflow/pools.json /opt/airflow/deploy/airflow/pools.json
 
 # Source files are read from the shared volume (mounted at /opt/airflow/shared):

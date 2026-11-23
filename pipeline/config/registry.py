@@ -142,10 +142,10 @@ def _yaml_files(directory: Path) -> list[Path]:
 def _lake_target_conflicts(configs: list[LoadedConfig]) -> list[str]:
     """Tables du lake incompatibles entre configs différentes (C-3).
 
-    - imbriquées (`raw/orders` et `raw/orders/x/b`) : Spark trouverait deux
+    - imbriquées (`raw/<table>` et `raw/<table>/x/b`) : Spark trouverait deux
       structures de partitions sous la table englobante et refuserait de la
       lire (`CONFLICTING_DIRECTORY_STRUCTURES`) ;
-    - identiques à la casse près (`raw/orders`, `raw/Orders`) : un seul
+    - identiques à la casse près (`raw/<table>`, `raw/<Table>`) : un seul
       répertoire sur un FS insensible à la casse, deux ailleurs.
     Une même table écrite à l'identique par deux sources reste permise. Le
     cas raw/staging d'une même config est contrôlé par `SourceConfig`.

@@ -177,7 +177,7 @@ IMAGE_TAG ?= dev
 IMAGE := $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
-	airflow-init airflow spark-job transform-sync dbt-parse dbt-build \
+	airflow-init airflow demo spark-job transform-sync dbt-parse dbt-build \
 	lineage-jar lineage-show lineage-transport lineage-clean \
 	lineage-up lineage-down metrics-env observability-up observability-down \
 	k8s-tools kind-up kind-down image kind-load k8s-chart k8s-install \
@@ -266,6 +266,15 @@ airflow: dbt-parse ## Run Airflow standalone (api-server, scheduler, dag-process
 	esac; \
 	AIRFLOW__OPENLINEAGE__TRANSPORT="$${AIRFLOW__OPENLINEAGE__TRANSPORT:-$$($(PYTHON) scripts/openlineage_transport.py)}" \
 		$(UV) run airflow standalone
+
+# P5-1: the engine ships no source. The demo reads the example sources of
+# examples/config (PIPELINE_CONFIG_ROOT, absolute) and lists ./data/, into
+# which the example files are copied without overwriting anything.
+demo: export PIPELINE_CONFIG_ROOT := $(CURDIR)/examples/config
+demo: ## Run Airflow standalone on the example sources (examples/)
+	@mkdir -p data && cp -n examples/data/* data/
+	@echo "demo: sources of $$PIPELINE_CONFIG_ROOT, example files copied into ./data/"
+	$(MAKE) --no-print-directory airflow
 
 ##@ Spark
 

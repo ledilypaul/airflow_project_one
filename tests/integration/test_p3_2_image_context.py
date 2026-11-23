@@ -50,7 +50,7 @@ REQUIRED_FILES = (
     "pipeline/jobs/read_files_job.py",
     "utils/spark_session.py",
     "storage/parquet_lake_writer.py",
-    "config/sources/orders.yaml",
+    "examples/config/sources/orders.yaml",
     "transform/dbt_project.yml",
     "transform/uv.lock",
     "deploy/airflow/pools.json",

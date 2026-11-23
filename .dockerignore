@@ -16,6 +16,7 @@
 !utils/
 !storage/
 !config/
+!examples/config/
 !transform/
 !deploy/airflow/pools.json
 !deploy/k8s/image/
