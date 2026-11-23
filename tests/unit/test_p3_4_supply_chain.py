@@ -105,7 +105,7 @@ def test_p3_4_every_action_is_pinned_by_full_sha(workflow):
 
 def test_p3_4_ci_has_the_security_jobs():
     jobs = _load(WORKFLOWS_DIR / "ci.yml")["jobs"]
-    assert {"test", "pip-audit", "trivy", "gitleaks"} <= set(jobs)
+    assert {"test", "pip-audit", "trivy", "trivy-images", "gitleaks"} <= set(jobs)
     # the scheduled run is for the security jobs: `test` is skipped there
     assert "schedule" in _load(WORKFLOWS_DIR / "ci.yml")[True]
     assert "schedule" in jobs["test"]["if"]
@@ -115,6 +115,8 @@ def test_p3_4_pip_audit_covers_both_locks_and_is_blocking():
     job = _load(WORKFLOWS_DIR / "ci.yml")["jobs"]["pip-audit"]
     steps = "\n".join(str(step.get("run", "")) for step in job["steps"])
     assert "uv export --frozen" in steps
+    # the docs group is not a default group: it must be asked for, or it is never audited
+    assert "--group docs" in steps
     assert "uv --directory transform export --frozen" in steps
     assert steps.count("pip-audit -r") == 2
     assert "|| true" not in steps
@@ -144,6 +146,32 @@ def test_p3_4_trivy_has_an_explicit_threshold():
     assert options["exit-code"] == "1"
     assert not any(s.get("continue-on-error") for s in steps)
     assert "continue-on-error" not in _load(WORKFLOWS_DIR / "ci.yml")["jobs"]["trivy"]
+
+
+def test_p3_4_trivy_images_job_reports_the_compose_images_with_the_pinned_trivy():
+    jobs = _load(WORKFLOWS_DIR / "ci.yml")["jobs"]
+    job = jobs["trivy-images"]
+    # runs on the Monday cron too (the security jobs have no `if`)
+    assert "if" not in job
+    # same Trivy as the filesystem job, by its official image, pinned by digest
+    fs_version = next(
+        s["with"]["version"]
+        for s in jobs["trivy"]["steps"]
+        if "with" in s and "version" in s["with"]
+    )
+    assert re.fullmatch(
+        rf"ghcr\.io/aquasecurity/trivy:{re.escape(fs_version.lstrip('v'))}@sha256:[0-9a-f]{{64}}",
+        job["env"]["TRIVY_IMAGE"],
+    )
+    script = next(s["run"] for s in job["steps"] if "Scan every image" in s.get("name", ""))
+    # the list comes from docker-compose.yaml, never copied into the workflow
+    assert "docker-compose.yaml" in script
+    assert "--severity HIGH,CRITICAL" in script and "--ignore-unfixed" in script
+    # report only for now (see the comment in ci.yml): the scan's own errors still fail the job
+    assert "--exit-code" not in script and "::warning" in script
+    assert "continue-on-error" not in job and not any(
+        s.get("continue-on-error") for s in job["steps"]
+    )
 
 
 def test_p3_4_dependabot_covers_the_expected_ecosystems():

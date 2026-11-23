@@ -35,3 +35,7 @@ lineage/
 
 # Kubernetes (P3-2): the official Airflow Helm chart downloaded by `make k8s-chart`
 .k8s/
+
+# Documentation Sphinx (make docs)
+docs/_build/
+docs/reference/autodoc/

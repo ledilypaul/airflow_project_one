@@ -1,131 +1,57 @@
 # airflow_project_one
 
-## 📌 Prerequisites
+Pipeline d'ingestion de fichiers orchestré par **Apache Airflow 3**, exécuté par **Apache Spark** et
+prolongé par **dbt** : des fichiers déposés dans un dossier deviennent un *lake* Parquet partitionné
+(zones `raw`, `staging` et résultats de qualité), puis des tables DuckDB, avec le lignage de bout
+en bout.
 
-- Python **3.12**
-- **Poetry** for dependency management
-- **Apache Airflow ≥ 3.0.0**
-- A dedicated virtual environment (**recommended**)
+```text
+fichiers ─▶ list_files_dag ─▶ file_list (Postgres) ─▶ read_file_dag ─▶ job Spark ─▶ lake Parquet
+                                                                                       │
+                                  tables DuckDB (marts) ◀─ transform_dag (dbt) ◀───────┘
+```
 
----
+Chaque étape démarre quand la précédente a réussi et l'a signalé par un *Asset* Airflow. Relancer un
+run produit le même résultat (idempotence), et chaque fichier garde un statut lisible
+(`pending`, `processed`, `failed`) avec la raison de l'échec.
 
-## 🚀 Installation
+## Démarrage rapide
 
-### 1️⃣ Clone the repository
+Prérequis : Python 3.12 ou 3.13, [uv](https://docs.astral.sh/uv/) 0.11 ou plus, Java 17, Docker,
+`make`.
 
 ```bash
 git clone https://github.com/ledilypaul/airflow_project_one.git
 cd airflow_project_one
+uv sync
+# créez un fichier .env (DB_USER, DB_PASSWORD, DB_HOST, DB_PORT=5434, DB_NAME), voir la documentation
+
+make db-up           # Postgres et Redis (docker compose)
+make airflow-init    # base Airflow, Connections, pools
+make airflow         # http://localhost:8080
 ```
 
-## ⚙️ Airflow Configuration
+Dépausez ensuite `list_files_dag`, `read_file_dag` et `transform_dag`, puis lancez `list_files_dag` :
+le reste se déclenche seul.
 
-### 1️⃣ Set the AIRFLOW_HOME environment variable
+## Documentation
 
-## Mac
-export AIRFLOW_HOME=path/airflow_project_one
+La documentation complète est dans [`docs/`](docs/index.md), construite avec Sphinx :
 
-## Windows (WSL)
-export AIRFLOW_HOME=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
-
-Add this line to your ~/.bashrc or ~/.zshrc to persist it.
-
-### 2️⃣ Specification to add in airflow.cfg :
-
-#### Disable exampls Dags
 ```bash
-[core]
-load_examples = False
-```
-#### Specify custom folders
-```bash
-[core]
-plugins_folder = path/airflow_project_one/plugins
-dags_folder = path/airflow_project_one/dags
+make docs          # HTML dans docs/_build/html
+make docs-serve    # http://127.0.0.1:8000, rechargé à chaque modification
 ```
 
-Or via environment variables:
-```bash
-export AIRFLOW__CORE__PLUGINS_FOLDER=path/airflow_project_one/plugins
-export AIRFLOW__CORE__DAGS_FOLDER=path/airflow_project_one/dags
-```
+Elle couvre l'installation, un premier run pas à pas, l'architecture, la configuration des sources
+et des contrôles qualité, l'exploitation (lignage, métriques et alertes, Kubernetes, API REST, CI) et
+la référence de l'API Python.
 
-#### Add the project to PYTHONPATH
-```bash
-export PYTHONPATH=/mnt/c/Users/paull/Documents/Code/Python/airflow_project_one
-```
-This allows your DAGs to import internal modules.
+`make` seul liste les commandes du projet. `make check` rejoue ce que fait la CI (verrous `uv`,
+`ruff`, tests).
 
-## Run Airflow
+## Contribuer
 
-Initialize or migrate the database:
-```bash
-airflow db migrate
-```
-
-Start Airflow:
-```bash
-airflow standalone
-```
-Accessible at: http://localhost:8080
-
-## 🔑 User Management (Airflow ≥ 3.0.0)
-
-Airflow 3.0.0 uses Simple Auth Manager by default.
-It does not allow creating users via:
-```bash
-airflow users create ...
-```
-
-To enable FAB Auth Manager:
-
-### 1️⃣ Install the provider
-```bash
-pip install apache-airflow-providers-fab
-```
-
-### 2️⃣ Update airflow.cfg
-
-```ini
-[core]
-auth_manager = airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-```
-
-### 3️⃣ Create a user
-```bash
-airflow users create \
-    --username admin \
-    --firstname Marty \
-    --lastname McFly \
-    --role Admin \
-    --email marty.mcfly@hotmail.us \
-    --password <your_password>
-```
-
-#### Verify configuration
-```bash
-airflow config get-value core dags_folder
-airflow config get-value core airflow_home
-```
-
-## 📂 Project structure
-airflow_project_one/
-├── dags/                # Airflow DAGs
-├── pipeline/            # Data extraction / transformation logic
-├── utils/               # Utility functions
-├── config/              # JSON / YAML config
-├── sandbox/             # Test scripts
-├── tests/               # Unit tests
-├── airflow.cfg          # Airflow configuration
-└── pyproject.toml       # Poetry dependencies
-
-## 🐳 Running with Docker
-Initialize the database:
-```bash
-docker compose run airflow-webserver airflow db init
-```
-
-Start services:
-```bash
-docker compose up -d
-```
+Une branche `feat/...` ou `fix/...` par changement, une PR, un test de non-régression pour chaque
+correctif. Les règles et les conventions sont dans la page *Contribuer* de la documentation et dans
+[`CLAUDE.md`](CLAUDE.md).

@@ -29,4 +29,4 @@
 | `airflow db init` | `airflow db migrate` |
 | `airflow webserver` | `airflow api-server` |
 
-Vérifié sur ce projet (Airflow 3.3.2) : les imports `airflow.decorators.*`, `airflow.operators.bash.*` et `airflow.operators.python.*` émettent un avertissement de dépréciation ; `DagBag(include_examples=...)` lève `TypeError`.
+Vérifié sur ce projet (Airflow 3.4.0, 2026-11-22) : `airflow.decorators.task`/`dag`, `airflow.operators.bash.BashOperator` et `airflow.operators.python.PythonOperator` émettent un `DeprecatedImportWarning` **à l'accès au nom** (importer le module seul n'en émet pas) ; `DagBag(include_examples=...)` lève `TypeError`.
