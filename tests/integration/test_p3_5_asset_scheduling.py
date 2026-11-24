@@ -1,21 +1,21 @@
 """
-P3-5 — Airflow 3.4 Asset scheduling of the real DAGs, at the scheduler level.
+P3-5 — Airflow 3.4 Asset scheduling of transform_dag, at the scheduler level.
 
 The unit tests (tests/unit/dags/test_p3_5_asset_batching.py) check the
-timetables. This one checks what the **scheduler** of the installed Airflow
-does with them, on the real DAG files synced into a migrated SQLite metadata
+timetable. This one checks what the **scheduler** of the installed Airflow
+does with it, on the real DAG files synced into a migrated SQLite metadata
 DB, with real `AssetManager.register_asset_change` events:
-  - read_file_dag (`batch_asset_events=False`, `max_active_runs=1`): three
-    `file_list` events give three runs, one event each, created one after the
-    other (the next one only once the previous run is finished; the other
-    events stay queued meanwhile, none is dropped);
-  - transform_dag (`batch_asset_events=True`): three `lake_staging` events
-    queued together give ONE run that consumes all three;
+  - transform_dag (`AssetAny` of the `lake_staging__<source>` Assets of the
+    example sources, `batch_asset_events=True`): three events of two different
+    sources queued together give ONE run that consumes all three (P5-3: the
+    union of the sources' Assets, still one `dbt build` for the events queued);
   - an event emitted while the DAG is paused is not queued (no
     AssetDagRunQueue row) and no later run consumes it: a behaviour change
     from 3.3, where the next run took every event since the previous run
-    (documented in CLAUDE.md, "Unpause read_file_dag before running a
-    listing").
+    (documented in CLAUDE.md, "Unpause transform_dag").
+
+P5-3: `read_file_dag` (one run per `file_list` event, `max_active_runs=1`) is gone,
+with the Asset: the ingest DAGs are scheduled by cron, not by an Asset.
 
 Scheduler internals (`SchedulerJobRunner._create_dagruns_for_dags`, the same
 call as `_do_scheduling`) are used on purpose: only the run creation is
@@ -37,6 +37,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DAGS_FOLDER = PROJECT_ROOT / "dags"
+EXAMPLES_CONFIG_ROOT = PROJECT_ROOT / "examples" / "config"
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="needs a POSIX PATH")
 
@@ -108,39 +109,19 @@ SCHEDULER_SCRIPT = textwrap.dedent(
                 )
             ]
 
-    def finish_active_runs(dag_id):
-        with create_session() as session:
-            for run in session.scalars(
-                select(DagRun).where(
-                    DagRun.dag_id == dag_id,
-                    DagRun.state.in_((DagRunState.QUEUED, DagRunState.RUNNING)),
-                )
-            ):
-                run.set_state(DagRunState.SUCCESS)
-
     result = {}
 
-    # --- read_file_dag: one run per event, max_active_runs=1 ----------------
-    set_paused("read_file_dag", True)
-    paused_event = emit("file_list")
-    result["read_paused_event"] = paused_event
-    result["read_queued_while_paused"] = queued("read_file_dag")
-    set_paused("read_file_dag", False)
-    events = [emit("file_list") for _ in range(3)]
-    result["read_events"] = events
-    result["read_queued"] = queued("read_file_dag")
-    result["read_passes"] = []
-    for _ in range(4):
-        schedule()
-        result["read_passes"].append(runs("read_file_dag"))
-        schedule()  # a second pass while a run is active creates nothing
-        result["read_passes"].append(runs("read_file_dag"))
-        finish_active_runs("read_file_dag")
-    result["read_queued_after"] = queued("read_file_dag")
-
     # --- transform_dag: the queued events are batched into one run ----------
+    set_paused("transform_dag", True)
+    result["paused_event"] = emit("lake_staging__orders")
+    result["queued_while_paused"] = queued("transform_dag")
     set_paused("transform_dag", False)
-    result["transform_events"] = [emit("lake_staging") for _ in range(3)]
+    result["transform_events"] = [
+        emit("lake_staging__orders"),
+        emit("lake_staging__imdb_movies"),
+        emit("lake_staging__orders"),
+    ]
+    result["transform_queued"] = queued("transform_dag")
     schedule()
     schedule()
     result["transform_runs"] = runs("transform_dag")
@@ -169,6 +150,7 @@ def scheduler_result(request, tmp_path_factory):
         AIRFLOW__METRICS__OTEL_ON="False",
         AIRFLOW__COSMOS__ENABLE_TELEMETRY="False",
         AIRFLOW__SCHEDULER__BATCH_ASSET_EVENTS=request.param,
+        PIPELINE_CONFIG_ROOT=str(EXAMPLES_CONFIG_ROOT),
     )
     subprocess.run(
         [sys.executable, "-m", "airflow", "db", "migrate"],
@@ -192,32 +174,16 @@ def scheduler_result(request, tmp_path_factory):
     return json.loads(result_file.read_text())
 
 
-def test_p3_5_read_file_dag_one_run_per_listing_one_at_a_time(scheduler_result):
-    events = scheduler_result["read_events"]
-    assert scheduler_result["read_queued"] == events
-    passes = scheduler_result["read_passes"]
-    # Each pair of passes: the first creates exactly one run with the next
-    # event, the second (run still active, max_active_runs=1) creates nothing.
-    for n, event in enumerate(events, start=1):
-        created, while_active = passes[2 * n - 2], passes[2 * n - 1]
-        assert len(created) == n, created
-        assert created[-1]["events"] == [event]
-        assert created[-1]["run_type"] == "asset_triggered"
-        assert created[-1]["state"] in {"queued", "running"}
-        assert while_active == created
-    # Nothing left once the three runs are done; a fourth pass creates nothing.
-    assert len(passes[6]) == 3
-    assert scheduler_result["read_queued_after"] == []
-
-
-def test_p3_5_transform_dag_batches_the_queued_events(scheduler_result):
+def test_p3_5_transform_dag_batches_the_queued_events_of_every_source(scheduler_result):
+    assert scheduler_result["transform_queued"] == scheduler_result["transform_events"]
     runs = scheduler_result["transform_runs"]
     assert len(runs) == 1, runs
     assert runs[0]["events"] == scheduler_result["transform_events"]
+    assert runs[0]["run_type"] == "asset_triggered"
 
 
 def test_p3_5_event_emitted_while_paused_is_never_consumed(scheduler_result):
-    paused_event = scheduler_result["read_paused_event"]
-    assert scheduler_result["read_queued_while_paused"] == []
-    consumed = {e for run in scheduler_result["read_passes"][-1] for e in run["events"]}
+    paused_event = scheduler_result["paused_event"]
+    assert scheduler_result["queued_while_paused"] == []
+    consumed = {e for run in scheduler_result["transform_runs"] for e in run["events"]}
     assert paused_event not in consumed

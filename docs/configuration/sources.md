@@ -1,7 +1,8 @@
-# Configurer la lecture d'une source
+# Configurer une source
 
-Chaque type de fichier est décrit par un fichier YAML, validé au chargement par **un seul** modèle
-Pydantic, `pipeline/config/models.py::SourceConfig`. Le modèle refuse toute clé inconnue : une faute
+Chaque source est décrite par un fichier YAML, validé au chargement par **un seul** modèle
+Pydantic, `pipeline/config/models.py::SourceConfig`. Ce fichier suffit à obtenir un pipeline
+d'ingestion : le DAG `ingest__<nom>` est **généré** depuis lui ([](../concepts/dags.md)). Le modèle refuse toute clé inconnue : une faute
 de frappe est une erreur, jamais ignorée en silence.
 
 :::{note}
@@ -12,7 +13,7 @@ La racine se choisit par `PIPELINE_CONFIG_ROOT` (chemin absolu, défaut `config/
 
 ```yaml
 source:
-  name: orders                  # unique parmi tous les fichiers de config
+  name: orders                  # identifiant [a-z0-9_]+, unique ; nomme le DAG ingest__orders
   format: csv                   # csv | txt | parquet | xlsx : choisit le lecteur
   patterns: ["orders_*.csv"]    # fnmatch sur le NOM du fichier, insensible à la casse
   # engine: spark               # facultatif : spark | polars (voir « Le moteur d'une source »)
@@ -35,6 +36,13 @@ storage:                        # obligatoire : où le job écrit dans le lake
 quality:                        # facultatif, exige staging_path (voir « Contrôles qualité »)
   checks:
     - {type: not_null, column: order_id}
+
+listing:                        # facultatif : où chercher les fichiers (voir « Le DAG de la source »)
+  directories: ["./data/"]      # défaut : default_directories de config/pipeline.yaml
+  exclude: ["*_old.csv"]        # motifs fnmatch sur le nom, retirés du listing
+schedule: "0 6 * * *"           # cron (UTC), preset (@daily) ou null : lancement manuel
+retries: 2                      # facultatif, 1 par défaut
+tags: [finance]                 # facultatif : étiquettes du DAG dans l'interface
 ```
 
 ## Où vivent les configs
@@ -43,11 +51,36 @@ quality:                        # facultatif, exige staging_path (voir « Contr�
 |---|---|
 | `config/sources/*.yaml` | une config **dédiée** par source, la vôtre (vide dans le dépôt). Les exemples `orders.yaml` et `imdb.yaml` sont dans `examples/config/sources/` |
 | `config/defaults/*.yaml` | le **repli** par extension (`*.csv`, `*.txt`, `*.xlsx`, `*.parquet`), avec le même modèle |
-| `config/extractor_config.yaml` | la config du **listing** ; le lecteur ne la lit jamais |
+| `config/pipeline.yaml` | les répertoires listés **par défaut** (`default_directories`) ; la racine de config peut avoir le sien |
 
 Une source dédiée décrit un seul format : ses motifs incluent l'extension (`orders_*.csv`, pas
 `orders_*`). Un fichier IMDB au format `.parquet` prend donc le repli `default_parquet` au lieu
 d'être lu comme un CSV.
+
+## Le DAG de la source
+
+Les clés `listing`, `schedule`, `retries` et `tags` ne servent pas à la lecture : elles règlent le
+DAG `ingest__<source.name>`.
+
+- **Quels fichiers.** Le listing garde, dans chaque répertoire de `listing.directories` (non
+  récursif), les fichiers dont le **nom** correspond à `source.patterns`, moins `listing.exclude`.
+  Les motifs d'inclusion restent `source.patterns` : une seule source de vérité. Sans
+  `listing.directories`, la source prend `default_directories` de `pipeline.yaml` (`./data/`,
+  relatif au répertoire de lancement du worker). Un répertoire qui n'existe pas fait échouer le
+  listing : ce n'est pas un listing vide.
+- **Quand.** `schedule` est une expression cron à cinq champs (fuseau UTC), un preset Airflow
+  (`@hourly`, `@daily`, `@weekly`, `@monthly`, `@quarterly`, `@yearly`, `@once`) ou `null`, le
+  défaut : le DAG ne part qu'à la main. Airflow vérifie la syntaxe fine : un cron refusé
+  (`99 99 * * *`) donne un DAG `invalid_source__<fichier>`, pas une erreur d'import.
+- **Combien de reprises.** `retries` (0 à 10, défaut 1) vaut pour les tâches du DAG ; les codes de
+  sortie déterministes du job ne sont jamais rejoués.
+- **Le nom est un identifiant.** `source.name` : lettres minuscules, chiffres et `_`, 100
+  caractères au plus ; il devient le `dag_id` (`ingest__<nom>`), l'Asset (`lake_staging__<nom>`) et
+  la valeur de `file_list.source_name`. `unmatched` est réservé (DAG des fichiers sans source).
+- **Les fichiers sans source.** Ceux qu'aucune source dédiée ne réclame passent par le DAG
+  `ingest__unmatched`, qui les lit avec le repli de leur extension : zone raw seulement.
+- **Une config invalide** ne casse pas les autres DAGs : elle donne un DAG
+  `invalid_source__<fichier>` dont la tâche échoue avec le message de validation.
 
 ## Quelle config pour quel fichier ?
 
@@ -148,7 +181,7 @@ un autre format avec des colonnes décalées ou nulles.
 Les erreurs d'un même fichier sont agrégées dans **une** `ConfigError`, qui nomme chaque fichier YAML
 et chaque chemin de champ (`reader.options.infer_schema: ...`). Au chargement, elle refuse aussi :
 
-- un `source.name` en double ;
+- un `source.name` en double, ou qui n'est pas un identifiant (`[a-z0-9_]+`) ;
 - des tables du lake imbriquées (entre le raw et le staging d'une source, ou entre sources ; la
   casse est ignorée) ;
 - un `raw_path` ou `staging_path` qui commence par `quality/` (réservé aux résultats).
@@ -180,5 +213,8 @@ courant), trouve la config du fichier, puis demande à `ReaderFactory` le lecteu
 4. Pour un nouveau **format**, il faut un lecteur, une entrée dans `READER_CLASSES` et `FileFormat`
    (qui doivent rester égaux : un test le vérifie), une liste blanche et un test.
 
-La liste des fichiers que le listing trouve se règle à part, dans `config/extractor_config.yaml`
-(dossiers, extensions, motifs d'inclusion et d'exclusion).
+5. Dépausez `ingest__<nom>` (les DAGs d'Airflow démarrent en pause) : il apparaît au prochain
+   parsing, sans autre code à écrire. Sans `schedule`, lancez-le à la main.
+
+Les fichiers à lire se règlent dans le même YAML (`listing`, `source.patterns`) : il n'y a plus de
+fichier de listing à part.

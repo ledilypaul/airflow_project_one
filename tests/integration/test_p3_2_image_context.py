@@ -46,7 +46,7 @@ REQUIRED_FILES = (
     "Dockerfile",
     "pyproject.toml",
     "uv.lock",
-    "dags/local_read_file_dag.py",
+    "dags/source_pipelines.py",
     "pipeline/jobs/read_files_job.py",
     "utils/spark_session.py",
     "storage/parquet_lake_writer.py",

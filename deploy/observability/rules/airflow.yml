@@ -56,7 +56,7 @@ groups:
           summary: "A run of DAG {{ $labels.dag_id }} failed"
           description: >-
             DAG {{ $labels.dag_id }} had a run in the `failed` state during the last 15
-            minutes. See the task logs; for read_file_dag, the Spark exit code
+            minutes. See the task logs; for an ingest__<source> DAG, the Spark exit code
             (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job
             standalone') and the structured line `airflow_failure` of the task log.
 
@@ -136,7 +136,7 @@ groups:
 
       # P3-8. `scheduler.dagruns.queued` is new in Airflow 3.4 (a gauge, one
       # aggregate value unless `[scheduler] dagrun_metrics_per_dag_id`). A run
-      # waits in `queued` for a free slot (read_file_dag and transform_dag have
+      # waits in `queued` for a free slot (the ingest__<source> DAGs and transform_dag have
       # max_active_runs=1): another run is `running` then, which is a normal
       # queue, and dagrun_timeout catches a hung one. A run queued while nothing
       # runs will not start: the scheduler only picks up the queued runs of a DAG

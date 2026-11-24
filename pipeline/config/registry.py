@@ -10,8 +10,8 @@ pas depuis le répertoire courant) :
 La racine se choisit par `PIPELINE_CONFIG_ROOT` (chemin absolu) ; les sources
 d'exemple sont dans `examples/config`.
 
-Rien d'autre n'est lu : `config/extractor_config.yaml` (la config du listing)
-n'est jamais scanné.
+`pipeline.yaml` de la racine (sinon celui du moteur) donne `default_directories`,
+les répertoires listés par défaut (P5-3). Aucun autre fichier n'est scanné.
 
 Correspondance, sur le nom du fichier (sans les répertoires), insensible à la
 casse :
@@ -55,8 +55,17 @@ def _default_config_root() -> Path:
     return path
 
 
+def default_config_root() -> Path:
+    """Racine de config selon l'environnement **actuel** (`DEFAULT_CONFIG_ROOT`
+    est figée à l'import) : ce que lit un DAG à chaque parsing (P5-3)."""
+    return _default_config_root()
+
+
 SOURCES_DIR = "sources"
 DEFAULTS_DIR = "defaults"
+# Réglages communs du listing (P5-3) ; sans fichier dans la racine choisie, celui du moteur.
+PIPELINE_FILE = "pipeline.yaml"
+ENGINE_PIPELINE_FILE = _PROJECT_ROOT / "config" / PIPELINE_FILE
 
 
 class ConfigError(ValueError):
@@ -133,6 +142,33 @@ def load_source_config(path: Path) -> SourceConfig:
         raise ConfigError(f"config de lecture invalide : {path}\n{details}") from exc
 
 
+def default_directories(config_root: Path) -> list[str]:
+    """`default_directories` de `<config_root>/pipeline.yaml` (sinon du fichier
+    du moteur) : les répertoires que listent les sources sans `listing.directories`
+    et le DAG `ingest__unmatched`.
+
+    Raises:
+        ConfigError: fichier illisible ou clé absente ou invalide.
+    """
+    path = Path(config_root) / PIPELINE_FILE
+    if not path.is_file():
+        path = ENGINE_PIPELINE_FILE
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigError(f"{path} illisible\n  - {exc}") from exc
+    directories = raw.get("default_directories") if isinstance(raw, dict) else None
+    if (
+        not isinstance(directories, list)
+        or not directories
+        or not all(isinstance(d, str) and d.strip() for d in directories)
+    ):
+        raise ConfigError(
+            f"{path} : `default_directories` doit être une liste non vide de répertoires"
+        )
+    return [d.strip() for d in directories]
+
+
 def _yaml_files(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
@@ -207,21 +243,8 @@ class SourceRegistry:
         de source en double et les tables du lake imbriquées) sont levées
         ensemble dans une `ConfigError`.
         """
-        config_root = Path(config_root)
-        if not config_root.is_dir():
-            raise ConfigError(f"dossier de configs de lecture introuvable : {config_root}")
-
-        errors: list[str] = []
-        tiers: dict[str, list[LoadedConfig]] = {SOURCES_DIR: [], DEFAULTS_DIR: []}
-        for tier, loaded in tiers.items():
-            directory = config_root / tier
-            if tier == DEFAULTS_DIR and not directory.is_dir():
-                directory = ENGINE_DEFAULTS_DIR
-            for path in _yaml_files(directory):
-                try:
-                    loaded.append(LoadedConfig(load_source_config(path), path))
-                except ConfigError as exc:
-                    errors.append(str(exc))
+        tiers, file_errors = cls._scan(Path(config_root))
+        errors = list(file_errors.values())
 
         seen: dict[str, Path] = {}
         for loaded in tiers[SOURCES_DIR] + tiers[DEFAULTS_DIR]:
@@ -243,6 +266,66 @@ class SourceRegistry:
                 f"ni dans {config_root / DEFAULTS_DIR}"
             )
         return cls(tiers[SOURCES_DIR], tiers[DEFAULTS_DIR])
+
+    @staticmethod
+    def _scan(config_root: Path) -> tuple[dict[str, list[LoadedConfig]], dict[Path, str]]:
+        """Charge chaque YAML de `<config_root>/sources` et `defaults` ; les
+        fichiers invalides sont rendus à part (chemin -> message)."""
+        if not config_root.is_dir():
+            raise ConfigError(f"dossier de configs de lecture introuvable : {config_root}")
+        errors: dict[Path, str] = {}
+        tiers: dict[str, list[LoadedConfig]] = {SOURCES_DIR: [], DEFAULTS_DIR: []}
+        for tier, loaded in tiers.items():
+            directory = config_root / tier
+            if tier == DEFAULTS_DIR and not directory.is_dir():
+                directory = ENGINE_DEFAULTS_DIR
+            for path in _yaml_files(directory):
+                try:
+                    loaded.append(LoadedConfig(load_source_config(path), path))
+                except ConfigError as exc:
+                    errors[path] = str(exc)
+        return tiers, errors
+
+    @classmethod
+    def load_valid(cls, config_root: Path) -> tuple["SourceRegistry", dict[Path, str]]:
+        """Le registre des configs valides, et le message de chacune qui ne l'est pas
+        (P5-3) : une config invalide n'empêche pas les autres de se charger.
+
+        Sont invalides, en plus des erreurs de fichier, une config dont le nom est
+        déjà pris et une dont les tables du lake sont imbriquées dans celles d'une
+        config déjà retenue (l'ordre est celui des fichiers : le premier gagne).
+
+        Raises:
+            ConfigError: dossier de racine introuvable.
+        """
+        tiers, invalid = cls._scan(Path(config_root))
+        everyone = tiers[SOURCES_DIR] + tiers[DEFAULTS_DIR]
+        names: dict[str, Path] = {}
+        kept = []
+        for loaded in everyone:
+            if loaded.name in names:
+                invalid[loaded.path] = (
+                    f"source.name {loaded.name!r} déclaré deux fois : "
+                    f"{names[loaded.name]} et {loaded.path}"
+                )
+            else:
+                names[loaded.name] = loaded.path
+                kept.append(loaded)
+        if _lake_target_conflicts(kept):  # chemin lent, seulement en cas d'erreur
+            accepted: list[LoadedConfig] = []
+            for loaded in kept:
+                problems = _lake_target_conflicts([*accepted, loaded])
+                if problems:
+                    invalid[loaded.path] = "\n".join(problems)
+                else:
+                    accepted.append(loaded)
+            kept = accepted
+        ok = {id(loaded) for loaded in kept}
+        registry = cls(
+            [c for c in tiers[SOURCES_DIR] if id(c) in ok],
+            [c for c in tiers[DEFAULTS_DIR] if id(c) in ok],
+        )
+        return registry, invalid
 
     def match(self, file_path: str) -> SourceConfig:
         """Config de lecture du fichier `file_path` (chemin ou URI)."""

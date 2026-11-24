@@ -94,8 +94,8 @@ def test_p3_2_dbt_and_the_driver_share_the_lake():
     assert env["LAKE_ROOT"].startswith(shared + "/")
     assert env["DBT_DUCKDB_PATH"].startswith(shared + "/")
     # The listing reads ./data/ = <AIRFLOW_HOME>/data -> shared/data (Dockerfile).
-    extractor = yaml.safe_load((PROJECT_ROOT / "config" / "extractor_config.yaml").read_text())
-    assert extractor["extractor_config"]["source_directories"] == ["./data/"]
+    pipeline = yaml.safe_load((PROJECT_ROOT / "config" / "pipeline.yaml").read_text())
+    assert pipeline["default_directories"] == ["./data/"]
     assert "ln -s shared/data /opt/airflow/data" in (PROJECT_ROOT / "Dockerfile").read_text()
     assert shared == "/opt/airflow/shared"
 

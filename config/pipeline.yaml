@@ -1,0 +1,6 @@
+# Réglages communs du listing (P5-3). Une source sans `listing.directories` et le DAG
+# `ingest__unmatched` listent ces répertoires : chemins absolus, ou relatifs au
+# répertoire de lancement du worker (`./data/` en local, le volume partagé sur
+# Kubernetes). `PIPELINE_CONFIG_ROOT` peut fournir son propre `pipeline.yaml`.
+default_directories:
+  - "./data/"

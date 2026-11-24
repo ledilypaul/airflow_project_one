@@ -27,9 +27,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # Python is NOT the uv-managed venv (C-1), so it keeps a guarded sys.path
 # fallback — see test_p0_4_read_files_job_sys_path_fallback_is_guarded below.
 PACKAGING_SENSITIVE_FILES = [
-    PROJECT_ROOT / "dags" / "local_list_files_dag.py",
-    PROJECT_ROOT / "dags" / "local_list_files_dag_python_operator.py",
-    PROJECT_ROOT / "dags" / "local_read_file_dag.py",
+    PROJECT_ROOT / "dags" / "source_pipelines.py",
+    PROJECT_ROOT / "utils" / "read_files_operator.py",
     PROJECT_ROOT / "tests" / "unit" / "dags" / "conftest.py",
 ]
 
@@ -52,12 +51,12 @@ def test_p0_4_no_manual_sys_path_mutation(file_path: Path):
 
 def test_p0_4_business_packages_importable_without_sys_path_hack():
     """
-    The modules actually imported by the DAGs/job (Extractor,
+    The modules actually imported by the DAGs/job (list_source_files,
     insert_into_file_list, list_file_from_db, get_spark_session,
     BaseFileReader) resolve through the editable install, not through any
     sys.path mutation performed by this test or by application code.
     """
-    from pipeline.extractor.extractor import Extractor  # noqa: F401
+    from pipeline.extractor.extractor import list_source_files  # noqa: F401
     from pipeline.file_reader.base_reader import BaseFileReader  # noqa: F401
     from storage.postgresql_writer import PostgresWriter  # noqa: F401
     from utils.functions_utils import insert_into_file_list, list_file_from_db  # noqa: F401

@@ -192,7 +192,7 @@ def test_p1_3_processes_only_files_of_run_id():
         with pytest.raises(SystemExit):
             main(run_id=RUN_ID)
 
-        mock_list.assert_called_once_with(RUN_ID)
+        mock_list.assert_called_once_with(RUN_ID, source_name=None)
 
 
 def test_p1_3_marks_processed_on_success():

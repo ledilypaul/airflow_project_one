@@ -45,7 +45,7 @@ AIRFLOW__OPENLINEAGE__NAMESPACE ?= $(OPENLINEAGE_NAMESPACE)
 PYTHON ?= $(UV) run python
 # Spark listener (JVM): openlineage-spark for Scala 2.13 (PySpark 4), one
 # self-contained jar from Maven Central, pinned by version and SHA-256.
-# Without a valid file, read_file_dag runs Spark without its listener.
+# Without a valid file, the ingest__<source> DAGs run Spark without its listener.
 # Provenance of the digest (2026-11-14): equal to the `.sha256` Maven Central
 # publishes next to the jar, and the jar's `.asc` signature verifies with the
 # key B4AD C6AE E76F 4EED 97FA 78A1 C6C9 B79C 9583 2D71 (an OpenLineage
@@ -56,7 +56,7 @@ OPENLINEAGE_SPARK_JAR ?= $(LINEAGE_DIR)/jars/openlineage-spark_2.13-$(OPENLINEAG
 OPENLINEAGE_SPARK_URL := https://repo1.maven.org/maven2/io/openlineage/openlineage-spark_2.13/$(OPENLINEAGE_SPARK_VERSION)/openlineage-spark_2.13-$(OPENLINEAGE_SPARK_VERSION).jar
 $(AIRFLOW_TARGETS): export AIRFLOW__OPENLINEAGE__NAMESPACE := $(AIRFLOW__OPENLINEAGE__NAMESPACE)
 $(AIRFLOW_TARGETS): export OPENLINEAGE_SPARK_JAR := $(OPENLINEAGE_SPARK_JAR)
-# read_file_dag checks the jar against it when the task runs.
+# the ingest__<source> DAGs check the jar against it when the task runs.
 $(AIRFLOW_TARGETS): export OPENLINEAGE_SPARK_SHA256 := $(OPENLINEAGE_SPARK_SHA256)
 # The hook lineage collector keeps 100 inputs per task by default: a listing
 # of more files would declare only the first 100 (a warning says how many
@@ -279,12 +279,13 @@ demo: ## Run Airflow standalone on the example sources (examples/)
 ##@ Spark
 
 spark-job: export RUN_ID := $(RUN_ID)
-spark-job: ## Run the Spark job outside Airflow: make spark-job RUN_ID=<dag_run_id>
+spark-job: export SOURCE := $(SOURCE)
+spark-job: ## Run the Spark job outside Airflow: make spark-job RUN_ID=<dag_run_id> [SOURCE=<name>]
 	@if [ -z "$$RUN_ID" ]; then \
-		echo "error: RUN_ID is empty. Usage: make spark-job RUN_ID=<dag_run_id of list_files_dag>" >&2; \
+		echo "error: RUN_ID is empty. Usage: make spark-job RUN_ID=<dag_run_id of an ingest__<source> run> [SOURCE=<source>]" >&2; \
 		exit 1; \
 	fi
-	$(UV) run spark-submit pipeline/jobs/read_files_job.py "--run-id=$$RUN_ID"
+	$(UV) run spark-submit pipeline/jobs/read_files_job.py "--run-id=$$RUN_ID" $${SOURCE:+"--source-name=$$SOURCE"}
 
 ##@ Documentation (Sphinx, docs/; only the `docs` group of pyproject.toml, no Spark or Airflow needed)
 

@@ -29,6 +29,7 @@ une config se charge sans moteur installé (tests/unit/test_p5_2_config_is_engin
 """
 
 import difflib
+import re
 from collections.abc import Collection, Mapping
 from typing import Annotated, Any, Literal
 
@@ -99,8 +100,48 @@ def _check_pattern(pattern: str) -> str:
     return pattern
 
 
+# P5-3 : `source.name` devient le `dag_id` (`ingest__<name>`) et le nom d'Asset
+# (`lake_staging__<name>`) : un identifiant, jamais du texte libre.
+SOURCE_NAME_RE = re.compile(r"[a-z0-9_]+")
+SOURCE_NAME_MAX_LENGTH = 100
+# `ingest__unmatched` est le DAG des fichiers sans source (défauts par extension).
+UNMATCHED_SOURCE = "unmatched"
+SCHEDULE_PRESETS = frozenset(
+    {"@once", "@hourly", "@daily", "@weekly", "@monthly", "@quarterly", "@yearly"}
+)
+# Cinq champs cron ; la syntaxe fine est vérifiée par Airflow quand le DAG se
+# construit (un planning refusé donne un DAG `invalid_source__<nom>`).
+_CRON_RE = re.compile(r"[0-9A-Za-z*/,\-?#]+( +[0-9A-Za-z*/,\-?#]+){4}")
+
+
+def _check_source_name(name: str) -> str:
+    if len(name) > SOURCE_NAME_MAX_LENGTH or not SOURCE_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"nom {name!r} invalide : lettres minuscules, chiffres et `_` seulement, "
+            f"{SOURCE_NAME_MAX_LENGTH} caractères au plus (il sert d'identifiant de DAG et d'Asset)"
+        )
+    if name == UNMATCHED_SOURCE:
+        raise ValueError(
+            f"nom {name!r} réservé : `ingest__{UNMATCHED_SOURCE}` est le DAG des fichiers "
+            "qui ne correspondent à aucune source"
+        )
+    return name
+
+
+def _check_schedule(value: str) -> str:
+    if value not in SCHEDULE_PRESETS and not _CRON_RE.fullmatch(value):
+        raise ValueError(
+            f"planning {value!r} : attendu une expression cron à cinq champs "
+            f"(`0 6 * * *`), l'un de {', '.join(sorted(SCHEDULE_PRESETS))}, ou null (manuel)"
+        )
+    return value
+
+
 ColumnType = Annotated[str, AfterValidator(_check_column_type)]
 Pattern = Annotated[NonEmptyStr, AfterValidator(_check_pattern)]
+SourceName = Annotated[NonEmptyStr, AfterValidator(_check_source_name)]
+Schedule = Annotated[NonEmptyStr, AfterValidator(_check_schedule)]
+Tag = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
 
 class _StrictModel(BaseModel):
@@ -108,7 +149,9 @@ class _StrictModel(BaseModel):
 
 
 class SourceSection(_StrictModel):
-    name: NonEmptyStr = Field(description="Identifiant unique de la source.")
+    name: SourceName = Field(
+        description="Identifiant unique de la source (`[a-z0-9_]+`) : DAG `ingest__<name>`."
+    )
     format: FileFormat = Field(description="Choisit le reader dans ReaderFactory.")
     patterns: list[Pattern] = Field(
         min_length=1,
@@ -202,6 +245,24 @@ class StorageSection(_StrictModel):
         return value
 
 
+class ListingSection(_StrictModel):
+    """Où chercher les fichiers de la source (P5-3). Ceux qui comptent sont
+    ceux dont le nom correspond à `source.patterns`, moins `exclude`."""
+
+    directories: list[NonEmptyStr] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Répertoires listés (relatifs au répertoire de lancement du worker, ou absolus) ; "
+            "`default_directories` de `pipeline.yaml` s'il est absent."
+        ),
+    )
+    exclude: list[Pattern] = Field(
+        default_factory=list,
+        description="Motifs fnmatch sur le NOM du fichier (casse ignorée), retirés du listing.",
+    )
+
+
 class SourceConfig(_StrictModel):
     source: SourceSection
     reader: ReaderSection = Field(default_factory=ReaderSection)
@@ -213,6 +274,15 @@ class SourceConfig(_StrictModel):
     storage: StorageSection | None = None
     # P2-3 : contrôles exécutés sur les données du staging ; exige staging_path.
     quality: QualitySection | None = None
+    # P5-3 : le DAG `ingest__<source.name>` généré. Sans effet pour la lecture.
+    listing: ListingSection = Field(default_factory=ListingSection)
+    schedule: Schedule | None = Field(
+        default=None, description="Cron, preset Airflow (`@daily`) ou null : déclenchement manuel."
+    )
+    retries: int | None = Field(
+        default=None, ge=0, le=10, description="Reprises des tâches du DAG ; 1 s'il est absent."
+    )
+    tags: list[Tag] = Field(default_factory=list, description="Étiquettes du DAG dans l'UI.")
 
     def _require_storage(self) -> StorageSection:
         if self.storage is None:  # seulement via model_construct, sans validation
@@ -233,6 +303,14 @@ class SourceConfig(_StrictModel):
     def table(self) -> str:
         """Nom de la table dans le lake : `storage.table_name` ou `source.name`."""
         return self._require_storage().table_name or self.source.name
+
+    @property
+    def staging_asset_name(self) -> str | None:
+        """Asset émis quand la source a écrit sa zone staging
+        (`lake_staging__<name>`, P5-3) ; None sans `staging_path`."""
+        if self.storage is None or self.storage.staging_path is None:
+            return None
+        return f"lake_staging__{self.source.name}"
 
     @property
     def raw_target(self) -> str:

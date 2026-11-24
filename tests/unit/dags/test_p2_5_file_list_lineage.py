@@ -145,10 +145,10 @@ def _files(tmp_path, count=2):
     return paths
 
 
-def test_p2_5_taskflow_listing_reports_recorded_files(tmp_path):
-    from dags.local_list_files_dag import dag_instance
+def test_p2_5_listing_reports_recorded_files(tmp_path):
+    from dags.source_pipelines import build_dags
 
-    insert_files = dag_instance.get_task("insert_files").python_callable
+    insert_files = build_dags()["ingest__orders"].get_task("insert_files").python_callable
     files = _files(tmp_path)
     vanished = str(tmp_path / "vanished.csv")
     hook_cls = MagicMock()
@@ -158,30 +158,13 @@ def test_p2_5_taskflow_listing_reports_recorded_files(tmp_path):
         patch("utils.functions_utils.insert_into_file_list"),
         patch("utils.file_list_lineage.report_file_list_lineage") as report,
     ):
-        assert insert_files([*files, vanished]) == 2
-
-    report.assert_called_once_with(hook_cls.return_value, role="output", source_files=files)
-
-
-def test_p2_5_classic_listing_reports_recorded_files(tmp_path):
-    from dags.local_list_files_dag_python_operator import insert_files_to_db
-
-    files = _files(tmp_path)
-    ti = MagicMock()
-    ti.xcom_pull.return_value = files
-    hook_cls = MagicMock()
-    with (
-        patch("airflow.providers.postgres.hooks.postgres.PostgresHook", hook_cls),
-        patch("utils.functions_utils.insert_into_file_list"),
-        patch("utils.file_list_lineage.report_file_list_lineage") as report,
-    ):
-        assert insert_files_to_db(ti=ti, run_id="r") == 2
+        assert insert_files([*files, vanished]) == ["--run-id=r", "--source-name=orders"]
 
     report.assert_called_once_with(hook_cls.return_value, role="output", source_files=files)
 
 
 def test_p2_5_report_file_list_input_uses_the_file_list_connection(collector):
-    from dags.local_read_file_dag import report_file_list_input
+    from utils.read_files_operator import report_file_list_input
 
     hook_cls = MagicMock()
     with (

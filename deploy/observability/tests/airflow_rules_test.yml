@@ -31,7 +31,7 @@ tests:
           - exp_labels: {dag_id: read_file_dag, severity: critical}
             exp_annotations:
               summary: "A run of DAG read_file_dag failed"
-              description: "DAG read_file_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for read_file_dag, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
+              description: "DAG read_file_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for an ingest__<source> DAG, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
 
   # A later failure of a DAG whose counter already exists.
   - name: a further failure fires, a quiet counter does not
@@ -52,7 +52,7 @@ tests:
           - exp_labels: {dag_id: transform_dag, severity: critical}
             exp_annotations:
               summary: "A run of DAG transform_dag failed"
-              description: "DAG transform_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for read_file_dag, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
+              description: "DAG transform_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for an ingest__<source> DAG, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
       # 15 minutes after the failure, it resolves.
       - eval_time: 50m
         alertname: AirflowDagRunFailed
@@ -116,7 +116,7 @@ tests:
           - exp_labels: {dag_id: read_file_dag, severity: critical}
             exp_annotations:
               summary: "A run of DAG read_file_dag failed"
-              description: "DAG read_file_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for read_file_dag, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
+              description: "DAG read_file_dag had a run in the `failed` state during the last 15 minutes. See the task logs; for an ingest__<source> DAG, the Spark exit code (1 to 6) is in the failure message (CLAUDE.md, 'Running the Spark job standalone') and the structured line `airflow_failure` of the task log."
       - eval_time: 58m
         alertname: AirflowDagRunFailed
         exp_alerts: []
@@ -429,7 +429,7 @@ tests:
           - exp_labels: {severity: warning}
             exp_annotations:
               summary: "A DAG run has been queued for 15 minutes with nothing running"
-              description: "1 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause read_file_dag before running a listing') or check why the DAG is stale (an import error, a removed file)."
+              description: "1 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause transform_dag before the first listing') or check why the DAG is stale (an import error, a removed file)."
 
   # max_active_runs=1: the next listing's run waits behind a running one.
   - name: a run queued behind a running one does not fire
@@ -483,7 +483,7 @@ tests:
           - exp_labels: {severity: warning}
             exp_annotations:
               summary: "A DAG run has been queued for 15 minutes with nothing running"
-              description: "2 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause read_file_dag before running a listing') or check why the DAG is stale (an import error, a removed file)."
+              description: "2 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause transform_dag before the first listing') or check why the DAG is stale (an import error, a removed file)."
 
   # SEC-4: another service's running run must not mask a stuck queue of ours,
   # and another service's queued run must not fire ours.
@@ -503,7 +503,7 @@ tests:
           - exp_labels: {severity: warning}
             exp_annotations:
               summary: "A DAG run has been queued for 15 minutes with nothing running"
-              description: "1 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause read_file_dag before running a listing') or check why the DAG is stale (an import error, a removed file)."
+              description: "1 DAG run(s) have been `queued` for 15 minutes while no DAG run is `running`, so they are not waiting for max_active_runs. The scheduler does not start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause transform_dag before the first listing') or check why the DAG is stale (an import error, a removed file)."
 
   - name: another service's queued run alone does not fire
     interval: 1m

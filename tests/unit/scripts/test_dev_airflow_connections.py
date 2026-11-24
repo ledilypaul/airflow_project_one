@@ -163,5 +163,5 @@ def test_connection_ids_match_the_ones_used_by_the_pipeline():
         PROJECT_ROOT / "utils" / "functions_utils.py", "FILE_LIST_POSTGRES_CONN_ID"
     )
     assert script.SPARK_CONN_ID == _string_constant(
-        PROJECT_ROOT / "dags" / "local_read_file_dag.py", "SPARK_CONN_ID"
+        PROJECT_ROOT / "utils" / "read_files_operator.py", "SPARK_CONN_ID"
     )

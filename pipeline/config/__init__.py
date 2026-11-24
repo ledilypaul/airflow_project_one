@@ -8,6 +8,8 @@ from pipeline.config.registry import (
     ConfigError,
     NoMatchingConfigError,
     SourceRegistry,
+    default_config_root,
+    default_directories,
     load_source_config,
 )
 
@@ -20,5 +22,7 @@ __all__ = [
     "NoMatchingConfigError",
     "SourceConfig",
     "SourceRegistry",
+    "default_config_root",
+    "default_directories",
     "load_source_config",
 ]

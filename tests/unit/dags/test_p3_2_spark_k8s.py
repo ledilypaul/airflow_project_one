@@ -1,4 +1,4 @@
-"""P3-2: read_file_dag submits to Kubernetes in cluster mode when the Connection
+"""P3-2: the ingest DAGs submit to Kubernetes in cluster mode when the Connection
 says so, and keeps the P2-6 retry policy there.
 
 Observed on kind with spark-submit 4.3.0 (docs/architecture/2026-11-19-p3-2-kubernetes.md):
@@ -65,7 +65,7 @@ K8S_CONNECTION = {
 
 
 TI = SimpleNamespace(
-    dag_id="read_file_dag", run_id="manual__p3_2", task_id="spark_read_files", map_index=0
+    dag_id="ingest__orders", run_id="manual__p3_2", task_id="spark_read_files", map_index=0
 )
 
 
@@ -110,7 +110,7 @@ class FakeKube:
 
 @pytest.fixture(autouse=True)
 def fake_kube(monkeypatch):
-    import dags.local_read_file_dag as module
+    import utils.read_files_operator as module
 
     kube = FakeKube()
     monkeypatch.setattr(module, "_kube_client", lambda: kube)
@@ -139,7 +139,7 @@ def fake_spark_submit(tmp_path, monkeypatch):
 
 
 def _operator():
-    from dags.local_read_file_dag import (
+    from utils.read_files_operator import (
         JOB_PATH,
         PROJECT_ROOT,
         SPARK_CONN_ID,
@@ -162,7 +162,7 @@ def _k8s(monkeypatch, *, output="", returncode=0):
 
 
 def test_p3_2_k8s_application_is_given_as_local_uri():
-    from dags.local_read_file_dag import k8s_cluster_application
+    from utils.read_files_operator import k8s_cluster_application
 
     assert (
         k8s_cluster_application("/opt/airflow/pipeline/jobs/read_files_job.py")
@@ -174,7 +174,7 @@ def test_p3_2_k8s_application_is_given_as_local_uri():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="needs a POSIX PATH")
 def test_p3_2_cluster_mode_command(fake_spark_submit, monkeypatch):
-    from dags.local_read_file_dag import JOB_PATH, PROJECT_ROOT
+    from utils.read_files_operator import JOB_PATH, PROJECT_ROOT
 
     _k8s(monkeypatch, output=WATCHER_OUTPUT.format(code=0), returncode=0)
     operator = _operator()
@@ -231,7 +231,7 @@ def test_p3_2_failed_submission_has_no_exit_code_and_is_retried(fake_spark_submi
 def test_p3_2_local_mode_is_unchanged(fake_spark_submit, monkeypatch):
     """Connection `local[*]`: no local:// prefix, spark-submit's own return
     code decides (P2-6), nothing Kubernetes in the command."""
-    from dags.local_read_file_dag import JOB_PATH
+    from utils.read_files_operator import JOB_PATH
 
     monkeypatch.setenv(
         "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[1]"})
@@ -252,7 +252,7 @@ def test_p3_2_local_mode_is_unchanged(fake_spark_submit, monkeypatch):
 def test_p3_2_k8s_client_mode_keeps_the_return_code():
     """`deploy-mode` client on Kubernetes: the driver is spark-submit itself,
     whose return code is the job's (as in local mode)."""
-    from dags.local_read_file_dag import _is_k8s_cluster_mode, _job_exit_code
+    from utils.read_files_operator import _is_k8s_cluster_mode, _job_exit_code
 
     class Process:
         returncode = 6
@@ -283,7 +283,7 @@ def test_p3_2_k8s_client_mode_keeps_the_return_code():
     ],
 )
 def test_p3_2_k8s_cluster_mode_is_detected_by_scheme(master, deploy_mode, expected):
-    from dags.local_read_file_dag import _is_k8s_cluster_mode
+    from utils.read_files_operator import _is_k8s_cluster_mode
 
     hook = SimpleNamespace(
         _is_kubernetes="k8s" in master, _connection={"master": master, "deploy_mode": deploy_mode}
@@ -295,7 +295,7 @@ def test_p3_2_k8s_cluster_mode_is_detected_by_scheme(master, deploy_mode, expect
 
 
 def test_p3_2_driver_label_is_stable_and_valid():
-    from dags.local_read_file_dag import k8s_task_instance_label
+    from utils.read_files_operator import k8s_task_instance_label
 
     value = k8s_task_instance_label(TI)
     assert value == k8s_task_instance_label(SimpleNamespace(**vars(TI)))
@@ -309,7 +309,7 @@ def test_p3_2_retry_deletes_the_orphan_driver(fake_spark_submit, monkeypatch, fa
     """Attempt 1's worker pod died (OOM, node lost): its driver may still run.
     Attempt 2 deletes the Running/Pending drivers of the same task instance
     before submitting, never a finished one."""
-    from dags.local_read_file_dag import K8S_TI_LABEL, k8s_task_instance_label
+    from utils.read_files_operator import K8S_TI_LABEL, k8s_task_instance_label
 
     for pod in (
         FakePod("old-running-driver", "Running"),
@@ -404,7 +404,7 @@ def test_p3_2_lineage_is_removed_in_k8s_cluster_mode(fake_spark_submit, monkeypa
     """The listener jar would be a client file to upload (no local://) and the
     file transport writes inside the pod: the submission goes without lineage
     and says so, it never fails because of it."""
-    from dags.local_read_file_dag import OPENLINEAGE_SPARK_LISTENER
+    from utils.read_files_operator import OPENLINEAGE_SPARK_LISTENER
 
     _k8s(monkeypatch, output=WATCHER_OUTPUT.format(code=0), returncode=0)
     operator = _operator()

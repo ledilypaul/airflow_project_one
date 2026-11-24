@@ -1,40 +1,38 @@
 # Vue d'ensemble
 
-Le pipeline a trois étages. Chacun est un DAG Airflow ; le passage de l'un à l'autre se fait par
-des *Assets*, pas par un planning.
+Le pipeline a deux étages : un DAG d'ingestion **par source** (généré depuis son YAML, P5-3), puis
+un DAG dbt commun. Le passage de l'un à l'autre se fait par des *Assets*, pas par un planning.
 
 ```{mermaid}
 sequenceDiagram
     autonumber
     participant S as Fichiers (data/)
-    participant L as list_files_dag
+    participant I as ingest__SOURCE
     participant P as Postgres (file_list)
-    participant R as read_file_dag
     participant J as Job Spark
     participant K as Lake Parquet
     participant T as transform_dag (dbt)
     participant D as DuckDB
 
-    L->>S: cherche les fichiers (extension, motifs)
-    L->>P: une ligne pending par fichier
-    L-->>R: Asset file_list
-    R->>P: lit les lignes du listing
-    R->>J: spark-submit --run-id=...
+    I->>S: cherche les fichiers (répertoires, motifs de la source)
+    I->>P: une ligne pending par fichier (run, source)
+    I->>J: spark-submit --run-id=... --source-name=...
+    J->>P: lit les lignes (run, source)
     J->>K: écrit raw, puis staging et quality
     J->>P: processed ou failed (avec la raison)
-    R-->>T: Asset lake_staging
+    I-->>T: Asset lake_staging__SOURCE
     T->>K: lit la zone staging
     T->>D: construit les tables (dbt build)
     T-->>T: Asset dbt_marts
 ```
 
-## Les trois étages
+## Les étages
 
 | DAG | Rôle | Déclenché par |
 |---|---|---|
-| `list_files_dag` | cherche les fichiers sources et les enregistre dans `file_list` | à la main (pas de planning) |
-| `read_file_dag` | lance Spark, qui lit chaque fichier et l'écrit dans le lake | l'Asset `file_list` |
-| `transform_dag` | reconstruit les tables DuckDB avec dbt | l'Asset `lake_staging` |
+| `ingest__<source>` (un par YAML de `config/sources/`) | cherche les fichiers de la source, les enregistre dans `file_list`, lance Spark, qui les lit et les écrit dans le lake | le `schedule` du YAML (cron, preset, ou à la main) |
+| `ingest__unmatched` | pareil pour les fichiers qu'aucune source ne réclame (défauts par extension, zone raw seulement) | à la main |
+| `transform_dag` | reconstruit les tables DuckDB avec dbt | l'un des Assets `lake_staging__<source>` |
 
 Le détail de chaque DAG est dans [](dags.md).
 
@@ -72,9 +70,9 @@ avertissement qui dit pourquoi.
 
 ```text
 airflow_project_one/
-├── dags/              les DAGs Airflow (importés par chemin, voir ci-dessous)
+├── dags/              source_pipelines.py (la fabrique de DAGs d'ingestion), local_transform_dag.py
 ├── pipeline/
-│   ├── extractor/     liste les fichiers sources (Extractor)
+│   ├── extractor/     liste les fichiers d'une source (motifs, exclusions)
 │   ├── config/        modèles Pydantic des configs de lecture, registre, contrôles qualité
 │   ├── file_reader/   lecteurs CSV, Parquet, Excel et la fabrique qui les choisit
 │   ├── processor/     nettoyage d'un DataFrame (lignes vides, doublons…)
@@ -83,8 +81,8 @@ airflow_project_one/
 ├── storage/           écriture : ParquetLakeWriter (le lake), PostgreSQL, Hive
 ├── utils/             connexion DB, session Spark, chemins, lignage, alertes d'échec
 ├── config/
-│   ├── extractor_config.yaml   quoi lister
-│   ├── sources/*.yaml          une config de lecture dédiée par source
+│   ├── pipeline.yaml           les répertoires listés par défaut
+│   ├── sources/*.yaml          une config dédiée par source : lecture, écriture, listing, planning
 │   └── defaults/*.yaml         le repli par extension
 ├── transform/         projet dbt (son propre projet uv)
 ├── deploy/            Helm, Kubernetes, observabilité, pools Airflow
@@ -93,8 +91,9 @@ airflow_project_one/
 └── tests/             la suite de tests (unitaires et d'intégration)
 ```
 
-Les fichiers de `dags/` ajoutent la racine du projet à `sys.path` : Airflow les importe directement
-par chemin, sans passer par un paquet installé.
+Les fichiers de `dags/` sont importés par chemin, mais le projet doit être importable à ce moment
+(installation éditable avec `uv sync`, ou `PYTHONPATH` dans l'image) : la fabrique charge les configs
+au parsing, sans jamais importer PySpark.
 
 ## Technologies
 
