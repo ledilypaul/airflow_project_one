@@ -31,6 +31,8 @@ import yaml
 from airflow.models import DagBag
 from airflow.sdk import Asset
 
+from pipeline.config.types import SUPPORTED_COLUMN_TYPES, resolve_column_type
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DAGS_FOLDER = PROJECT_ROOT / "dags"
 TRANSFORM_DAG_FILE = DAGS_FOLDER / "local_transform_dag.py"
@@ -397,18 +399,9 @@ def test_p2_4_c4_every_manifest_node_is_waited_for(transform_dag):
 # dbt project <-> lake
 # ---------------------------------------------------------------------------
 
-# Spark types of pipeline/config/types.py -> DuckDB type read from the
-# Parquet written by Spark (checked for real by tests/integration).
-DUCKDB_TYPES = {
-    "string": "VARCHAR",
-    "int": "INTEGER",
-    "integer": "INTEGER",
-    "float": "FLOAT",
-    "double": "DOUBLE",
-    "boolean": "BOOLEAN",
-    "date": "DATE",
-    "timestamp": "TIMESTAMP",
-}
+# Neutral types of pipeline/config/types.py -> DuckDB type read from the
+# Parquet written by Spark (checked for real by tests/integration, P5-2).
+DUCKDB_TYPES = {name: resolve_column_type(name).duckdb for name in SUPPORTED_COLUMN_TYPES}
 TECHNICAL_COLUMNS = [
     ("lake_file_id", "BIGINT"),
     ("lake_ingested_at", "TIMESTAMP"),

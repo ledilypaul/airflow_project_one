@@ -49,7 +49,11 @@ quality:
   bornes sur une colonne `float` ou `double`.
 - **`regex` utilise `rlike` de Spark**, une correspondance *partielle* : ancrez le motif
   (`^...$`). Il doit compiler en Python sans syntaxe propre à Java ou à Python, et le job le compile
-  encore en Java juste après le démarrage de Spark (code 5 si ça échoue).
+  encore en Java juste après le démarrage de Spark (code 5 si ça échoue). Pour une source
+  `engine: polars`, la regex s'exécute en Rust (crate `regex`) : la config refuse au chargement
+  les lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`), les groupes atomiques et les références arrière,
+  et n'exige rien du sous-ensemble Python/Java (`\p{L}` y est valide). Le reste de la syntaxe
+  n'est vérifié que par Polars, à l'exécution.
 
 ## Exécution
 

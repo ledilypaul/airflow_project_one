@@ -1,5 +1,6 @@
-"""`pipeline.file_reader.utils` is kept as a re-export of `pipeline.config.types`
-(P2-1 / C-7): these tests go through the old import path on purpose.
+"""`pipeline.file_reader.utils` is kept as a re-export of `pipeline.config.types` and
+`pipeline.engine.spark.types` (P2-1 / C-7, P5-2): these tests go through the old import path on
+purpose.
 
 The B2 regression tests (`genre_list: array` crashed every IMDB file) used to
 live here and only checked that the schema *built*. They are merged into
@@ -10,7 +11,7 @@ which *reads* a file with every csv/txt config of the repository (C-1).
 import pytest
 from pyspark.sql.types import BooleanType, DateType, FloatType, IntegerType, StringType
 
-from pipeline.file_reader.utils import build_schema, get_spark_type
+from pipeline.file_reader.utils import SUPPORTED_COLUMN_TYPES, build_schema, get_spark_type
 
 
 def test_get_spark_type_valid():
@@ -39,8 +40,10 @@ def test_p2_1_array_type_is_not_supported():
         get_spark_type("array")
 
 
-def test_p2_1_file_reader_utils_reexports_the_config_types():
-    from pipeline.config import types
+def test_p2_1_file_reader_utils_reexports_the_engine_types():
+    from pipeline.config import types as config_types
+    from pipeline.engine.spark import types
 
     assert get_spark_type is types.get_spark_type
     assert build_schema is types.build_schema
+    assert SUPPORTED_COLUMN_TYPES is config_types.SUPPORTED_COLUMN_TYPES
