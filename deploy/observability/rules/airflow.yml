@@ -157,5 +157,5 @@ groups:
             {{ $value }} DAG run(s) have been `queued` for 15 minutes while no DAG run is
             `running`, so they are not waiting for max_active_runs. The scheduler does not
             start the runs of a paused or stale DAG: unpause the DAG (CLAUDE.md, 'Unpause
-            read_file_dag before running a listing') or check why the DAG is stale (an
+            transform_dag before the first listing') or check why the DAG is stale (an
             import error, a removed file).
