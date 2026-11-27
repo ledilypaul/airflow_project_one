@@ -263,10 +263,12 @@ def test_p2_2_dangerous_table_names_are_refused(tmp_path, value):
 
 
 def test_p2_2_source_name_used_as_table_must_be_a_safe_name(tmp_path):
-    message = _error(_config(name="../orders"), tmp_path)
-    assert "table_name" in message
-    # An explicit table_name lifts the constraint on source.name.
-    SourceConfig.model_validate(_config(name="../orders", storage={**RAW_ONLY, "table_name": "o"}))
+    # P5-3: `source.name` is an identifier (`[a-z0-9_]+`, it names the DAG), which is
+    # always a safe table name: refused there, whatever `storage.table_name` says.
+    assert "source.name" in _error(_config(name="../orders"), tmp_path)
+    assert "source.name" in _error(
+        _config(name="../orders", storage={**RAW_ONLY, "table_name": "o"}), tmp_path
+    )
 
 
 @pytest.mark.parametrize("value", ["raw", "raw/", "zones/raw/", "lake-v1.0/raw_zone"])

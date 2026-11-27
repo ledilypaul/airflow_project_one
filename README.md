@@ -6,12 +6,13 @@ prolongé par **dbt** : des fichiers déposés dans un dossier deviennent un *la
 en bout.
 
 ```text
-fichiers ─▶ list_files_dag ─▶ file_list (Postgres) ─▶ read_file_dag ─▶ job Spark ─▶ lake Parquet
-                                                                                       │
-                                  tables DuckDB (marts) ◀─ transform_dag (dbt) ◀───────┘
+fichiers ─▶ ingest__<source> (un DAG par YAML) ─▶ job Spark ─▶ lake Parquet
+              │  file_list (Postgres)                              │
+              └──────────────────────────────  tables DuckDB (marts) ◀─ transform_dag (dbt)
 ```
 
-Chaque étape démarre quand la précédente a réussi et l'a signalé par un *Asset* Airflow. Relancer un
+Un fichier YAML par source suffit : le DAG d'ingestion est généré. dbt démarre quand une ingestion a
+réussi et l'a signalé par un *Asset* Airflow. Relancer un
 run produit le même résultat (idempotence), et chaque fichier garde un statut lisible
 (`pending`, `processed`, `failed`) avec la raison de l'échec.
 
@@ -31,8 +32,8 @@ make airflow-init    # base Airflow, Connections, pools
 make airflow         # http://localhost:8080
 ```
 
-Dépausez ensuite `list_files_dag`, `read_file_dag` et `transform_dag`, puis lancez `list_files_dag` :
-le reste se déclenche seul.
+Dépausez ensuite `ingest__<source>` et `transform_dag`, puis lancez `ingest__<source>` (ou donnez-lui
+un `schedule` dans son YAML) : le reste se déclenche seul.
 
 ## Documentation
 

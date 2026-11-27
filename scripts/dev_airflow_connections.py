@@ -4,7 +4,7 @@ Called by ``make airflow-init`` (after ``airflow db migrate``), with the same
 ``AIRFLOW_HOME`` as the other Airflow targets. Idempotent: a Connection that
 already exists is updated in place, never duplicated.
 
-- ``file_list_db`` (postgres): the ``file_list`` table of list_files_dag, built
+- ``file_list_db`` (postgres): the ``file_list`` table of the ``ingest__<source>`` DAGs, built
   from ``DB_HOST``, ``DB_PORT``, ``DB_USER``, ``DB_PASSWORD`` and ``DB_NAME``.
   They come from an env file (``.env`` by default, overridable with
   ``--env-file`` or the ``ENV_FILE`` variable), loaded with python-dotenv.
@@ -35,7 +35,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 # Same values as utils.functions_utils.FILE_LIST_POSTGRES_CONN_ID and
-# dags/local_read_file_dag.SPARK_CONN_ID (checked by
+# utils/read_files_operator.SPARK_CONN_ID (checked by
 # tests/unit/scripts/test_dev_airflow_connections.py). Not imported: importing
 # utils.functions_utils runs load_dotenv() on the project's .env, which would
 # bypass --env-file.

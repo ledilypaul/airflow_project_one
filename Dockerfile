@@ -122,7 +122,7 @@ ENV PIPELINE_CONFIG_ROOT=/opt/airflow/examples/config
 COPY --chown=airflow:0 deploy/airflow/pools.json /opt/airflow/deploy/airflow/pools.json
 
 # Source files are read from the shared volume (mounted at /opt/airflow/shared):
-# config/extractor_config.yaml lists `./data/`, relative to the working directory.
+# config/pipeline.yaml lists `./data/` (default_directories), relative to the working directory.
 RUN ln -s shared/data /opt/airflow/data
 
 # SPARK_HOME: the Spark distribution of the PySpark wheel (bin/spark-submit,

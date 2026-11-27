@@ -25,6 +25,8 @@ coverage.xml
 
 # Local data files (test inputs for the pipeline): never commit them
 data/
+# P5-1: except the synthetic samples of the examples (make demo, e2e tests)
+!examples/data/
 
 # Local lake (P2-2): Parquet written by the Spark job when LAKE_ROOT is unset
 lake/

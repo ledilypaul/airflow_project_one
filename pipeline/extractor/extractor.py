@@ -1,67 +1,61 @@
-import fnmatch
+"""Listing des fichiers d'une source (P5-3) : les noms qui correspondent à ses
+`source.patterns`, moins `listing.exclude`, dans ses répertoires. Pur : pas de
+base ni de réseau, jamais PySpark ni Airflow."""
+
+from collections.abc import Callable, Iterable, Sequence
+from fnmatch import fnmatchcase
 from pathlib import Path
 
-import yaml
+
+def _any_match(name: str, patterns: Iterable[str]) -> bool:
+    return any(fnmatchcase(name, pattern.lower()) for pattern in patterns)
 
 
-class Extractor:
-    def __init__(self, config_path: str):
-        with open(config_path) as file:
-            config = yaml.safe_load(file)
-        self.config = config.get("extractor_config", {})
+def _list(directories: Sequence[str], keep: Callable[[str], bool]) -> list[str]:
+    """Fichiers de `directories` (non récursif) dont le nom en minuscules passe `keep`.
 
-    def list_files(self):
-        """List the files of the configured source directories.
+    Raises:
+        FileNotFoundError: si au moins un répertoire n'existe pas. Tous les
+            manquants sont signalés, avec leur forme configurée et résolue (un
+            chemin relatif se résout depuis le répertoire courant). Un
+            répertoire absent est un problème de déploiement et ne doit pas
+            passer pour un répertoire vide, qui donne légitimement `[]` (et un
+            skip en aval).
+    """
+    missing = [d for d in directories if not Path(d).exists()]
+    if missing:
+        details = "\n".join(f"  - {d!s} (resolved: {Path(d).resolve()!s})" for d in missing)
+        raise FileNotFoundError(
+            f"{len(missing)} configured source director"
+            f"{'y does' if len(missing) == 1 else 'ies do'} not exist "
+            f"(cwd: {Path.cwd()!s}):\n{details}"
+        )
+    return sorted(
+        str(path)
+        for directory in directories
+        for path in Path(directory).iterdir()
+        if path.is_file() and keep(path.name.lower())
+    )
 
-        Raises:
-            FileNotFoundError: if at least one configured source directory does
-                not exist. All missing directories are reported, each with its
-                configured and resolved form (relative paths are resolved
-                against the current working directory). A missing directory is
-                a deployment problem and must not be mistaken for an empty one,
-                which legitimately yields ``[]`` (and a downstream skip).
-        """
-        directories = self.config.get("source_directories", [])
 
-        # Existence check done once per directory, before any globbing.
-        missing = [d for d in directories if not Path(d).exists()]
-        if missing:
-            details = "\n".join(f"  - {d!s} (resolved: {Path(d).resolve()!s})" for d in missing)
-            raise FileNotFoundError(
-                f"{len(missing)} configured source director"
-                f"{'y does' if len(missing) == 1 else 'ies do'} not exist "
-                f"(cwd: {Path.cwd()!s}):\n{details}"
-            )
+def list_source_files(
+    directories: Sequence[str], patterns: Iterable[str], exclude: Iterable[str] = ()
+) -> list[str]:
+    """Les fichiers de la source : un motif de `patterns` correspond, aucun de
+    `exclude` (fnmatch sur le nom, casse ignorée, comme `SourceRegistry.match`)."""
+    patterns, exclude = list(patterns), list(exclude)
+    return _list(
+        directories, lambda name: _any_match(name, patterns) and not _any_match(name, exclude)
+    )
 
-        files = []
-        for directory in directories:
-            dir_path = Path(directory)
-            for ext in self.config.get("files_extensions", []):
-                matches = list(dir_path.glob(f"*{ext}"))
 
-                # Apply inclusions
-                include_patterns = self.config.get("include_files", ["*"])
-                matches = [
-                    f
-                    for f in matches
-                    if any(fnmatch.fnmatch(f.name, pattern) for pattern in include_patterns)
-                ]
-
-                # Apply exclusions
-                exclude_patterns = self.config.get("exclude_files", [])
-                matches = [
-                    f
-                    for f in matches
-                    if not any(fnmatch.fnmatch(f.name, pattern) for pattern in exclude_patterns)
-                ]
-
-                files.extend(matches)
-        return [str(f) for f in files]
-
-    def check_integrity_files(self, files):
-        valid_files = []
-        for file in files:
-            if Path(file).stat().st_size == 0:
-                raise ValueError(f"File {file} is empty")
-            valid_files.append(file)
-        return valid_files
+def list_unmatched_files(
+    directories: Sequence[str], source_patterns: Iterable[str], default_patterns: Iterable[str]
+) -> list[str]:
+    """Les fichiers qu'aucune source dédiée ne réclame (`source_patterns`) et
+    qu'un défaut par extension (`default_patterns`) sait lire."""
+    source_patterns, default_patterns = list(source_patterns), list(default_patterns)
+    return _list(
+        directories,
+        lambda name: not _any_match(name, source_patterns) and _any_match(name, default_patterns),
+    )

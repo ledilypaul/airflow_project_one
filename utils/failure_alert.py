@@ -100,7 +100,7 @@ def failure_record(context: Any, *, scope: str) -> dict[str, Any]:
     if isinstance(exception, BaseException):
         record["exception_type"] = type(exception).__name__
 
-    # Set by ReadFilesSparkSubmitOperator (dags/local_read_file_dag.py) once
+    # Set by ReadFilesSparkSubmitOperator (utils/read_files_operator.py) once
     # spark-submit has run. A bool is an int in Python, never an exit code.
     code = _get(task, "spark_exit_code")
     if isinstance(code, int) and not isinstance(code, bool):

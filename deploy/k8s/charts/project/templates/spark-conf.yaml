@@ -1,7 +1,7 @@
 {{- /*
 Spark on Kubernetes configuration of this environment (P3-2), mounted at
 spark.confDir in the Airflow worker pods (SPARK_CONF_DIR): spark-submit reads
-spark-defaults.conf there. Nothing of it is in the DAG: read_file_dag only gets
+spark-defaults.conf there. Nothing of it is in the DAG: the ingest__<source> DAGs only get
 the master, deploy mode and namespace from the Connection spark_default.
 
 - Image, ServiceAccount, pod templates (security context) of the driver and
@@ -13,7 +13,7 @@ the master, deploy mode and namespace from the Connection spark_default.
 - The shared volume at the same path in the driver and the executors.
 - spark.kubernetes.submission.waitAppCompletion=true (Spark's default, written
   out): spark-submit waits for the driver and logs its container exit code, which
-  read_file_dag reads (ReadFilesSparkSubmitOperator).
+  the ingest__<source> DAGs read (ReadFilesSparkSubmitOperator).
 - Least privilege for the driver (Role `spark-driver`: pods only), three Spark
   4.3.0 cleanups turned off, each of which needed a broader Role:
   - service.deleteOnTermination=false: the driver's Service is owned by the

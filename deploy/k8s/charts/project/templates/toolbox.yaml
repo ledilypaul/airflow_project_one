@@ -3,7 +3,7 @@ Toolbox (P3-2): one small pod with the shared volume mounted, so that source
 files can be copied in (`make k8s-load-data`) and the lake read
 (`kubectl exec deploy/project-toolbox -- ls ...`). No ServiceAccount token, no
 privilege. It also creates the data/ directory of the shared volume, which the
-listing DAG reads (config/extractor_config.yaml: ./data/ -> shared/data).
+listing DAGs read (config/pipeline.yaml default_directories: ./data/ -> shared/data).
 */ -}}
 {{- if .Values.toolbox.enabled }}
 apiVersion: apps/v1

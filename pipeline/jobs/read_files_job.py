@@ -51,14 +51,15 @@ Run manually (recommended, uses the project's uv-managed venv):
     uv run spark-submit pipeline/jobs/read_files_job.py
 
 Run via Airflow:
-    read_file_dag (SparkSubmitOperator) → spark-submit pipeline/jobs/read_files_job.py --run-id=<id>
+    ingest__<source> (spark_read_files) → spark-submit pipeline/jobs/read_files_job.py \
+        --run-id=<id> --source-name=<source>
 
 Run with a bare/system/cluster `spark-submit` whose driver Python is not the
 project's venv (e.g. `ENV=prod` on YARN/Kubernetes where the interpreter
 isn't the one `uv sync` installed into): `pipeline.*` / `utils.*` won't be on
 sys.path in that case, so the fallback below adds the project root itself.
 
-Exit codes (read_file_dag does not retry 2, 3, 5 and 6, see P2-6):
+Exit codes (the ingest__<source> DAGs do not retry 2, 3, 5 and 6, see P2-6):
     0 = every file processed;
     1 = at least one file failed (its row is `failed`, with the error) for
         a reason a retry may change: read or write error, quality engine
@@ -449,7 +450,7 @@ def _fail_all(file_list, error_message: str) -> None:
         update_file_status(file["id"], "failed", error_message=error_message)
 
 
-def main(run_id: str):
+def main(run_id: str, source_name: str | None = None):
     # First thing: the driver must never outlive a killed spark-submit (C-1).
     start_parent_watchdog()
 
@@ -461,16 +462,17 @@ def main(run_id: str):
         )
         sys.exit(EXIT_INVALID_RUN_ID)
 
-    file_list = list_file_from_db(run_id)
+    file_list = list_file_from_db(run_id, source_name=source_name)
     if not file_list:
         # P1-4 / C-3: a source run that emitted the `file_list` asset always
         # has at least one row (empty listings and "every file vanished" both
         # skip the insertion task, so no event). Zero rows is an anomaly
         # (typo in a manual run_id, purged rows...), not a green no-op.
         log.error(
-            "no file_list rows for run_id=%r: typo in the run_id or purged data? "
+            "no file_list rows for run_id=%r (source %r): typo in the run_id or purged data? "
             "Nothing was processed.",
             run_id,
+            source_name,
         )
         sys.exit(EXIT_NO_ROWS)
 
@@ -586,7 +588,7 @@ def main(run_id: str):
     if code == EXIT_QUALITY_FAILED:
         log.error(
             "%d file(s) failed, all on blocking quality checks only: exit code %d "
-            "(deterministic, not retried by read_file_dag). Fix the data or the checks, "
+            "(deterministic, not retried by the ingest DAG). Fix the data or the checks, "
             "then re-run the run id.",
             fail_count,
             code,
@@ -611,17 +613,24 @@ def _source_file_name(file_path: str) -> str:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the job's command line (`sys.argv[1:]` when `argv` is None).
 
-    read_file_dag passes the run id as a single `--run-id=<value>` argument,
+    The ingest DAG passes the run id as a single `--run-id=<value>` argument,
     so a run id starting with `-` is not mistaken for an option (P1-4 / C-4).
     """
     parser = argparse.ArgumentParser(
         description="Read files listed in the DB for a given Airflow run_id."
     )
     parser.add_argument(
-        "--run-id", required=True, help="dag_run_id of the list_files_dag run to process."
+        "--run-id", required=True, help="dag_run_id of the ingest__<source> run to process."
+    )
+    parser.add_argument(
+        "--source-name",
+        default=None,
+        help="Only the file_list rows of this source (P5-3): the run ids of two source DAGs can "
+        "be equal. Without it, every row of the run id (make spark-job).",
     )
     return parser.parse_args(argv)
 
 
 if __name__ == "__main__":
-    main(run_id=parse_args().run_id)
+    args = parse_args()
+    main(run_id=args.run_id, source_name=args.source_name)

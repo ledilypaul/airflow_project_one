@@ -1,17 +1,19 @@
 """
 P1-5 — SparkSubmitOperator + Spark pool (audit M6).
 
-read_file_dag's `spark_read_files` no longer goes through a shell
-(`BashOperator` + `bash -c`): it is a `SparkSubmitOperator` mapped on
-`application_args`, with the Spark master taken from the `spark_default`
-Connection and a dedicated `spark` pool limiting concurrent Spark applications.
+The `spark_read_files` of the ingest DAGs does not go through a shell
+(`BashOperator` + `bash -c`): it is a `SparkSubmitOperator` whose
+`application_args` come from the XCom of `insert_files`, with the Spark master
+taken from the `spark_default` Connection and a dedicated `spark` pool limiting
+concurrent Spark applications.
 
 Covers:
-  - operator class and mapped field (the mapping itself is checked by
-    test_p1_4_spark_task_is_mapped_over_the_run_ids), `conn_id`, `pool`,
-    `application`, no hard-coded Spark resources;
-  - C-2: a missing `spark_default` Connection fails `resolve_source_run_ids`
-    explicitly instead of letting the hook fall back to `--master yarn`;
+  - operator class and field fed by the XCom, `conn_id`, `pool`, `application`,
+    no hard-coded Spark resources;
+  - C-2: a missing `spark_default` Connection fails the task explicitly
+    instead of letting the hook fall back to `--master yarn` (P5-3: the check
+    moved from `resolve_source_run_ids`, which no longer exists, into the
+    operator);
   - C-3: `dagrun_timeout` bounds a run blocked by a missing pool, and the
     versioned pools file declares the pool the DAG uses.
 
@@ -19,14 +21,13 @@ The run id reaching the job's parser intact is checked through a real
 process by test_p1_4_spark_command_round_trips_through_job_parser; the
 end-to-end execution (`dag.test()`, no Jinja rendering of the mapped
 `application_args`, Connection master, worker environment, exit code -> task
-state) by tests/integration/test_p1_4_read_file_dag_e2e.py.
+state) by tests/integration/test_p1_4_ingest_dag_e2e.py.
 """
 
 import fnmatch
 import json
 from datetime import timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from airflow.models import DagBag
@@ -55,33 +56,30 @@ def dagbag():
 
 @pytest.fixture
 def spark_task(dagbag):
-    return dagbag.dags["read_file_dag"].get_task("spark_read_files")
+    return dagbag.dags["ingest__orders"].get_task("spark_read_files")
 
 
-def _resolve_callable():
-    from dags.local_read_file_dag import dag_instance
-
-    return dag_instance.get_task("resolve_source_run_ids").python_callable
-
-
-def test_p1_5_spark_task_is_spark_submit_operator_mapped_on_application_args(spark_task):
+def test_p1_5_spark_task_is_spark_submit_operator_fed_by_insert_files(spark_task):
     from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+    from airflow.sdk.definitions.xcom_arg import PlainXComArg
 
     # P2-6: a subclass that only removes the retries of deterministic exits
     # (tests/unit/dags/test_p2_6_no_retry_exit_codes.py).
-    assert issubclass(spark_task.operator_class, SparkSubmitOperator)
-    assert spark_task.operator_class.__name__ == "ReadFilesSparkSubmitOperator"
-    assert set(spark_task.expand_input.value) == {"application_args"}
+    assert isinstance(spark_task, SparkSubmitOperator)
+    assert type(spark_task).__name__ == "ReadFilesSparkSubmitOperator"
+    # An XComArg, resolved at run time and never rendered by Jinja.
+    assert isinstance(spark_task.application_args, PlainXComArg)
+    assert spark_task.application_args.operator.task_id == "insert_files"
 
 
 def test_p1_5_spark_task_conn_id_pool_and_application(spark_task):
-    from dags.local_read_file_dag import JOB_PATH, SPARK_CONN_ID, SPARK_POOL
+    from utils.read_files_operator import JOB_PATH, SPARK_CONN_ID, SPARK_POOL
 
     assert SPARK_CONN_ID == "spark_default"
     assert SPARK_POOL == "spark"
-    assert spark_task.partial_kwargs["conn_id"] == "spark_default"
+    assert spark_task._conn_id == "spark_default"
     assert spark_task.pool == "spark"
-    assert spark_task.partial_kwargs["application"] == str(JOB_PATH)
+    assert spark_task.application == str(JOB_PATH)
     assert JOB_PATH == PROJECT_ROOT / "pipeline" / "jobs" / "read_files_job.py"
     assert JOB_PATH.is_file()
 
@@ -125,7 +123,15 @@ def test_p1_5_spark_task_sets_no_hardcoded_resources(spark_task):
     """M6: resources belong to the Connection / spark-defaults of each
     environment, not to the DAG: neither as operator kwargs
     (`executor_memory` & co) nor as `conf` keys (`spark.executor.memory`...)."""
-    assert _hardcoded_resources(spark_task.partial_kwargs) == []
+    assert (
+        _hardcoded_resources(
+            {
+                **{k: getattr(spark_task, f"_{k}", None) for k in RESOURCE_KWARGS},
+                "conf": spark_task.conf,
+            }
+        )
+        == []
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -133,29 +139,32 @@ def test_p1_5_spark_task_sets_no_hardcoded_resources(spark_task):
 # ---------------------------------------------------------------------------
 
 
-def test_p1_5_resolve_fails_explicitly_without_spark_connection(monkeypatch):
+def test_p1_5_task_fails_explicitly_without_spark_connection(spark_task, monkeypatch):
     """Without the Connection, SparkSubmitHook silently runs
-    `spark-submit --master yarn`. The run must fail before that, with a
+    `spark-submit --master yarn`. The task must fail before that, with a
     message pointing at the setup instructions."""
     monkeypatch.delenv("AIRFLOW_CONN_SPARK_DEFAULT", raising=False)
 
     with pytest.raises(AirflowFailException, match=r"spark_default.*CLAUDE\.md"):
-        _resolve_callable()(
-            triggering_asset_events=None, dag_run=SimpleNamespace(conf={"run_id": "manual__x"})
-        )
+        spark_task.execute({})
 
 
-def test_p1_5_resolve_with_spark_connection_logs_master_and_resolves(monkeypatch, caplog):
+def test_p1_5_connection_check_logs_the_master(monkeypatch, caplog):
+    """With the Connection, the task goes on (here: stopped right after the check
+    by a stand-in for the provider's execute) and logs its master."""
+    from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+
+    from utils.read_files_operator import ReadFilesSparkSubmitOperator
+
     monkeypatch.setenv(
         "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[3]"})
     )
+    monkeypatch.setattr(SparkSubmitOperator, "execute", lambda self, context: "submitted")
+    task = ReadFilesSparkSubmitOperator(task_id="t", application="job.py")
 
-    with caplog.at_level("INFO", logger="dags.local_read_file_dag"):
-        result = _resolve_callable()(
-            triggering_asset_events=None, dag_run=SimpleNamespace(conf={"run_id": "manual__x"})
-        )
+    with caplog.at_level("INFO", logger="utils.read_files_operator"):
+        assert task.execute({}) == "submitted"
 
-    assert result == ["manual__x"]
     assert "local[3]" in caplog.text
 
 
@@ -164,18 +173,18 @@ def test_p1_5_resolve_with_spark_connection_logs_master_and_resolves(monkeypatch
 # ---------------------------------------------------------------------------
 
 
-def test_p1_5_read_file_dag_has_dagrun_timeout(dagbag):
+def test_p1_5_ingest_dag_has_dagrun_timeout(dagbag):
     """A missing pool (or a stuck spark-submit) must not freeze the DAG
-    forever: with max_active_runs=1 every later `file_list` event would pile
-    up behind the stuck run."""
-    assert dagbag.dags["read_file_dag"].dagrun_timeout == timedelta(hours=6)
+    forever: with max_active_runs=1 every later run of the source would pile
+    up behind the stuck one."""
+    assert dagbag.dags["ingest__orders"].dagrun_timeout == timedelta(hours=6)
 
 
 def test_p1_5_pools_file_declares_the_spark_pool():
     """deploy/airflow/pools.json is what `airflow pools import` loads: a JSON
     object `{name: {"slots", "description", ["include_deferred"]}}`. An entry
     without `slots` or `description` makes the whole import fail."""
-    from dags.local_read_file_dag import SPARK_POOL
+    from utils.read_files_operator import SPARK_POOL
 
     pools = json.loads(POOLS_FILE.read_text(encoding="utf-8"))
 

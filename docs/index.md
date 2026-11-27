@@ -7,20 +7,20 @@ l'analyse, avec le lignage de bout en bout.
 
 ```{mermaid}
 flowchart LR
-    src[("Fichiers sources<br/>data/")] --> L["list_files_dag"]
-    L -->|"lignes pending"| FL[("Postgres<br/>file_list")]
-    L -. "Asset file_list" .-> R["read_file_dag"]
-    FL --> R
-    R -->|"spark-submit"| J["Job Spark<br/>read_files_job"]
+    src[("Fichiers sources<br/>data/")] --> I["ingest__SOURCE<br/>un DAG par YAML"]
+    I -->|"lignes pending"| FL[("Postgres<br/>file_list")]
+    FL --> J
+    I -->|"spark-submit"| J["Job Spark<br/>read_files_job"]
     J --> Lake[("Lake Parquet<br/>raw · staging · quality")]
-    R -. "Asset lake_staging" .-> T["transform_dag<br/>dbt via Cosmos"]
+    I -. "Asset lake_staging__SOURCE" .-> T["transform_dag<br/>dbt via Cosmos"]
     Lake --> T
     T --> D[("DuckDB<br/>warehouse.duckdb")]
     T -. "Asset dbt_marts" .-> fin(["marts prêts"])
 ```
 
-Chaque étape ne démarre que lorsque la précédente a **réussi et l'a signalé** par un *Asset*
-Airflow : il n'y a ni déclenchement manuel ni planning à tenir. Relancer un run produit exactement
+Un fichier YAML par source suffit : il décrit comment lire, où écrire, quoi contrôler, où chercher
+les fichiers et quand. Le DAG d'ingestion est généré, et dbt ne démarre que lorsqu'une ingestion a
+**réussi et l'a signalé** par un *Asset* Airflow. Relancer un run produit exactement
 le même résultat (idempotence), et chaque fichier garde un statut lisible : `pending`,
 `processed` ou `failed`, avec la raison.
 

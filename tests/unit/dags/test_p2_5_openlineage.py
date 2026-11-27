@@ -3,7 +3,7 @@ P2-5 — OpenLineage configuration of the Airflow side and of the Spark job.
 
 - The test suite never emits lineage: OpenLineage is disabled by
   tests/unit/dags/conftest.py, whatever the developer's shell exports.
-- `openlineage_spark_settings()` (dags/local_read_file_dag.py) turns the
+- `openlineage_spark_settings()` (utils/read_files_operator.py) turns the
   Airflow OpenLineage configuration (environment variables) into the
   SparkSubmitOperator kwargs that enable the JVM listener:
   - disabled, or no listener jar: nothing at all, spark-submit gets exactly
@@ -70,7 +70,7 @@ def lineage_on(monkeypatch, tmp_path):
 
 
 def _settings():
-    from dags.local_read_file_dag import openlineage_spark_settings
+    from utils.read_files_operator import openlineage_spark_settings
 
     return openlineage_spark_settings()
 
@@ -91,14 +91,14 @@ def test_p2_5_test_suite_never_emits_lineage():
     assert not [k for k in os.environ if k.startswith("OPENLINEAGE__")]
 
 
-def test_p2_5_read_file_dag_parsed_in_tests_has_no_listener():
+def test_p2_5_ingest_dag_parsed_in_tests_has_no_listener():
     """The DAG as the suite parses it: no listener, no injection."""
-    from dags.local_read_file_dag import dag_instance
+    from dags.source_pipelines import build_dags
 
-    kwargs = dag_instance.get_task("spark_read_files").partial_kwargs
-    assert not kwargs.get("conf")
-    assert kwargs["openlineage_inject_parent_job_info"] is False
-    assert kwargs["openlineage_inject_transport_info"] is False
+    task = build_dags()["ingest__orders"].get_task("spark_read_files")
+    assert not task.conf
+    assert task._openlineage_inject_parent_job_info is False
+    assert task._openlineage_inject_transport_info is False
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ class _FakeDagRun:
 class _FakeTaskInstance:
     """What the provider's lineage macros read from a task instance."""
 
-    dag_id = "read_file_dag"
+    dag_id = "ingest__orders"
     task_id = "spark_read_files"
     try_number = 1
     map_index = 0
@@ -247,7 +247,7 @@ def _submitted_command(monkeypatch, **operator_kwargs) -> list[str]:
     from airflow.providers.apache.spark.hooks.spark_submit import SparkSubmitHook
     from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
-    from dags.local_read_file_dag import JOB_PATH, PROJECT_ROOT, SPARK_CONN_ID
+    from utils.read_files_operator import JOB_PATH, PROJECT_ROOT, SPARK_CONN_ID
 
     monkeypatch.setenv("AIRFLOW_CONN_SPARK_DEFAULT", '{"conn_type": "spark", "host": "local[*]"}')
     commands = []
@@ -276,7 +276,7 @@ def _confs(command: list[str]) -> dict[str, str]:
 
 def test_p2_5_spark_submit_command_unchanged_when_lineage_is_off(monkeypatch):
     """Disabled (the suite's state): byte-for-byte the pre-P2-5 command."""
-    from dags.local_read_file_dag import openlineage_spark_settings
+    from utils.read_files_operator import openlineage_spark_settings
 
     before = _submitted_command(monkeypatch)
     after = _submitted_command(monkeypatch, **openlineage_spark_settings())
@@ -287,8 +287,8 @@ def test_p2_5_spark_submit_command_unchanged_when_lineage_is_off(monkeypatch):
 def test_p2_5_spark_submit_command_carries_listener_and_parent(lineage_on, monkeypatch):
     """Listener on: the hook's command has the listener, the jar, the file
     transport, and the parent job info injected by the operator (the Spark
-    run is attached to read_file_dag.spark_read_files)."""
-    from dags.local_read_file_dag import JOB_PATH
+    run is attached to ingest__orders.spark_read_files)."""
+    from utils.read_files_operator import JOB_PATH
 
     command = _submitted_command(monkeypatch, **_settings())
     confs = _confs(command)
@@ -298,8 +298,8 @@ def test_p2_5_spark_submit_command_carries_listener_and_parent(lineage_on, monke
     assert confs["spark.openlineage.transport.location"] == str(lineage_on.events / "spark.jsonl")
     assert confs["spark.openlineage.namespace"] == "p2_5_tests"
     assert confs["spark.openlineage.parentJobNamespace"] == "p2_5_tests"
-    assert confs["spark.openlineage.parentJobName"] == "read_file_dag.spark_read_files"
-    assert confs["spark.openlineage.rootParentJobName"] == "read_file_dag"
+    assert confs["spark.openlineage.parentJobName"] == "ingest__orders.spark_read_files"
+    assert confs["spark.openlineage.rootParentJobName"] == "ingest__orders"
     for key in ("spark.openlineage.parentRunId", "spark.openlineage.rootParentRunId"):
         assert len(confs[key]) == 36, (key, confs[key])  # a UUID
     # The job and its single argument still close the command.
@@ -325,10 +325,11 @@ def test_p2_5_http_transport_is_injected_into_the_command(lineage_on, monkeypatc
 def test_p2_5_spark_task_prepares_lineage_before_execution():
     """pre_execute: SHA-256 of the jar, one event file per application, and
     file_list as input (the job selects its files there)."""
-    from dags.local_read_file_dag import dag_instance, prepare_spark_lineage
+    from dags.source_pipelines import build_dags
+    from utils.read_files_operator import prepare_spark_lineage
 
-    task = dag_instance.get_task("spark_read_files")
-    assert task.partial_kwargs["pre_execute"] is prepare_spark_lineage
+    task = build_dags()["ingest__orders"].get_task("spark_read_files")
+    assert task._pre_execute_hook is prepare_spark_lineage
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +360,7 @@ def _prepared(monkeypatch, settings, *, map_index=0, try_number=1, run_id="manua
     from airflow.providers.apache.spark.hooks.spark_submit import SparkSubmitHook
     from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
 
-    from dags.local_read_file_dag import JOB_PATH, SPARK_CONN_ID, prepare_spark_lineage
+    from utils.read_files_operator import JOB_PATH, SPARK_CONN_ID, prepare_spark_lineage
 
     monkeypatch.setenv("AIRFLOW_CONN_SPARK_DEFAULT", '{"conn_type": "spark", "host": "local[*]"}')
     commands = []
@@ -371,7 +372,7 @@ def _prepared(monkeypatch, settings, *, map_index=0, try_number=1, run_id="manua
         ),
     )
     # file_list reporting is covered elsewhere: keep this one offline.
-    monkeypatch.setattr("dags.local_read_file_dag.report_file_list_input", lambda context: None)
+    monkeypatch.setattr("utils.read_files_operator.report_file_list_input", lambda context: None)
     operator = SparkSubmitOperator(
         task_id="spark_read_files",
         application=str(JOB_PATH),
@@ -412,7 +413,7 @@ def test_p2_5_sec2_matching_sha256_keeps_lineage(lineage_on, monkeypatch):
 
 
 def test_p2_5_sec2_jar_hash_is_cached_by_path_size_and_mtime(lineage_on, monkeypatch):
-    import dags.local_read_file_dag as module
+    import utils.read_files_operator as module
 
     calls = []
     real = module._file_sha256
@@ -442,7 +443,7 @@ def test_p2_5_c13_one_spark_event_file_per_application(lineage_on, monkeypatch):
         )
         location = Path(_confs(command)["spark.openlineage.transport.location"])
         assert location.parent == lineage_on.events  # no `..`, no `/` from the run id
-        assert location.name.startswith("spark-read_file_dag-")
+        assert location.name.startswith("spark-ingest__orders-")
         assert location.suffix == ".jsonl"
         assert f"-{map_index}-{try_number}.jsonl" in location.name
         locations.add(location)
@@ -450,7 +451,7 @@ def test_p2_5_c13_one_spark_event_file_per_application(lineage_on, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# C-2 — an invalid OpenLineage configuration never breaks read_file_dag
+# C-2 — an invalid OpenLineage configuration never breaks the ingest DAGs
 # ---------------------------------------------------------------------------
 
 
@@ -462,13 +463,13 @@ def test_p2_5_c2_invalid_transport_turns_spark_lineage_off(lineage_on, monkeypat
     assert _settings() == OFF
 
 
-def test_p2_5_c2_invalid_transport_keeps_read_file_dag_importable(lineage_on, monkeypatch):
+def test_p2_5_c2_invalid_transport_keeps_the_ingest_dags_importable(lineage_on, monkeypatch):
     from airflow.models import DagBag
 
     monkeypatch.setenv("AIRFLOW__OPENLINEAGE__TRANSPORT", "{not json")
-    bag = DagBag(dag_folder=str(PROJECT_ROOT / "dags" / "local_read_file_dag.py"))
+    bag = DagBag(dag_folder=str(PROJECT_ROOT / "dags" / "source_pipelines.py"))
     assert bag.import_errors == {}
-    assert "read_file_dag" in bag.dags
+    assert "ingest__orders" in bag.dags
 
 
 def test_p2_5_c2_missing_provider_turns_spark_lineage_off(lineage_on, monkeypatch):
@@ -567,7 +568,7 @@ def test_p2_5_c10_report_file_list_input_returns_at_once_without_a_collector():
     """OpenLineage off: the collector is a no-op, no hook is even built."""
     from unittest.mock import patch
 
-    from dags.local_read_file_dag import report_file_list_input
+    from utils.read_files_operator import report_file_list_input
 
     with patch("airflow.providers.postgres.hooks.postgres.PostgresHook") as hook_cls:
         report_file_list_input({})
@@ -579,7 +580,7 @@ def test_p2_5_c10_report_file_list_input_never_raises(monkeypatch, caplog):
 
     from airflow.sdk.lineage import HookLineageCollector
 
-    from dags.local_read_file_dag import report_file_list_input
+    from utils.read_files_operator import report_file_list_input
 
     monkeypatch.setattr(
         "airflow.sdk.lineage.get_hook_lineage_collector", lambda: HookLineageCollector()

@@ -36,17 +36,25 @@ def _file_list_engine_from_airflow_connection():
     return PostgresHook(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID).get_sqlalchemy_engine()
 
 
-def insert_into_file_list(data, dag_run_id: str = None, engine=None):
+def insert_into_file_list(data, dag_run_id: str = None, engine=None, source_name: str = ""):
+    """Record one listed file (`data` = name, path, modification time) as `pending`
+    for the run `dag_run_id` of the source `source_name` (P5-3: the DAG
+    `ingest__<source>`; `''` for a row without a source). Idempotent per
+    (path, run, source): a retry of the insertion task adds nothing."""
     try:
         if engine is None:
             engine = _file_list_engine_from_airflow_connection()
         with engine.begin() as conn:
             query = text("""
                 INSERT INTO file_list (
-                    file_name, file_path, last_modified, ingested_at, dag_run_id, status
+                    file_name, file_path, last_modified, ingested_at, dag_run_id, status,
+                    source_name
                 )
-                VALUES (:file_name, :file_path, :last_modified, :ingested_at, :dag_run_id, :status)
-                ON CONFLICT (file_path, dag_run_id) DO NOTHING
+                VALUES (
+                    :file_name, :file_path, :last_modified, :ingested_at, :dag_run_id, :status,
+                    :source_name
+                )
+                ON CONFLICT (file_path, dag_run_id, source_name) DO NOTHING
             """)
             conn.execute(
                 query,
@@ -57,6 +65,7 @@ def insert_into_file_list(data, dag_run_id: str = None, engine=None):
                     "ingested_at": date.today(),
                     "dag_run_id": dag_run_id or "",
                     "status": "pending",
+                    "source_name": source_name or "",
                 },
             )
             log.info("Inserted %s into file_list", data[0])
@@ -65,8 +74,9 @@ def insert_into_file_list(data, dag_run_id: str = None, engine=None):
         raise
 
 
-def list_file_from_db(run_id: str):
-    """Return every row of `file_list` belonging to `run_id`.
+def list_file_from_db(run_id: str, source_name: str | None = None):
+    """Return every row of `file_list` belonging to `run_id` (and, when given,
+    to the source `source_name`: the run ids of two source DAGs can be equal, P5-3).
 
     Deliberately no filter on `status` or on a date: a Clear that reruns the
     same `run_id` must find ALL its files again, including those already
@@ -81,8 +91,9 @@ def list_file_from_db(run_id: str):
                     status, dag_run_id, created_at, ingested_at
                 FROM file_list
                 WHERE dag_run_id = :run_id
+                  AND (CAST(:source_name AS TEXT) IS NULL OR source_name = :source_name)
             """)
-            result = conn.execute(query, {"run_id": run_id})
+            result = conn.execute(query, {"run_id": run_id, "source_name": source_name})
             rows = result.mappings().fetchall()
             log.info("Retrieved %d files from file_list for run_id=%s", len(rows), run_id)
             return rows
@@ -114,11 +125,12 @@ def update_file_status(file_id: int, status: str, error_message: str | None = No
         raise
 
 
-def count_processed_files(run_ids, engine=None) -> int:
-    """Number of `file_list` rows with status `processed` among `run_ids`.
+def count_processed_files(run_ids, engine=None, source_name: str | None = None) -> int:
+    """Number of `file_list` rows with status `processed` among `run_ids` (of
+    the source `source_name` when given, P5-3).
 
-    Used by read_file_dag's `publish_lake_staging` (P2-4 / C-2) to emit
-    `lake_staging` when at least one file of its run reached the lake, even
+    Used by the `publish_lake_staging` task of `ingest__<source>` (P2-4 / C-2, P5-3) to emit
+    `lake_staging__<source>` when at least one file of its run reached the lake, even
     if another one failed. Goes through the `file_list_db` Airflow Connection
     (the task runs in Airflow, not in the Spark job). Bound parameters only.
     No run id: 0, without querying.
@@ -132,10 +144,13 @@ def count_processed_files(run_ids, engine=None) -> int:
         SELECT COUNT(*)
         FROM file_list
         WHERE status = :status AND dag_run_id IN :run_ids
+          AND (CAST(:source_name AS TEXT) IS NULL OR source_name = :source_name)
     """).bindparams(bindparam("run_ids", expanding=True))
     try:
         with engine.connect() as conn:
-            count = conn.execute(query, {"status": "processed", "run_ids": run_ids}).scalar_one()
+            count = conn.execute(
+                query, {"status": "processed", "run_ids": run_ids, "source_name": source_name}
+            ).scalar_one()
     except SQLAlchemyError as e:
         log.error("Error counting processed files in file_list: %s", e)
         raise

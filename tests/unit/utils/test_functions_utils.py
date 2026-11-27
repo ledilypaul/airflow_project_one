@@ -146,7 +146,7 @@ def test_p1_2_insert_query_has_on_conflict_do_nothing():
     query = str(mock_conn.execute.call_args[0][0])
     assert "ON CONFLICT" in query
     assert "DO NOTHING" in query
-    assert "ON CONFLICT (file_path, dag_run_id)" in query
+    assert "ON CONFLICT (file_path, dag_run_id, source_name)" in query
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +313,16 @@ def _file_list_sqlite(tmp_path, rows):
 
     engine = create_engine(f"sqlite:///{tmp_path / 'file_list.db'}")
     with engine.begin() as conn:
-        conn.execute(text("CREATE TABLE file_list (id INTEGER, dag_run_id TEXT, status TEXT)"))
-        for i, (run_id, status) in enumerate(rows):
+        conn.execute(
+            text(
+                "CREATE TABLE file_list (id INTEGER, dag_run_id TEXT, status TEXT, "
+                "source_name TEXT NOT NULL DEFAULT '')"
+            )
+        )
+        for i, (run_id, status, *source) in enumerate(rows):
             conn.execute(
-                text("INSERT INTO file_list VALUES (:id, :run_id, :status)"),
-                {"id": i, "run_id": run_id, "status": status},
+                text("INSERT INTO file_list VALUES (:id, :run_id, :status, :source)"),
+                {"id": i, "run_id": run_id, "status": status, "source": (source or [""])[0]},
             )
     return engine
 
@@ -366,3 +371,74 @@ def test_p2_4_c2_count_processed_files_uses_the_file_list_connection():
         assert count_processed_files(["run_a"]) == 2
 
     mock_hook_cls.assert_called_once_with(postgres_conn_id=FILE_LIST_POSTGRES_CONN_ID)
+
+
+# ---------------------------------------------------------------------------
+# P5-3 - the rows of a run are scoped by source: two source DAGs can share a run id
+# ---------------------------------------------------------------------------
+
+
+def test_p5_3_count_processed_files_is_scoped_by_source(tmp_path):
+    from utils.functions_utils import count_processed_files
+
+    engine = _file_list_sqlite(
+        tmp_path,
+        [
+            ("scheduled__x", "processed", "orders"),
+            ("scheduled__x", "processed", "orders"),
+            ("scheduled__x", "processed", "imdb_movies"),
+            ("scheduled__x", "failed", "imdb_movies"),
+        ],
+    )
+
+    assert count_processed_files(["scheduled__x"], engine=engine, source_name="orders") == 2
+    assert count_processed_files(["scheduled__x"], engine=engine, source_name="imdb_movies") == 1
+    assert count_processed_files(["scheduled__x"], engine=engine, source_name="other") == 0
+    # Without a source: every row of the run (what `make spark-job RUN_ID=` reads).
+    assert count_processed_files(["scheduled__x"], engine=engine) == 3
+
+
+def test_p5_3_list_file_from_db_filters_on_the_source_when_given():
+    from utils.functions_utils import list_file_from_db
+
+    mock_engine, mock_conn = _make_engine_mock()
+    with patch("utils.functions_utils.db_connection", return_value=mock_engine):
+        list_file_from_db("run_1", source_name="orders")
+        list_file_from_db("run_1")
+
+    first, second = (c.args[1] for c in mock_conn.execute.call_args_list)
+    assert first == {"run_id": "run_1", "source_name": "orders"}
+    assert second == {"run_id": "run_1", "source_name": None}
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")  # sqlite3's default date adapter
+def test_p5_3_insert_is_idempotent_per_path_run_and_source(tmp_path):
+    """The unique index of script_tables.sql is (file_path, dag_run_id, source_name): a
+    retry adds nothing, and two sources claiming the same file in the same run both
+    keep their row."""
+    from sqlalchemy import create_engine, text
+
+    from utils.functions_utils import insert_into_file_list
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'file_list.db'}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "CREATE TABLE file_list (id INTEGER PRIMARY KEY, file_name TEXT, file_path TEXT, "
+                "last_modified TEXT, status TEXT, dag_run_id TEXT, ingested_at TEXT, "
+                "source_name TEXT NOT NULL DEFAULT '')"
+            )
+        )
+        conn.execute(
+            text("CREATE UNIQUE INDEX i ON file_list (file_path, dag_run_id, source_name)")
+        )
+
+    row = ["a.csv", "/data/a.csv", "2026-11-24"]
+    insert_into_file_list(row, dag_run_id="r1", engine=engine, source_name="orders")
+    insert_into_file_list(row, dag_run_id="r1", engine=engine, source_name="orders")  # retry
+    insert_into_file_list(row, dag_run_id="r1", engine=engine, source_name="other")
+    insert_into_file_list(row, dag_run_id="r1", engine=engine)  # no source: ''
+
+    with engine.connect() as conn:
+        rows = conn.execute(text("SELECT source_name FROM file_list ORDER BY id")).scalars().all()
+    assert rows == ["orders", "other", ""]
