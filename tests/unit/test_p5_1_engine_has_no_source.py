@@ -1,6 +1,7 @@
 """P5-1: the engine knows no source. IMDB and orders live in `examples/`."""
 
 import re
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -27,3 +28,14 @@ def test_p5_1_repo_config_has_no_dedicated_source():
         "imdb.yaml",
         "orders.yaml",
     }
+
+
+def test_p5_1_example_samples_are_tracked_by_git():
+    # `data/` of .gitignore once hid them: green locally, missing from every clone.
+    tracked = subprocess.run(
+        ["git", "ls-files", "examples/data"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    assert sorted(tracked) == [
+        "examples/data/imdb_sample.csv",
+        "examples/data/orders_sample.csv",
+    ]
