@@ -126,11 +126,13 @@ de source suffit à obtenir son pipeline**.
 
 ## Non vérifié, limites, à savoir
 
-- **Le run sur kind n'a pas été fait.** Le chart n'est touché que par des commentaires et le
-  Dockerfile par un commentaire ; l'image n'a pas été reconstruite, ni les pods relancés. Reste à
-  contrôler sur kind : `make image kind-load k8s-install`, le DAG `ingest__orders` de bout en bout
-  (listing sur le volume partagé, Spark en mode cluster, `lake_staging__orders`, puis dbt), et le
-  chemin de mise à jour : sur un volume Postgres existant, rejouer `script_tables.sql` **avant** de
+- **Run sur kind : fait le 2026-11-27** (`develop` @ `b067705`, image `airflow-project-one:p5-3`,
+  cluster neuf, `make kind-up image kind-load k8s-install`). `ingest__orders`, déclenché à la main,
+  réussit : Spark en mode cluster, 5 lignes en raw et en staging, 3 résultats qualité, ligne
+  `file_list` `processed` avec `source_name=orders`. L'Asset déclenche `transform_dag`, vert :
+  `stg_orders__current` a 5 lignes (les tables films sont vides, aucun fichier IMDB chargé).
+  `ingest__imdb_movies` et `ingest__unmatched` n'ont pas été lancés. Le chemin de mise à jour
+  reste à contrôler : sur un volume Postgres existant, rejouer `script_tables.sql` **avant** de
   déployer la nouvelle image (le chart ne l'exécute qu'à la création du volume).
 - **Pas de Spark réel via le DAG** : le faux `spark-submit` ne lance pas le job. Le job réel est
   testé à part (lignage, quartet de tests de la P2) ; la jonction DAG -> job est la ligne de commande
