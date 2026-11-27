@@ -490,16 +490,16 @@ wheels = [
 
 [[package]]
 name = "apache-airflow-providers-smtp"
-version = "3.2.0"
+version = "3.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosmtplib" },
     { name = "apache-airflow" },
     { name = "apache-airflow-providers-common-compat" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a1/19/54e7769e3851821cd952e986acbd36866f93ed1dbf95f4ef697dd2298085/apache_airflow_providers_smtp-3.2.0.tar.gz", hash = "sha256:21881645d1717df7102abc4ca0e3c308dd01fc02700fca9edd45c3fe0063640e", size = 56106, upload-time = "2026-10-24T18:48:56.508Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/b2/c234a7fc1fafeb2a2faab71bed775841889ca30132dc9436ea098c42769f/apache_airflow_providers_smtp-3.2.2.tar.gz", hash = "sha256:bddbfcf118e77e4ab01f95bc48504a7fc31e5b13c682ddd5699b7b49ce40deec", size = 56622, upload-time = "2026-11-23T19:17:00.705Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/39/c7/c1b4f41dc33e020a467d348aedce6ce99f3605893e02eac682bef8431273/apache_airflow_providers_smtp-3.2.0-py3-none-any.whl", hash = "sha256:99b0875a5678981be8ac0b9ad94ce1d38f44a37c516ddebd3837481aec069135", size = 30490, upload-time = "2026-10-24T18:48:30.038Z" },
+    { url = "https://files.pythonhosted.org/packages/08/3b/98526fb4918374cd35c87faa9b6241aacfa216a75587edd5a10bf7d677f9/apache_airflow_providers_smtp-3.2.2-py3-none-any.whl", hash = "sha256:afd076560e4593b3af3caa5a45b61c8e91d6e9497791212e7b84d26bd21f38ae", size = 30552, upload-time = "2026-11-23T19:16:34.654Z" },
 ]
 
 [[package]]
