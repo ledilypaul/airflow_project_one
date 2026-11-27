@@ -1,7 +1,7 @@
 from pyspark.sql import DataFrame, SparkSession
 
 from pipeline.config import SourceConfig
-from pipeline.config.types import build_schema
+from pipeline.engine.spark.types import build_schema
 
 
 class CSVReader:

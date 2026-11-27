@@ -38,7 +38,7 @@ from pipeline.config.reader_options import (
     PARQUET_READ_OPTIONS,
     SPARK_OPTION_TYPES,
 )
-from pipeline.config.types import build_schema
+from pipeline.engine.spark.types import build_schema
 from pipeline.file_reader.reader_factory import READER_CLASSES
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent

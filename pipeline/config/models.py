@@ -1,7 +1,8 @@
 """Modèle unique (Pydantic) des configs de lecture : `config/sources/*.yaml`
 et `config/defaults/*.yaml` (P2-1, constat M4).
 
-    source:   name, format, patterns   -> quelle source, quels fichiers
+    source:   name, format, patterns,
+              engine                   -> quelle source, quels fichiers, quel moteur
     reader:   options, columns_type    -> comment la lire
     storage:  table_name, format, mode,
               raw_path, staging_path   -> où l'écrire (P2-2, obligatoire)
@@ -23,7 +24,8 @@ croisés des sections qui, elles, sont valides (P2-3 / C-7). Un appel direct à
 `SourceConfig.model_validate` ne donne que les erreurs de champ.
 
 Ce module ne doit pas importer Airflow : le job Spark le charge
-(tests/unit/jobs/test_spark_job_no_airflow_import.py).
+(tests/unit/jobs/test_spark_job_no_airflow_import.py). Ni PySpark (P5-2) :
+une config se charge sans moteur installé (tests/unit/test_p5_2_config_is_engine_neutral.py).
 """
 
 import difflib
@@ -41,15 +43,21 @@ from pydantic import (
     model_validator,
 )
 
+from pipeline.config.engine import Engine, default_engine
 from pipeline.config.quality import QUALITY_ZONE, QualitySection, quality_problems
 from pipeline.config.reader_options import (
     ALIAS_GROUPS,
+    POLARS_OPTION_TYPES,
+    POLARS_OPTION_VALUES,
+    POLARS_SCALAR_FORMATS,
+    READER_OPTIONS_BY_ENGINE,
     READER_OPTIONS_BY_FORMAT,
     SCHEMA_FORMATS,
     SPARK_FORMATS,
     SPARK_OPTION_TYPES,
+    SPARK_TO_POLARS_OPTIONS,
 )
-from pipeline.config.types import get_spark_type
+from pipeline.config.types import resolve_column_type
 from utils.path_utils import check_lake_name, lake_relative_parts
 
 # Aligné sur ReaderFactory (vérifié par test_p2_1_whitelists_cover_exactly_the_supported_formats).
@@ -60,7 +68,7 @@ NonEmptyStr = Annotated[str, StringConstraints(strip_whitespace=True, min_length
 
 
 def _check_column_type(col_type: str) -> str:
-    get_spark_type(col_type)  # ValueError avec le motif (type inconnu ou complexe)
+    resolve_column_type(col_type)  # ValueError avec le motif (type inconnu ou complexe)
     return col_type
 
 
@@ -105,6 +113,13 @@ class SourceSection(_StrictModel):
     patterns: list[Pattern] = Field(
         min_length=1,
         description="Motifs fnmatch sur le NOM du fichier, insensibles à la casse.",
+    )
+    engine: Engine | None = Field(
+        default=None,
+        description=(
+            "Moteur de calcul de la source ; `PIPELINE_DEFAULT_ENGINE` (défaut spark) s'il est "
+            "absent. Il décide des options de `reader.options` et de la syntaxe des regex."
+        ),
     )
 
 
@@ -205,6 +220,16 @@ class SourceConfig(_StrictModel):
         return self.storage
 
     @property
+    def engine(self) -> Engine:
+        """Moteur de la source : `source.engine`, sinon `PIPELINE_DEFAULT_ENGINE`
+        (lue à chaque appel), sinon `spark`.
+
+        Raises:
+            ValueError: variable d'environnement invalide.
+        """
+        return self.source.engine or default_engine()
+
+    @property
     def table(self) -> str:
         """Nom de la table dans le lake : `storage.table_name` ou `source.name`."""
         return self._require_storage().table_name or self.source.name
@@ -267,7 +292,12 @@ class SourceConfig(_StrictModel):
             except ValidationError:
                 continue
         source, problems = sections.get("source"), []
+        engine: Engine = "spark"
         if source is not None:
+            try:
+                engine = source.engine or default_engine()
+            except ValueError as exc:
+                return [f"source.engine: {exc}"]
             # model_construct : pas de validation ; seules les sections
             # valides sont lues par les méthodes appelées.
             partial = cls.model_construct(
@@ -278,7 +308,7 @@ class SourceConfig(_StrictModel):
             if "storage" in sections:
                 problems += partial._storage_problems()
             if "reader" in sections:
-                problems += partial._reader_problems()
+                problems += partial._reader_problems(engine)
         quality = sections.get("quality")
         if quality is not None and "storage" in sections:
             reader, storage = sections.get("reader"), sections["storage"]
@@ -286,6 +316,7 @@ class SourceConfig(_StrictModel):
                 quality,
                 reader.columns_type if reader is not None else None,
                 storage.staging_path if storage is not None else None,
+                engine,
             )
         return problems
 
@@ -293,12 +324,17 @@ class SourceConfig(_StrictModel):
     def _check_consistency(self) -> "SourceConfig":
         """Tous les contrôles qui croisent les sections, en un seul
         validateur : leurs messages sont agrégés dans une seule erreur (C-6)."""
-        problems = self._storage_problems() + self._reader_problems()
+        try:
+            engine = self.engine
+        except ValueError as exc:
+            raise ValueError(f"source.engine: {exc}") from exc
+        problems = self._storage_problems() + self._reader_problems(engine)
         if self.quality is not None:
             problems += quality_problems(
                 self.quality,
                 self.reader.columns_type,
                 self.storage.staging_path if self.storage is not None else None,
+                engine,
             )
         if problems:
             raise ValueError("\n".join(problems))
@@ -349,34 +385,46 @@ class SourceConfig(_StrictModel):
             ]
         return []
 
-    def _reader_problems(self) -> list[str]:
+    def _reader_problems(self, engine: Engine) -> list[str]:
         fmt = self.source.format
-        allowed = READER_OPTIONS_BY_FORMAT[fmt]
+        allowed = READER_OPTIONS_BY_ENGINE[engine][fmt]
+        spark = engine == "spark"
+        scalar_formats = SPARK_FORMATS if spark else POLARS_SCALAR_FORMATS
+        option_types = SPARK_OPTION_TYPES if spark else POLARS_OPTION_TYPES
+        label = "Spark" if spark else "Polars"
         problems: list[str] = []
 
         for key, value in self.reader.options.items():
             if key not in allowed:
-                hint = difflib.get_close_matches(key, sorted(allowed), n=1, cutoff=0.6)
-                suggestion = f" (vouliez-vous dire {hint[0]!r} ?)" if hint else ""
+                problems.append(f"reader.options.{key}: {_unknown_option(key, fmt, engine)}")
+            elif fmt in scalar_formats and not _is_scalar_option(value, spark):
                 problems.append(
-                    f"reader.options.{key}: option non supportée pour le format {fmt!r}{suggestion}"
-                )
-            elif fmt in SPARK_FORMATS and not isinstance(value, str | bool | int | float):
-                problems.append(
-                    f"reader.options.{key}: une option Spark doit être une valeur scalaire "
-                    f"(texte, nombre ou booléen), pas {value!r}"
+                    f"reader.options.{key}: une option {label} doit être une valeur scalaire "
+                    f"(texte, nombre ou booléen{'' if spark else ', null ou liste de scalaires'}), "
+                    f"pas {value!r}"
                 )
             elif (
-                fmt in SPARK_FORMATS
-                and key in SPARK_OPTION_TYPES
-                and not _has_type(value, SPARK_OPTION_TYPES[key])
+                fmt in scalar_formats
+                and key in option_types
+                and not (value is None and not spark)
+                and not _has_type(value, option_types[key])
             ):
                 problems.append(
                     f"reader.options.{key}: doit être "
-                    f"{_TYPE_LABELS[SPARK_OPTION_TYPES[key]]}, pas {value!r}"
+                    f"{_TYPE_LABELS[option_types[key]]}, pas {value!r}"
+                )
+            elif (
+                not spark
+                and fmt in scalar_formats
+                and key in POLARS_OPTION_VALUES
+                and value not in POLARS_OPTION_VALUES[key]
+            ):
+                problems.append(
+                    f"reader.options.{key}: Polars n'accepte que "
+                    f"{', '.join(map(repr, POLARS_OPTION_VALUES[key]))}, pas {value!r}"
                 )
 
-        for group in ALIAS_GROUPS:
+        for group in ALIAS_GROUPS if spark else ():
             declared = sorted(group & self.reader.options.keys())
             if len(declared) > 1:
                 problems.append(
@@ -390,6 +438,34 @@ class SourceConfig(_StrictModel):
                 f"{', '.join(sorted(SCHEMA_FORMATS))} (format {fmt!r})"
             )
         return problems
+
+
+def _is_scalar_option(value: Any, spark: bool) -> bool:
+    if isinstance(value, str | bool | int | float):
+        return True
+    # Polars : `null` (`infer_schema_length: null`) et listes (`null_values`).
+    return not spark and (
+        value is None
+        or (isinstance(value, list) and all(isinstance(v, str | bool | int | float) for v in value))
+    )
+
+
+def _unknown_option(key: str, fmt: str, engine: Engine) -> str:
+    """Pourquoi `key` n'est pas une option de lecture de (`engine`, `fmt`) :
+    l'équivalent Polars d'une option Spark, ou la faute de frappe probable."""
+    if engine == "polars" and key in READER_OPTIONS_BY_FORMAT[fmt]:
+        equivalent = SPARK_TO_POLARS_OPTIONS.get(fmt, {}).get(key)
+        advice = (
+            f"utiliser {equivalent!r}"
+            if equivalent
+            else "pas d'équivalent Polars établi (voir docs/configuration/sources.md)"
+        )
+        return f"option du moteur Spark, la source utilise le moteur 'polars' : {advice}"
+    allowed = sorted(READER_OPTIONS_BY_ENGINE[engine][fmt])
+    hint = difflib.get_close_matches(key, allowed, n=1, cutoff=0.6)
+    suggestion = f" (vouliez-vous dire {hint[0]!r} ?)" if hint else ""
+    where = "" if engine == "spark" else f" (moteur {engine!r})"
+    return f"option non supportée pour le format {fmt!r}{where}{suggestion}"
 
 
 _SECTION_MODELS: dict[str, type[BaseModel]] = {

@@ -50,6 +50,7 @@ SAMPLE_VALUES = {
     "string": "x",
     "int": "1",
     "integer": "1",
+    "long": "3000000000",  # P5-2: beyond int32
     "float": "1.5",
     "double": "1.5",
     "boolean": "true",

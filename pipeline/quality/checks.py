@@ -333,7 +333,8 @@ def java_regex_problems(spark: SparkSession, configs: Iterable[tuple[object, obj
     """
     problems = []
     for path, config in configs:
-        if config.quality is None:
+        # P5-2 : la regex d'une source Polars s'exécute en Rust, pas en Java.
+        if config.quality is None or config.engine != "spark":
             continue
         for index, check in enumerate(config.quality.checks):
             if not isinstance(check, RegexCheck):

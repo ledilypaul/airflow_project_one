@@ -15,6 +15,7 @@ source:
   name: orders                  # unique parmi tous les fichiers de config
   format: csv                   # csv | txt | parquet | xlsx : choisit le lecteur
   patterns: ["orders_*.csv"]    # fnmatch sur le NOM du fichier, insensible à la casse
+  # engine: spark               # facultatif : spark | polars (voir « Le moteur d'une source »)
 
 reader:
   options: {header: true, delimiter: ",", encoding: "UTF-8", enforceSchema: false}
@@ -59,12 +60,30 @@ d'être lu comme un CSV.
 
 Il n'y a **pas de format par défaut** : une extension inconnue est une erreur, pas une lecture CSV.
 
+## Le moteur d'une source
+
+`source.engine` vaut `spark` ou `polars`. Absent, il vient de la variable d'environnement
+`PIPELINE_DEFAULT_ENGINE`, puis de `spark`. Le moteur décide de ce qui est valide dans la config :
+les options de `reader.options` et la syntaxe des regex qualité. Il s'applique à **chaque** config,
+repli par extension compris.
+
+:::{note}
+Seul Spark exécute des fichiers aujourd'hui : le moteur Polars arrive avec le backlog P5-7. Une
+source `engine: polars` se valide et se charge, mais le job Spark marque ses fichiers `failed`
+(`la source ... déclare le moteur 'polars'`). Elle ne change rien pour les sources Spark.
+:::
+
+La config n'importe ni PySpark ni Polars : on la charge, au parsing d'un DAG par exemple, sans
+moteur installé.
+
 ## Les options de lecture
 
-`reader.options` est passé tel quel à Spark (csv, txt et parquet, valeurs scalaires) ou à
-`pyspark.pandas.read_excel` (xlsx). Elles sont vérifiées contre une **liste blanche** par format
-(`pipeline/config/reader_options.py`, qui cite ses sources) : c'est ce qui refuse `infer_schema`
-quand Spark attend `inferSchema`.
+`reader.options` est interprété selon le moteur de la source. Il est vérifié contre une **liste
+blanche par (moteur, format)** (`pipeline/config/reader_options.py`, qui cite ses sources) : c'est
+ce qui refuse `infer_schema` quand Spark attend `inferSchema`.
+
+**Moteur `spark`** : passé tel quel à Spark (csv, txt et parquet, valeurs scalaires) ou à
+`pyspark.pandas.read_excel` (xlsx).
 
 - **Alias.** Déclarer les deux d'une paire (`sep` et `delimiter`, `encoding` et `charset`) est
   refusé : Spark n'en garderait qu'un, sans le dire.
@@ -74,10 +93,48 @@ quand Spark attend `inferSchema`.
   exemple `header=false` en CSV).
 - `xls` n'est pas pris en charge (`xlrd` n'est pas installé).
 
+**Moteur `polars`** : les noms de `pl.scan_csv`, `pl.scan_parquet` et `pl.read_excel` (Polars
+2.2.0). Une option peut être `null` (`infer_schema_length: null`) ou une liste (`null_values`). Les
+options typées le sont aussi (`has_header: "yes"` est refusé), et `encoding` n'accepte que `utf8` et
+`utf8-lossy`, comme `scan_csv`.
+
+Une option **Spark** déclarée sur une source Polars est refusée avec le nom de son équivalent quand
+il est établi :
+
+| Spark (csv, txt) | Polars | | pandas (xlsx) | Polars |
+|---|---|---|---|---|
+| `sep`, `delimiter` | `separator` | | `header` | `has_header` |
+| `header` | `has_header` | | `usecols` | `columns` |
+| `quote` | `quote_char` | | `dtype` | `schema_overrides` |
+| `comment` | `comment_prefix` | | | |
+| `nullValue` | `null_values` | | | |
+| `inferSchema` | `infer_schema` | | | |
+| `lineSep` | `eol_char` | | | |
+
+L'équivalence est celle du **nom** : la sémantique peut différer (`header` pandas est un indice de
+ligne, `has_header` un booléen). Une option Spark absente de ce tableau n'a pas d'équivalent établi
+et le message le dit.
+
 ## Le schéma explicite : `columns_type`
 
-Les types sont ceux de `pipeline/config/types.py` (`SUPPORTED_COLUMN_TYPES`). Seuls les types
-**atomiques** sont acceptés : le lecteur CSV de Spark ne sait pas lire un tableau, une map ni une
+Les types sont **neutres**, communs à tous les moteurs ; la table de `pipeline/config/types.py`
+(`NEUTRAL_TYPES`) donne pour chacun son nom chez Spark, Polars, DuckDB et Arrow :
+
+| Type YAML | Spark | Polars | DuckDB (contrat dbt) | Arrow |
+|---|---|---|---|---|
+| `string` | `StringType` | `String` | `VARCHAR` | `string` |
+| `int` (alias `integer`) | `IntegerType` (32 bits) | `Int32` | `INTEGER` | `int32` |
+| `long` | `LongType` (64 bits) | `Int64` | `BIGINT` | `int64` |
+| `float` | `FloatType` | `Float32` | `FLOAT` | `float` |
+| `double` | `DoubleType` | `Float64` | `DOUBLE` | `double` |
+| `boolean` | `BooleanType` | `Boolean` | `BOOLEAN` | `bool` |
+| `date` | `DateType` | `Date` | `DATE` | `date32[day]` |
+| `timestamp` | `TimestampType` | `Datetime` | `TIMESTAMP` | `timestamp[ns]` |
+
+Une colonne d'identifiants qui dépasse 2³¹ se déclare `long` (`int` reste sur 32 bits). La
+conversion en objets de moteur se fait dans le moteur (`pipeline/engine/spark/types.py`).
+
+Seuls les types **atomiques** sont acceptés : le lecteur CSV de Spark ne sait pas lire un tableau, une map ni une
 structure. Une colonne de liste comme `genre_list` (IMDB) est donc lue en `string`, puis découpée
 plus tard.
 
@@ -118,7 +175,8 @@ courant), trouve la config du fichier, puis demande à `ReaderFactory` le lecteu
    uv run pytest tests/unit/file_reader -k synthetic     # lit un fichier synthétique
    ```
 3. Si la liste blanche refuse une option légitime, ajoutez-la à `reader_options.py` **avec sa source
-   de documentation** (et, si elle n'est pas du texte, à `SPARK_OPTION_TYPES`).
+   de documentation** (et, si elle n'est pas du texte, à `SPARK_OPTION_TYPES` ou
+   `POLARS_OPTION_TYPES`).
 4. Pour un nouveau **format**, il faut un lecteur, une entrée dans `READER_CLASSES` et `FileFormat`
    (qui doivent rester égaux : un test le vérifie), une liste blanche et un test.
 
