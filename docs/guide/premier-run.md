@@ -1,8 +1,11 @@
 # Premier run
 
-Ce pas à pas fait traverser tout le pipeline à un fichier d'exemple, `data/orders_sample.csv`
+Ce pas à pas fait traverser tout le pipeline à un fichier d'exemple, `examples/data/orders_sample.csv`
 (quatre colonnes : `order_id`, `customer`, `amount`, `order_date`). Il suppose l'installation
-terminée et `make airflow` en cours d'exécution ([](installation.md)).
+terminée et `make demo` en cours d'exécution ([](installation.md)) : le moteur ne livre aucune
+source, `make demo` lit celles de `examples/config` (`PIPELINE_CONFIG_ROOT`) et copie les fichiers
+d'exemple dans `data/`. Pour vos propres sources, déposez vos YAML dans `config/sources/` et lancez
+`make airflow`.
 
 ## 1. Dépauser les trois DAGs
 
@@ -28,7 +31,7 @@ make api-trigger DAG=list_files_dag
 ```
 
 Le DAG cherche les fichiers dans `./data/` (réglé dans `config/extractor_config.yaml`), garde ceux
-dont l'extension et le nom conviennent (ici `orders_*`), puis écrit une ligne `pending` par fichier
+dont l'extension convient (`config/extractor_config.yaml` ne filtre plus par nom), puis écrit une ligne `pending` par fichier
 dans la table `file_list`, marquée du `dag_run_id` du listing.
 
 ## 3. Regarder la suite se déclencher seule

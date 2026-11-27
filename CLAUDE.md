@@ -178,7 +178,7 @@ make k8s-tools        # kind v0.33.0, kubectl v1.37.2, helm v4.3.2 into ~/.local
 make kind-up          # one-node cluster `airflow-project-one`, kindest/node v1.37.0 pinned by digest, API server on 127.0.0.1
 make image kind-load  # build the project image (IMAGE_REPOSITORY:IMAGE_TAG, default airflow-project-one:dev) and load it into the node
 make k8s-install      # namespace (PSA restricted), Secrets, chart of the project, official Airflow chart 1.22.0 (SHA-256 checked, .k8s/), pools
-make k8s-load-data DATA=data/orders_sample.csv   # copy a source file into the shared volume (data/)
+make k8s-load-data DATA=examples/data/orders_sample.csv   # copy a source file into the shared volume (data/)
 make k8s-ui           # kubectl port-forward on http://127.0.0.1:8081 (K8S_UI_PORT); user admin, `make k8s-ui-password`
 make k8s-spark-clean  # delete the finished Spark driver pods (their Service, ConfigMaps, NetworkPolicy go with them)
 make k8s-uninstall    # remove both Helm releases, keep the Secrets and the volumes
@@ -337,7 +337,7 @@ quality:                    # optional, requires storage.staging_path (see "Qual
     - {type: accepted_values, column: country, values: ["FR", "NO"], severity: warn}
 ```
 
-- **Layout.** `config/sources/*.yaml` holds one dedicated config per source. `config/defaults/*.yaml` holds the fallback for each extension (`*.csv`, `*.txt`, `*.xlsx`, `*.parquet`), with the same model. `config/extractor_config.yaml` is the listing config and is never scanned by the reader.
+- **Layout.** `config/sources/*.yaml` holds one dedicated config per source: **empty in the repo** (P5-1, the engine knows no source; a test greps `pipeline/ storage/ utils/ dags/ scripts/` for `imdb|movies|orders`). The example sources `imdb.yaml` / `orders.yaml` and their sample files live in `examples/` (`examples/config/sources/`, `examples/data/`; `make demo` runs on them). `PIPELINE_CONFIG_ROOT` (absolute path, read once at import of `pipeline.config.registry`) replaces the root `config/`; a root without `defaults/` falls back to the engine's `config/defaults/`. `config/defaults/*.yaml` holds the fallback for each extension (`*.csv`, `*.txt`, `*.xlsx`, `*.parquet`), with the same model. The Dockerfile bakes `examples/config` with `PIPELINE_CONFIG_ROOT` (dev image, not built in P5-1: unverified). `config/extractor_config.yaml` is the listing config and is never scanned by the reader.
 - **Patterns.** A dedicated source describes one format, so its patterns include the extension (`*imdb*.csv`, `orders_*.csv`). An IMDB file in `.parquet` then takes `default_parquet` instead of being read as CSV.
 - **Options.** `reader.options` is passed as-is to Spark (csv/txt and parquet, scalar values only) or to `pyspark.pandas.read_excel` (xlsx). `xls` is not supported, because `xlrd` is not installed. The options are checked against a per-format whitelist in `pipeline/config/reader_options.py`, which cites its sources. That check is what rejects a typo such as `infer_schema`.
   - **Tests.** The CSV whitelist is compared with the keywords of the installed `DataFrameReader.csv` and the Excel one with `ps.read_excel`. The Parquet whitelist is compared with the Spark 4.3.0 docs (`parquet()` has no option keywords). A test pins PySpark 4.3: after an upgrade, review the whitelists.
@@ -390,13 +390,13 @@ Quality checks are native: Pydantic models in `pipeline/config/quality.py`, a pu
   A check is **blocking** when its severity is `error` and its status `fail` or `error`. A `warn` never blocks, even in status `error`, which is logged at ERROR level.
 - **Blocking failure.** Raw is written. The file's staging partition is removed (`ParquetLakeWriter.delete_partition`) and not rewritten. The file becomes `failed` with `quality checks failed: <name>: <detail>; ...`, and the job exits 6 at the end when no file failed for another reason (1 otherwise). If the engine itself raises, the same thing happens (it fails closed), with `quality checks could not run: <cause>`, but the job exits 1: that cause may be transient.
 - **Results.** They go to `<LAKE_ROOT>/quality/<table>/`, one row per check, partitioned by (`lake_run_id`, `lake_source_file`) and overwritten by a retry. When a source has a staging zone, the job first removes that (run, file) partition of the results, whether or not the source has a `quality` section. If staging fails after passing checks, the results of that attempt are removed. Read the results together with the status in `file_list`.
-- **Repo configs.** `config/sources/imdb.yaml` declares `not_null(id)` and `unique(id)` as `warn` for a first real run: switch them to `error` once `quality/movies` has been checked on the real file (no IMDB file was available for P2-6: the verification procedure, including the `multiLine` comparison, is in `docs/architecture/2026-11-14-p2-6-phase2-followups.md`). `orders.yaml` declares `not_null(order_id)`, `unique(order_id)` and `row_count min 1`, all `warn`. The defaults have no checks, since they have no staging.
+- **Repo configs.** `examples/config/sources/imdb.yaml` declares `not_null(id)` and `unique(id)` as `warn` for a first real run: switch them to `error` once `quality/movies` has been checked on the real file (no IMDB file was available for P2-6: the verification procedure, including the `multiLine` comparison, is in `docs/architecture/2026-11-14-p2-6-phase2-followups.md`). `orders.yaml` declares `not_null(order_id)`, `unique(order_id)` and `row_count min 1`, all `warn`. The defaults have no checks, since they have no staging.
 - **Retries.** A deterministic quality failure exits 6, which `read_file_dag` does not retry (P2-6, see "Running the Spark job standalone").
 
 ### Processing and storage layers
 
 - `pipeline/processor/base_processor.py` (`BaseProcessor`) wraps a Spark `DataFrame` with chainable cleanup methods (`remove_empty_rows`, `drop_na_rows`, `fill_na`, `remove_duplicates`, `cast_column`, `rename_columns`), each returning `self`.
-- `storage/base_writer.py` defines the `BaseWriter` ABC (`write(data, target, **kwargs)`); `storage/postgresql_writer.py` (`PostgresWriter`) implements it for both Spark DataFrames (via JDBC) and Pandas DataFrames (via `to_sql`); `storage/hive_writer.py` implements the Hive equivalent. Writers must subclass `BaseWriter` and implement `write()` to satisfy the interface.
+- `storage/base_writer.py` defines the `BaseWriter` ABC (`write(data, target, **kwargs)`); `storage/postgresql_writer.py` (`PostgresWriter`) implements it for both Spark DataFrames (via JDBC) and Pandas DataFrames (via `to_sql`). Writers must subclass `BaseWriter` and implement `write()` to satisfy the interface.
 - `storage/parquet_lake_writer.py` is the writer the Spark job uses.
   - `ParquetLakeWriter.write(data, target, mode="overwrite", *, run_id, source_file, file_id)` writes `<LAKE_ROOT>/<zone path><table>/`, partitioned by `lake_run_id` and `lake_source_file`. It adds the columns `lake_file_id` and `lake_ingested_at`, and returns the number of rows written, measured with an `Observation` (no extra job).
   - It also provides `resolve_lake_root` and `latest_snapshot`. `delete_partition(spark, target, run_id=, source_file=)` removes one (run, file) partition, and the run directory if it becomes empty.
@@ -405,15 +405,11 @@ Quality checks are native: Pydantic models in `pipeline/config/quality.py`, a pu
   - A source read with `inferSchema` and no `columns_type` can infer different types from one file to the next, and a mixed table may then fail to read. Declare `columns_type` for sources read as a whole.
 - `utils/path_utils.normalize_spark_path` converts local paths to `file://` (or `file:///` on Windows) URIs for Spark, leaving already-distributed URIs (`hdfs://`, `s3://`, `gs://`, `dbfs:/`, `abfss://`, `adl://`) untouched. `lake_relative_parts` and `check_lake_name` keep zone paths and table names inside `LAKE_ROOT`. In tests, `Path.as_uri()` encodes `=` as `%3D`, which Hadoop does not decode: use `normalize_spark_path` for a partition directory.
 
-### `pipeline/IMDBExtractor.py` / `pipeline/IMDBTransform.py`
-
-A separate, older/ad-hoc IMDB-specific extract+transform script pair, not wired into the DAG pipeline above — check these before assuming all data flows through `Extractor`/`BaseFileReader`.
-
 ## Targets & ground rules (read before changing code)
 
 - **Target stack:** Airflow 3.4.x (`airflow.sdk` imports, providers for operators), PySpark 4.x, Python 3.12+. Airflow 2 is end-of-life.
 - **Idempotency first:** tasks and the Spark job work on the scope of the current run (`run_id` / data interval), never on "today". Lake writes replace the (run, file) partition and never append. Read the current state with `latest_snapshot`.
-- **Readers return a Spark DataFrame** and take the validated `SourceConfig`. When touching a reader, test it with a dedicated `config/sources/` config and with its `config/defaults/` fallback.
+- **Readers return a Spark DataFrame** and take the validated `SourceConfig`. When touching a reader, test it with a dedicated source config (`examples/config/sources/` or a `tmp_path` one) and with its `config/defaults/` fallback.
 - **Never** read `.env`, commit secrets, or push. Work on a `feat/` or `fix/` branch, never directly on `main`/`develop`.
 - Every bug fix comes with a regression test named after its backlog ID.
 - The current audit baseline and the prioritized backlog live in `docs/audit/` (start with `2026-11-05-baseline.md`).

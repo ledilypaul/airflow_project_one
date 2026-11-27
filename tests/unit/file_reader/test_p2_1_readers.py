@@ -18,6 +18,7 @@ from pipeline.file_reader.excel_reader import ExcelReader
 from pipeline.file_reader.parquet_reader import ParquetReader
 
 REPO_CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "config"
+EXAMPLES_CONFIG_ROOT = REPO_CONFIG_ROOT.parent / "examples" / "config"
 
 
 # P2-2: `storage` is mandatory in every reading config; these tests only read.
@@ -37,7 +38,9 @@ def _declared_format(config_file: Path) -> str | None:
 REPO_CSV_CONFIGS = [
     path
     for tier in ("sources", "defaults")
-    for path in sorted((REPO_CONFIG_ROOT / tier).glob("*.yaml"))
+    for path in sorted(
+        ((EXAMPLES_CONFIG_ROOT if tier == "sources" else REPO_CONFIG_ROOT) / tier).glob("*.yaml")
+    )
     if _declared_format(path) in {"csv", "txt"}
 ]
 
@@ -244,7 +247,7 @@ def test_p2_1_sample_values_cover_every_column_type():
 
 
 def test_p2_1_repo_has_csv_configs_to_read():
-    assert any((REPO_CONFIG_ROOT / "sources").glob("*.yaml"))
+    assert any((EXAMPLES_CONFIG_ROOT / "sources").glob("*.yaml"))
     assert {p.name for p in REPO_CSV_CONFIGS} >= {"imdb.yaml", "orders.yaml", "csv.yaml"}
 
 
@@ -272,7 +275,7 @@ def test_p2_1_every_repo_config_reads_a_synthetic_file(spark, tmp_path, config_f
     lines.append(sep.join(SAMPLE_VALUES[columns_type[column]] for column in columns))
     data_file.write_bytes(("\n".join(lines) + "\n").encode(encoding))
 
-    reader = BaseFileReader(spark)
+    reader = BaseFileReader(spark, config_path=EXAMPLES_CONFIG_ROOT)
     assert reader.get_config(str(data_file)).source.name == config.source.name
 
     df = reader.read_file(str(data_file))

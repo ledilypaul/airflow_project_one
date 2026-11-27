@@ -23,6 +23,14 @@ Versioning : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR
 
 > Changements en cours, pas encore versionnés.
 
+### Changed
+
+- **P5-1** — le moteur ne connaît plus aucune source : `imdb.yaml` et `orders.yaml` passent dans `examples/config/sources/`, les échantillons dans `examples/data/`. `PIPELINE_CONFIG_ROOT` (chemin absolu) choisit la racine de config ; sans dossier `defaults/` dans cette racine, ceux de `config/defaults/` s'appliquent. `make demo` lance la démo. `extractor_config.yaml` liste tous les fichiers des extensions retenues.
+
+### Removed
+
+- **P5-1** — `pipeline/IMDBExtractor.py`, `IMDBTransform.py`, `config_file.json`, `dags/test_dag.py`, `sandbox/`, `test_notebook.ipynb`, `start_env.sh`, `setup_airflow.sh`, `ExcelReader.read_polars`, `JSONReader`, `HiveWriter` (aucun usage).
+
 ---
 
 ## [0.4.0] — 2026-11-23

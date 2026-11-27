@@ -45,7 +45,6 @@ PROJECT_DAG_IDS = {
     "list_files_dag",
     "list_files_dag_classic",
     "read_file_dag",
-    "test_dag",
     "transform_dag",
 }
 

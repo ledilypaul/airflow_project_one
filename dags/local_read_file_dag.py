@@ -192,7 +192,7 @@ SPARK_LINEAGE_FILE = "spark.jsonl"
 SPARK_REDACTION_REGEX = (
     r"(?i)secret|password|token|access[.]?key|apikey|authorization|openlineage\.transport\.url"
 )
-# KeyValueTrimmer names a file such as `orders_dt=2026-11-14.csv` after its
+# KeyValueTrimmer names a file such as `report_dt=2026-11-14.csv` after its
 # directory (it takes the name for a partition): the listing declares the
 # file. The lake tables are written at their root, so they keep their names.
 OPENLINEAGE_DISABLED_TRIMMERS = "io.openlineage.client.dataset.partition.trimmer.KeyValueTrimmer"
@@ -512,7 +512,7 @@ def openlineage_spark_settings() -> dict[str, Any]:
 
     Otherwise: the jar, the listener, `spark.redaction.regex` extended to
     the OpenLineage properties, the namespace, KeyValueTrimmer disabled (a
-    source file `orders_dt=2026-11-14.csv` keeps its own name), and:
+    source file `report_dt=2026-11-14.csv` keeps its own name), and:
     - `file` transport: Spark events in the directory of the Airflow ones
       (one file per application, set by prepare_spark_lineage);
     - any other transport (http): injected by the provider at execution.

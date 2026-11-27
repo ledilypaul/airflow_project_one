@@ -91,9 +91,9 @@ retirés. Lisez les résultats **avec** le statut du fichier dans `file_list`.
 
 ## Dans le dépôt
 
-- `config/sources/imdb.yaml` déclare `not_null(id)` et `unique(id)` en `warn` pour un premier vrai
+- `examples/config/sources/imdb.yaml` déclare `not_null(id)` et `unique(id)` en `warn` pour un premier vrai
   run : à passer en `error` après vérification de `quality/movies` sur le vrai fichier
   (procédure dans `docs/architecture/2026-11-14-p2-6-phase2-followups.md`).
-- `config/sources/orders.yaml` déclare `not_null(order_id)`, `unique(order_id)` et `row_count min 1`,
+- `examples/config/sources/orders.yaml` déclare `not_null(order_id)`, `unique(order_id)` et `row_count min 1`,
   tous en `warn`.
 - Les replis par extension n'ont aucun contrôle : ils n'ont pas de zone staging.

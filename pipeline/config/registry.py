@@ -3,8 +3,12 @@
 Arborescence (sous `DEFAULT_CONFIG_ROOT`, résolu depuis l'emplacement du code,
 pas depuis le répertoire courant) :
 
-    config/sources/*.yaml   une config dédiée par source (orders, imdb...)
-    config/defaults/*.yaml  les défauts par extension (motifs `*.csv`...)
+    config/sources/*.yaml   une config dédiée par source (la vôtre)
+    config/defaults/*.yaml  les défauts par extension (motifs `*.csv`...) ;
+                            sans ce dossier, ceux du moteur (`config/defaults`)
+
+La racine se choisit par `PIPELINE_CONFIG_ROOT` (chemin absolu) ; les sources
+d'exemple sont dans `examples/config`.
 
 Rien d'autre n'est lu : `config/extractor_config.yaml` (la config du listing)
 n'est jamais scanné.
@@ -33,7 +37,24 @@ from pydantic import ValidationError
 
 from pipeline.config.models import SourceConfig, lake_target_key, lake_targets_nested
 
-DEFAULT_CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent / "config"
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+# Défauts par extension livrés avec le moteur : utilisés quand la racine de
+# config choisie n'a pas de dossier `defaults/` (ex. `examples/config`).
+ENGINE_DEFAULTS_DIR = _PROJECT_ROOT / "config" / "defaults"
+CONFIG_ROOT_ENV = "PIPELINE_CONFIG_ROOT"
+
+
+def _default_config_root() -> Path:
+    """`$PIPELINE_CONFIG_ROOT` (absolu requis) sinon `<projet>/config`."""
+    value = os.environ.get(CONFIG_ROOT_ENV, "").strip()
+    if not value:
+        return _PROJECT_ROOT / "config"
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise ConfigError(f"{CONFIG_ROOT_ENV} doit être un chemin absolu : {value!r}")
+    return path
+
+
 SOURCES_DIR = "sources"
 DEFAULTS_DIR = "defaults"
 
@@ -48,6 +69,9 @@ class NoMatchingConfigError(ConfigError):
 
 class AmbiguousConfigError(ConfigError):
     """Plusieurs configs du même niveau correspondent au fichier."""
+
+
+DEFAULT_CONFIG_ROOT = _default_config_root()
 
 
 @dataclass(frozen=True)
@@ -118,10 +142,10 @@ def _yaml_files(directory: Path) -> list[Path]:
 def _lake_target_conflicts(configs: list[LoadedConfig]) -> list[str]:
     """Tables du lake incompatibles entre configs différentes (C-3).
 
-    - imbriquées (`raw/orders` et `raw/orders/x/b`) : Spark trouverait deux
+    - imbriquées (`raw/<table>` et `raw/<table>/x/b`) : Spark trouverait deux
       structures de partitions sous la table englobante et refuserait de la
       lire (`CONFLICTING_DIRECTORY_STRUCTURES`) ;
-    - identiques à la casse près (`raw/orders`, `raw/Orders`) : un seul
+    - identiques à la casse près (`raw/<table>`, `raw/<Table>`) : un seul
       répertoire sur un FS insensible à la casse, deux ailleurs.
     Une même table écrite à l'identique par deux sources reste permise. Le
     cas raw/staging d'une même config est contrôlé par `SourceConfig`.
@@ -190,7 +214,10 @@ class SourceRegistry:
         errors: list[str] = []
         tiers: dict[str, list[LoadedConfig]] = {SOURCES_DIR: [], DEFAULTS_DIR: []}
         for tier, loaded in tiers.items():
-            for path in _yaml_files(config_root / tier):
+            directory = config_root / tier
+            if tier == DEFAULTS_DIR and not directory.is_dir():
+                directory = ENGINE_DEFAULTS_DIR
+            for path in _yaml_files(directory):
                 try:
                     loaded.append(LoadedConfig(load_source_config(path), path))
                 except ConfigError as exc:

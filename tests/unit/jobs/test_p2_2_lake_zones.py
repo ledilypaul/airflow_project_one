@@ -13,6 +13,7 @@ P2-2 (constat A1): what the Spark job writes for one file.
 Real Spark (session-wide `spark` fixture), `tmp_path` as `LAKE_ROOT`.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -187,6 +188,10 @@ def test_p2_2_main_writes_real_file_end_to_end(spark, tmp_path, monkeypatch):
     )
     lake_root = tmp_path / "lake"
     monkeypatch.setenv("LAKE_ROOT", str(lake_root))
+    # P5-1: `orders` is an example source, not part of the engine.
+    monkeypatch.setattr(
+        read_files_job, "CONFIG_ROOT", Path(__file__).resolve().parents[3] / "examples" / "config"
+    )
     # The session is shared by the whole test run: main() must not stop it.
     monkeypatch.setattr(spark, "stop", lambda: None)
     update = MagicMock()

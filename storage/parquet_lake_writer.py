@@ -171,7 +171,7 @@ class ParquetLakeWriter(BaseWriter):
         self.lake_root = lake_root
 
     def location(self, target: str) -> str:
-        """URI de la table `target` (relative au lake, ex. `raw/orders`).
+        """URI de la table `target` (relative au lake, ex. `raw/<table>`).
 
         Raises:
             ValueError: `target` sortirait du lake (`..`, chemin absolu, URI).
@@ -194,7 +194,7 @@ class ParquetLakeWriter(BaseWriter):
 
         Args:
             data: les données, sans colonne technique (elles sont ajoutées ici).
-            target: la table, relative au lake (ex. `raw/orders`).
+            target: la table, relative au lake (ex. `raw/<table>`).
             mode: `overwrite` (défaut, idempotent : remplace la partition du
                 (run, fichier), même par 0 ligne) ou `append` (choix
                 explicite : un retry duplique les lignes).

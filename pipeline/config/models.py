@@ -129,7 +129,7 @@ TableName = Annotated[str, AfterValidator(check_lake_name)]
 
 
 def lake_target_key(target: str) -> tuple[str, ...]:
-    """Segments d'une table du lake (`raw/orders`), sans tenir compte de la
+    """Segments d'une table du lake (`raw/<table>`), sans tenir compte de la
     casse : deux tables qui ne diffèrent que par la casse sont un seul
     répertoire sur un FS insensible à la casse (macOS, Windows)."""
     return tuple(segment.casefold() for segment in target.split("/"))
@@ -137,8 +137,8 @@ def lake_target_key(target: str) -> tuple[str, ...]:
 
 def lake_targets_nested(first: str, second: str) -> tuple[str, str] | None:
     """(englobante, imbriquée) si l'une des deux tables est un préfixe de
-    segments strict de l'autre (`raw/orders` et `raw/orders/x`), casse
-    ignorée ; sinon None. `raw/orders` et `raw/orders_v2` ne sont pas
+    segments strict de l'autre (`raw/<table>` et `raw/<table>/x`), casse
+    ignorée ; sinon None. `raw/<table>` et `raw/<table>_v2` ne sont pas
     imbriquées."""
     a, b = lake_target_key(first), lake_target_key(second)
     if len(a) == len(b):
@@ -211,7 +211,7 @@ class SourceConfig(_StrictModel):
 
     @property
     def raw_target(self) -> str:
-        """Table raw, relative à LAKE_ROOT (ex. `raw/orders`)."""
+        """Table raw, relative à LAKE_ROOT (ex. `raw/<table>`)."""
         storage = self._require_storage()
         return "/".join((*lake_relative_parts(storage.raw_path), self.table))
 

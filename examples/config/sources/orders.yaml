@@ -3,7 +3,7 @@ source:
   name: orders
   format: csv
   # Motifs fnmatch sur le nom du fichier, insensibles à la casse
-  # (repris de extractor_config.yaml : include_files "orders_*"). Limité aux
+  # (motif du fichier d'exemple). Limité aux
   # .csv, comme le format déclaré ci-dessus.
   patterns: ["orders_*.csv"]
 
@@ -21,7 +21,7 @@ reader:
     # décalées ou nulles. inferSchema est retiré : sans effet avec un schéma.
     enforceSchema: false
   # Schéma explicite (P2-6), dans l'ordre des colonnes du fichier, relevé sur
-  # data/orders_sample.csv (en-tête order_id,customer,amount,order_date).
+  # examples/data/orders_sample.csv (en-tête order_id,customer,amount,order_date).
   # Types : pipeline/config/types.py. amount en double (pas de decimal dans
   # les types acceptés ; float perdrait des centimes). Même schéma que la
   # source dbt lake_staging.orders et le contrat de stg_orders__current.

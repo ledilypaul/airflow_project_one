@@ -23,7 +23,8 @@ import yaml
 from pipeline.config import ConfigError, SourceConfig, SourceRegistry, load_source_config
 
 REPO_CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "config"
-REPO_SOURCE_FILES = sorted((REPO_CONFIG_ROOT / "sources").glob("*.yaml"))
+EXAMPLES_CONFIG_ROOT = REPO_CONFIG_ROOT.parent / "examples" / "config"
+REPO_SOURCE_FILES = sorted((EXAMPLES_CONFIG_ROOT / "sources").glob("*.yaml"))
 REPO_DEFAULT_FILES = sorted((REPO_CONFIG_ROOT / "defaults").glob("*.yaml"))
 
 RAW_ONLY = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
@@ -299,7 +300,7 @@ def test_p2_2_defaults_land_in_raw_only(config_file):
 
 
 def test_p2_2_dedicated_sources_have_a_staging_zone():
-    registry = SourceRegistry.from_directory(REPO_CONFIG_ROOT)
+    registry = SourceRegistry.from_directory(EXAMPLES_CONFIG_ROOT)
     orders = registry.match("orders_2024.csv")
     assert (orders.raw_target, orders.staging_target) == ("raw/orders", "staging/orders")
     movies = registry.match("IMDB_movies.csv")

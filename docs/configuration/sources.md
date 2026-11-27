@@ -4,6 +4,10 @@ Chaque type de fichier est décrit par un fichier YAML, validé au chargement pa
 Pydantic, `pipeline/config/models.py::SourceConfig`. Le modèle refuse toute clé inconnue : une faute
 de frappe est une erreur, jamais ignorée en silence.
 
+:::{note}
+La racine se choisit par `PIPELINE_CONFIG_ROOT` (chemin absolu, défaut `config/`). Sans dossier `defaults/` dans cette racine, les défauts par extension du moteur (`config/defaults/`) s'appliquent. `make demo` utilise `examples/config`.
+:::
+
 ## Un exemple complet
 
 ```yaml
@@ -36,7 +40,7 @@ quality:                        # facultatif, exige staging_path (voir « Contr�
 
 | Dossier | Contenu |
 |---|---|
-| `config/sources/*.yaml` | une config **dédiée** par source (`orders.yaml`, `imdb.yaml`) |
+| `config/sources/*.yaml` | une config **dédiée** par source, la vôtre (vide dans le dépôt). Les exemples `orders.yaml` et `imdb.yaml` sont dans `examples/config/sources/` |
 | `config/defaults/*.yaml` | le **repli** par extension (`*.csv`, `*.txt`, `*.xlsx`, `*.parquet`), avec le même modèle |
 | `config/extractor_config.yaml` | la config du **listing** ; le lecteur ne la lit jamais |
 

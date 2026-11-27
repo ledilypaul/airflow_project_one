@@ -41,8 +41,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TRANSFORM_DIR = PROJECT_ROOT / "transform"
 DBT_EXECUTABLE = TRANSFORM_DIR / ".venv" / "bin" / "dbt"
 DBT_PYTHON = TRANSFORM_DIR / ".venv" / "bin" / "python"
-IMDB_CONFIG = PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
-ORDERS_CONFIG = PROJECT_ROOT / "config" / "sources" / "orders.yaml"
+IMDB_CONFIG = PROJECT_ROOT / "examples" / "config" / "sources" / "imdb.yaml"
+ORDERS_CONFIG = PROJECT_ROOT / "examples" / "config" / "sources" / "orders.yaml"
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="needs a POSIX venv layout")
 

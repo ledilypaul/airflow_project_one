@@ -202,7 +202,7 @@ def test_p2_5_spark_name_is_the_writers_table_location(manifest, tmp_path):
 
     lake = str(_lake(tmp_path / "lake"))
     writer = ParquetLakeWriter(resolve_lake_root({"LAKE_ROOT": lake}))
-    registry = SourceRegistry.from_directory(PROJECT_ROOT / "config")
+    registry = SourceRegistry.from_directory(PROJECT_ROOT / "examples" / "config")
     written = {
         spark_dataset(writer.location(f"{s.config.storage.staging_path}{s.config.table}"))
         for s in registry.sources

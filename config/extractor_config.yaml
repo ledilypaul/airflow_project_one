@@ -10,11 +10,10 @@ extractor_config:
     - ".parquet"
     - ".xlsx"
   include_files:
-    - "*IMDB*"
-    - "*creditcard*"
-    - "*person*"
-    # - "**"
-    - "orders_*"
+    # Tous les fichiers des extensions ci-dessus : la config de lecture
+    # (config/sources/*.yaml, sinon les défauts par extension) est choisie
+    # ensuite par `source.patterns`.
+    - "*"
   exclude_files:
     - "file1_*.csv"
     - "*file2_*.csv"

@@ -236,7 +236,7 @@ def write_to_lake(
     source declares one, with the config's `storage.mode`. Returns the
     number of rows written per zone (`quality`: one row per check).
 
-    `file_id` (file_list.id) is stored with the rows: it orders the
+    `file_id` (file_list.id) is stored with the rows: it sorts the
     snapshots of a file across listings (see `latest_snapshot`).
 
     P2-3. First, when the source has a staging zone, the `quality/<table>`

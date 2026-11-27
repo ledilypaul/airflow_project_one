@@ -32,6 +32,7 @@ from pipeline.config import ConfigError, SourceConfig, SourceRegistry, load_sour
 from pipeline.config.quality import QUALITY_ZONE
 
 REPO_CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "config"
+EXAMPLES_CONFIG_ROOT = REPO_CONFIG_ROOT.parent / "examples" / "config"
 
 STORAGE = {
     "table_name": "orders",
@@ -369,7 +370,7 @@ def test_p2_3_repo_imdb_checks_id_not_null_and_unique_as_warnings():
     """C-5: introduced as `warn` for a first real run (the real IMDB file may
     hold duplicated ids); to be raised to `error` once quality/movies has been
     reviewed."""
-    imdb = load_source_config(REPO_CONFIG_ROOT / "sources" / "imdb.yaml")
+    imdb = load_source_config(EXAMPLES_CONFIG_ROOT / "sources" / "imdb.yaml")
     assert [(c.check_name, c.severity) for c in imdb.quality.checks] == [
         ("not_null(id)", "warn"),
         ("unique(id)", "warn"),
