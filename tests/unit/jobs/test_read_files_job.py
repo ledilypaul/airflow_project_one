@@ -34,7 +34,7 @@ def lake(monkeypatch, tmp_path):
     tests/unit/storage/test_p2_2_parquet_lake_writer.py."""
     monkeypatch.setenv("LAKE_ROOT", str(tmp_path / "lake"))
     write = MagicMock(return_value={"raw": 2})
-    monkeypatch.setattr("pipeline.jobs.read_files_job.write_to_lake", write)
+    monkeypatch.setattr("pipeline.jobs.ingest.write_to_lake", write)
     return write
 
 
@@ -62,7 +62,7 @@ def test_p1_4_main_no_rows_for_run_id_exits_3(caplog):
     manual `run_id`, purged data...) and must not end as a green no-op: exit 3,
     distinct from 0=success, 1=file failure(s), 2=missing run_id."""
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=[]),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=[]),
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
         caplog.at_level("ERROR", logger="pipeline.jobs.read_files_job"),
     ):
@@ -84,10 +84,10 @@ def test_main_processes_all_files():
     mock_reader = _mock_reader()
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -112,10 +112,10 @@ def test_main_continues_after_one_file_error():
     mock_reader = _mock_reader(side_effects=[Exception("corrupt"), MagicMock()])
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status"),
+        patch("pipeline.jobs.ingest.update_file_status"),
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -136,10 +136,10 @@ def test_main_exits_1_when_all_files_fail():
     mock_reader = _mock_reader(side_effects=[Exception("err1"), Exception("err2")])
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status"),
+        patch("pipeline.jobs.ingest.update_file_status"),
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -160,7 +160,7 @@ def test_spark_stop_not_called_if_reader_init_fails():
     mock_spark = MagicMock()
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch(
             "pipeline.jobs.read_files_job.BaseFileReader", side_effect=RuntimeError("init failed")
@@ -182,17 +182,15 @@ def test_p1_3_processes_only_files_of_run_id():
     mock_reader = _mock_reader()
 
     with (
-        patch(
-            "pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES
-        ) as mock_list,
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES) as mock_list,
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status"),
+        patch("pipeline.jobs.ingest.update_file_status"),
     ):
         with pytest.raises(SystemExit):
             main(run_id=RUN_ID)
 
-        mock_list.assert_called_once_with(RUN_ID)
+        mock_list.assert_called_once_with(RUN_ID, source_name=None)
 
 
 def test_p1_3_marks_processed_on_success():
@@ -200,10 +198,10 @@ def test_p1_3_marks_processed_on_success():
     mock_reader = _mock_reader()
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit):
             main(run_id=RUN_ID)
@@ -217,10 +215,10 @@ def test_p1_3_marks_failed_with_error_message():
     mock_reader = _mock_reader(side_effects=[Exception("corrupt file"), MagicMock()])
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit):
             main(run_id=RUN_ID)
@@ -234,10 +232,10 @@ def test_p1_3_exit_code_nonzero_on_any_failure():
     mock_reader = _mock_reader(side_effects=[Exception("corrupt"), MagicMock()])
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status"),
+        patch("pipeline.jobs.ingest.update_file_status"),
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -255,10 +253,10 @@ def test_p1_3_rerun_same_run_id_no_duplicates():
     for _ in range(2):
         mock_reader = _mock_reader()
         with (
-            patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+            patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
             patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
             patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-            patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+            patch("pipeline.jobs.ingest.update_file_status") as mock_update,
         ):
             with pytest.raises(SystemExit):
                 main(run_id=RUN_ID)
@@ -283,7 +281,7 @@ def test_p1_3_main_rejects_missing_run_id():
     masking a config/usage error) — it must exit 2, a code distinct from
     0=success and 1=partial failure."""
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db") as mock_list,
+        patch("pipeline.jobs.ingest.list_file_from_db") as mock_list,
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
     ):
         with pytest.raises(SystemExit) as exc:
@@ -299,7 +297,7 @@ def test_p1_3_main_rejects_literal_none_run_id():
     default stringified by the shell) must be rejected the same way as a
     real None, not treated as a valid run_id."""
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db") as mock_list,
+        patch("pipeline.jobs.ingest.list_file_from_db") as mock_list,
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
     ):
         with pytest.raises(SystemExit) as exc:
@@ -332,12 +330,10 @@ def test_p1_3_clear_rerun_reprocesses_failed_and_processed():
     mock_reader = _mock_reader()
 
     with (
-        patch(
-            "pipeline.jobs.read_files_job.list_file_from_db", return_value=files_with_prior_status
-        ),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=files_with_prior_status),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=mock_reader),
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit):
             main(run_id=RUN_ID)
@@ -428,10 +424,10 @@ def test_p2_1_invalid_config_fails_before_spark_and_marks_rows_failed(tmp_path, 
     monkeypatch.setattr(read_files_job, "CONFIG_ROOT", config_root)
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
         patch("pipeline.jobs.read_files_job.BaseFileReader") as mock_reader,
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -454,12 +450,12 @@ def test_p2_1_valid_config_registry_is_handed_to_the_reader():
 
     mock_spark = MagicMock()
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=mock_spark),
         patch(
             "pipeline.jobs.read_files_job.BaseFileReader", return_value=_mock_reader()
         ) as mock_reader_cls,
-        patch("pipeline.jobs.read_files_job.update_file_status"),
+        patch("pipeline.jobs.ingest.update_file_status"),
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -477,10 +473,10 @@ def test_p2_1_valid_config_registry_is_handed_to_the_reader():
 
 def _run_main(files, reader, update):
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=files),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=files),
         patch("pipeline.jobs.read_files_job.get_spark_session", return_value=MagicMock()),
         patch("pipeline.jobs.read_files_job.BaseFileReader", return_value=reader),
-        patch("pipeline.jobs.read_files_job.update_file_status", update),
+        patch("pipeline.jobs.ingest.update_file_status", update),
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -603,9 +599,9 @@ def test_p2_2_relative_lake_root_fails_before_spark_with_exit_5(monkeypatch, lak
 
     monkeypatch.setenv("LAKE_ROOT", "relative/lake")
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)
@@ -628,9 +624,9 @@ def test_p2_2_config_without_storage_fails_before_spark_with_exit_5(tmp_path, mo
     monkeypatch.setattr(read_files_job, "CONFIG_ROOT", config_root)
 
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=SAMPLE_FILES),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=SAMPLE_FILES),
         patch("pipeline.jobs.read_files_job.get_spark_session") as mock_spark,
-        patch("pipeline.jobs.read_files_job.update_file_status") as mock_update,
+        patch("pipeline.jobs.ingest.update_file_status") as mock_update,
     ):
         with pytest.raises(SystemExit) as exc:
             main(run_id=RUN_ID)

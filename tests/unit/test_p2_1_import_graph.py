@@ -54,7 +54,7 @@ def test_p2_1_pipeline_config_imports_without_file_reader():
 
         import pipeline.config  # noqa: F401
         from pipeline.config import SourceRegistry  # noqa: F401
-        from pipeline.config.types import build_schema, get_spark_type  # noqa: F401
+        from pipeline.config.types import SUPPORTED_COLUMN_TYPES  # noqa: F401
 
         loaded = sorted(m for m in sys.modules if m.startswith("pipeline.file_reader"))
         if loaded:

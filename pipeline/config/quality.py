@@ -63,7 +63,13 @@ commun (classes, quantificateurs, ancres, `(?i)`, `(?:...)`, lookarounds) :
 `rlike` cherche une correspondance n'importe où dans la valeur (`find`) :
 ancrer avec `^` et `$` pour exiger une correspondance complète.
 
-Ce module ne doit pas importer Airflow ni `pipeline.file_reader`.
+Source `polars` (P5-2) : le moteur exécute `str.contains`, donc la crate Rust
+`regex`, sans lookaround ni référence arrière. La config les refuse au
+chargement (`rust_regex_problem`, un balayage du motif : sans JVM ni Polars) ;
+la syntaxe complète n'est vérifiée que par Polars, à l'exécution. Rien du
+sous-ensemble Python/Java n'est exigé d'une regex Polars (`\\p{L}` y est valide).
+
+Ce module ne doit pas importer Airflow, PySpark ni `pipeline.file_reader`.
 """
 
 import difflib
@@ -84,9 +90,9 @@ from pydantic import (
     StringConstraints,
     field_validator,
 )
-from pyspark.sql.types import FractionalType, NumericType
 
-from pipeline.config.types import get_spark_type
+from pipeline.config.engine import Engine
+from pipeline.config.types import resolve_column_type
 
 # Zone réservée sous LAKE_ROOT aux résultats des contrôles :
 # <LAKE_ROOT>/quality/<table>/ (aucun raw_path ni staging_path ne peut y entrer).
@@ -163,7 +169,7 @@ class _Check(BaseModel):
     def _parameters(self) -> dict[str, Any]:
         return self.model_dump(exclude={"name", "severity", "type"})
 
-    def semantic_problems(self) -> list[str]:
+    def semantic_problems(self, engine: Engine = "spark") -> list[str]:
         """Erreurs que la forme seule n'attrape pas (bornes, regex)."""
         return []
 
@@ -247,7 +253,7 @@ class RangeCheck(_Check):
     min: Number | None = Field(default=None, description="Borne basse incluse.")
     max: Number | None = Field(default=None, description="Borne haute incluse.")
 
-    def semantic_problems(self) -> list[str]:
+    def semantic_problems(self, engine: Engine = "spark") -> list[str]:
         return _bounds_problems(self.min, self.max)
 
 
@@ -256,8 +262,9 @@ class RegexCheck(_Check):
     column: ColumnName
     pattern: Annotated[str, StringConstraints(min_length=1)]
 
-    def semantic_problems(self) -> list[str]:
-        problem = python_regex_problem(self.pattern)
+    def semantic_problems(self, engine: Engine = "spark") -> list[str]:
+        check = python_regex_problem if engine == "spark" else rust_regex_problem
+        problem = check(self.pattern)
         return [problem] if problem else []
 
 
@@ -266,7 +273,7 @@ class RowCountCheck(_Check):
     min: Count | None = Field(default=None, description="Nombre de lignes minimum, inclus.")
     max: Count | None = Field(default=None, description="Nombre de lignes maximum, inclus.")
 
-    def semantic_problems(self) -> list[str]:
+    def semantic_problems(self, engine: Engine = "spark") -> list[str]:
         return _bounds_problems(self.min, self.max)
 
 
@@ -306,8 +313,50 @@ def python_regex_problem(pattern: str) -> str | None:
     return None
 
 
+# Ce que la crate `regex` de Rust refuse (vérifié avec Polars 2.2.0) et que
+# `rust_regex_problem` repère : lookaround, groupe atomique, références arrière.
+_RUST_REFUSED_GROUPS = ("(?=", "(?!", "(?<=", "(?<!", "(?>", "(?P=")
+
+
+def rust_regex_problem(pattern: str) -> str | None:
+    """Message d'erreur si `pattern` contient un lookaround, un groupe atomique
+    ou une référence arrière, que la crate Rust `regex` (Polars) refuse ; None
+    sinon. Ce n'est pas un compilateur : une autre erreur de syntaxe n'est vue
+    qu'à l'exécution par Polars.
+
+    shortcut: un balayage sans analyse des classes `[...]` : `[(?=]` est un
+    faux positif ; à remplacer par la compilation Polars quand il est installé
+    (P5-7).
+    """
+    i = 0
+    while i < len(pattern):
+        char = pattern[i]
+        if char == "\\" and i + 1 < len(pattern):
+            following = pattern[i + 1]
+            if following in "123456789" or (
+                following == "k" and pattern[i + 2 : i + 3] in ("<", "{", "'")
+            ):
+                return (
+                    f"regex {pattern!r} : référence arrière (\\{following}...) refusée par le "
+                    "moteur Polars (crate Rust `regex`)"
+                )
+            i += 2
+            continue
+        refused = next((g for g in _RUST_REFUSED_GROUPS if pattern.startswith(g, i)), None)
+        if refused:
+            return (
+                f"regex {pattern!r} : {refused!r} (lookaround, groupe atomique ou référence "
+                "arrière) refusé par le moteur Polars (crate Rust `regex`)"
+            )
+        i += 1
+    return None
+
+
 def quality_problems(
-    quality: QualitySection, columns_type: dict[str, str] | None, staging_path: str | None
+    quality: QualitySection,
+    columns_type: dict[str, str] | None,
+    staging_path: str | None,
+    engine: Engine = "spark",
 ) -> list[str]:
     """Règles qui croisent les contrôles et les autres sections ; messages
     préfixés par leur chemin (`quality.checks.<i> (<nom>)`)."""
@@ -322,7 +371,7 @@ def quality_problems(
     seen_names: dict[str, int] = {}
     for index, check in enumerate(quality.checks):
         where = f"quality.checks.{index} ({check.check_name})"
-        problems.extend(f"{where}: {p}" for p in check.semantic_problems())
+        problems.extend(f"{where}: {p}" for p in check.semantic_problems(engine))
         if columns_type is not None:
             problems.extend(f"{where}: {p}" for p in _column_problems(check, columns_type))
 
@@ -355,14 +404,14 @@ def _column_problems(check: _Check, columns_type: dict[str, str]) -> list[str]:
         elif isinstance(check, RangeCheck | AcceptedValuesCheck):
             declared = columns_type[column]
             try:
-                spark_type = get_spark_type(declared)
+                column_type = resolve_column_type(declared)
             except ValueError:  # type invalide : déjà signalé sur reader.columns_type
                 continue
-            if isinstance(check, RangeCheck) and not isinstance(spark_type, NumericType):
+            if isinstance(check, RangeCheck) and not column_type.numeric:
                 problems.append(
                     f"colonne {column!r} de type {declared!r} : range exige un type numérique"
                 )
-            elif isinstance(check, AcceptedValuesCheck) and isinstance(spark_type, FractionalType):
+            elif isinstance(check, AcceptedValuesCheck) and column_type.fractional:
                 problems.append(
                     f"colonne {column!r} de type {declared!r} : accepted_values compare la "
                     "forme texte de la colonne (1.0, pas 1 ; 1.00 pour un decimal), qui "

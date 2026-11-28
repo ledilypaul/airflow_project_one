@@ -3,7 +3,7 @@ P2-5 — the real Spark job, under spark-submit, with the OpenLineage listener.
 
 The job is pipeline/jobs/read_files_job.py itself (reader, cleaning,
 quality checks, ParquetLakeWriter), started by spark-submit with the conf
-read_file_dag builds (`openlineage_spark_settings()`, `file` transport under
+the ingest DAGs build (`openlineage_spark_settings()`, `file` transport under
 tmp_path) plus the parent job info the operator injects. Only file_list is
 replaced, by a driver wrapper (no Postgres): the rows of the run come from
 the command line, the statuses go to a file.
@@ -41,7 +41,7 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 MAKEFILE = PROJECT_ROOT / "Makefile"
-IMDB_CONFIG = PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
+IMDB_CONFIG = PROJECT_ROOT / "examples" / "config" / "sources" / "imdb.yaml"
 VENV_BIN = Path(sys.executable).parent
 LISTENER = "io.openlineage.spark.agent.OpenLineageSparkListener"
 
@@ -58,6 +58,7 @@ DRIVER = textwrap.dedent(
     import sys
 
     import pipeline.jobs.read_files_job as job
+    from pipeline.jobs import ingest
 
     run_id, rows, status_file = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
 
@@ -65,8 +66,8 @@ DRIVER = textwrap.dedent(
         with open(status_file, "a") as f:
             f.write(json.dumps([file_id, status, error_message]) + "\\n")
 
-    job.list_file_from_db = lambda wanted: rows if wanted == run_id else []
-    job.update_file_status = update_file_status
+    ingest.list_file_from_db = lambda wanted, source_name=None: rows if wanted == run_id else []
+    ingest.update_file_status = update_file_status
     job.main(run_id=run_id)
     """
 )
@@ -109,8 +110,8 @@ def _imdb_csv(path: Path) -> Path:
 
 
 def _settings(monkeypatch, jar: Path, events: Path) -> dict:
-    """read_file_dag's settings for the dev `file` transport."""
-    from dags.local_read_file_dag import openlineage_spark_settings
+    """the ingest DAGs settings for the dev `file` transport."""
+    from utils.read_files_operator import openlineage_spark_settings
 
     monkeypatch.setenv("AIRFLOW__OPENLINEAGE__DISABLED", "False")
     monkeypatch.setenv(
@@ -128,10 +129,10 @@ PARENT_CONF = {
     # What SparkSubmitOperator injects (openlineage_inject_parent_job_info);
     # the injection itself is covered by the unit and dag.test() tests.
     "spark.openlineage.parentJobNamespace": "p2_5_it",
-    "spark.openlineage.parentJobName": "read_file_dag.spark_read_files",
+    "spark.openlineage.parentJobName": "ingest__orders.spark_read_files",
     "spark.openlineage.parentRunId": PARENT_RUN_ID,
     "spark.openlineage.rootParentJobNamespace": "p2_5_it",
-    "spark.openlineage.rootParentJobName": "read_file_dag",
+    "spark.openlineage.rootParentJobName": "ingest__orders",
     "spark.openlineage.rootParentRunId": ROOT_RUN_ID,
 }
 
@@ -144,6 +145,7 @@ def _run_job(tmp_path: Path, conf: dict, csv: Path, lake: Path):
     rows = [{"id": FILE_ID, "file_path": str(csv), "file_name": csv.name}]
 
     env = {k: v for k, v in os.environ.items() if k not in ("ENV", "VIRTUAL_ENV", "SPARK_HOME")}
+    env["PIPELINE_CONFIG_ROOT"] = str(PROJECT_ROOT / "examples" / "config")
     env.update(
         # spark-submit finds Spark through the `python3` of PATH: the venv's
         # one (PySpark 4.3), never another interpreter's PySpark.
@@ -211,11 +213,11 @@ def test_p2_5_spark_job_emits_its_inputs_outputs_and_parent(listener_jar, monkey
         for e in events
         if e["eventType"] == "START"
         and e["run"]["facets"]["parent"]["job"]["namespace"] == "p2_5_it"
-        and e["run"]["facets"]["parent"]["job"]["name"] == "read_file_dag.spark_read_files"
+        and e["run"]["facets"]["parent"]["job"]["name"] == "ingest__orders.spark_read_files"
     ]
     parent = app_start["run"]["facets"]["parent"]
     assert parent["run"]["runId"] == PARENT_RUN_ID
-    assert parent["root"]["job"]["name"] == "read_file_dag"
+    assert parent["root"]["job"]["name"] == "ingest__orders"
     assert parent["root"]["run"]["runId"] == ROOT_RUN_ID
 
     completes = [e for e in events if e["eventType"] == "COMPLETE"]

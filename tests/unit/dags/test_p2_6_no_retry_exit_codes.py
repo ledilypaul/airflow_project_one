@@ -42,26 +42,34 @@ def dagbag():
     return DagBag(dag_folder=str(DAGS_FOLDER))
 
 
+@pytest.fixture(autouse=True)
+def _spark_connection(monkeypatch):
+    """`execute` first checks that `spark_default` exists (P1-5 / C-2, test_p1_5_spark_submit)."""
+    monkeypatch.setenv(
+        "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[1]"})
+    )
+
+
 @pytest.fixture
 def spark_task():
     """From the imported module (DagBag loads the file under another module
-    name, hence other class and function objects)."""
-    from dags.local_read_file_dag import dag_instance
+    name, hence other function objects)."""
+    from dags.source_pipelines import build_dags
 
-    return dag_instance.get_task("spark_read_files")
+    return build_dags()["ingest__orders"].get_task("spark_read_files")
 
 
-def test_p2_6_read_file_dag_still_loads(dagbag):
+def test_p2_6_ingest_dag_still_loads(dagbag):
     assert not dagbag.import_errors, dagbag.import_errors
-    task = dagbag.dags["read_file_dag"].get_task("spark_read_files")
-    assert task.operator_class.__name__ == "ReadFilesSparkSubmitOperator"
+    task = dagbag.dags["ingest__orders"].get_task("spark_read_files")
+    assert type(task).__name__ == "ReadFilesSparkSubmitOperator"
 
 
 def test_p2_6_no_retry_exit_codes_match_the_job():
     """The DAG does not import the job (pyspark at parse time): the codes
     are duplicated, and must stay equal."""
-    from dags.local_read_file_dag import NO_RETRY_EXIT_CODES
     from pipeline.jobs import read_files_job as job
+    from utils.read_files_operator import NO_RETRY_EXIT_CODES
 
     assert (
         set(NO_RETRY_EXIT_CODES)
@@ -78,7 +86,7 @@ def test_p2_6_no_retry_exit_codes_match_the_job():
 
 
 def test_p2_6_spark_task_uses_the_no_retry_operator(spark_task):
-    from dags.local_read_file_dag import (
+    from utils.read_files_operator import (
         JOB_PATH,
         SPARK_CONN_ID,
         SPARK_POOL,
@@ -86,14 +94,13 @@ def test_p2_6_spark_task_uses_the_no_retry_operator(spark_task):
         prepare_spark_lineage,
     )
 
-    assert spark_task.operator_class is ReadFilesSparkSubmitOperator
+    assert type(spark_task) is ReadFilesSparkSubmitOperator
     assert issubclass(ReadFilesSparkSubmitOperator, SparkSubmitOperator)
-    # Mapping, pool, lineage hook and retries untouched.
-    assert set(spark_task.expand_input.value) == {"application_args"}
+    # Pool, lineage hook and retries untouched.
     assert spark_task.pool == SPARK_POOL
-    assert spark_task.partial_kwargs["conn_id"] == SPARK_CONN_ID
-    assert spark_task.partial_kwargs["application"] == str(JOB_PATH)
-    assert spark_task.partial_kwargs["pre_execute"] is prepare_spark_lineage
+    assert spark_task._conn_id == SPARK_CONN_ID
+    assert spark_task.application == str(JOB_PATH)
+    assert spark_task._pre_execute_hook is prepare_spark_lineage
     assert spark_task.retries == 1
     assert spark_task.retry_delay == timedelta(minutes=5)
     # Same templated fields as the provider's operator.
@@ -145,7 +152,7 @@ class _FakeHook:
 
 
 def _operator(hook):
-    from dags.local_read_file_dag import JOB_PATH, ReadFilesSparkSubmitOperator
+    from utils.read_files_operator import JOB_PATH, ReadFilesSparkSubmitOperator
 
     operator = ReadFilesSparkSubmitOperator(
         task_id="spark_read_files",
@@ -235,7 +242,7 @@ def fake_spark_submit(tmp_path, monkeypatch):
 
 
 def _real_operator():
-    from dags.local_read_file_dag import JOB_PATH, SPARK_CONN_ID, ReadFilesSparkSubmitOperator
+    from utils.read_files_operator import JOB_PATH, SPARK_CONN_ID, ReadFilesSparkSubmitOperator
 
     return ReadFilesSparkSubmitOperator(
         task_id="spark_read_files",

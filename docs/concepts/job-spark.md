@@ -1,14 +1,17 @@
 # Le job Spark
 
-`pipeline/jobs/read_files_job.py` lit les fichiers d'**un listing** et les écrit dans le lake. Il
+`pipeline/jobs/read_files_job.py` (point d'entrée Spark ; l'orchestration, commune aux moteurs, est
+dans `pipeline/jobs/ingest.py`) lit les fichiers d'**un listing** et les écrit dans le lake. Il
 tourne dans son propre processus, lancé par `spark-submit`, et se lance aussi seul, sans Airflow :
 
 ```bash
-make spark-job RUN_ID=<dag_run_id_du_listing>
-# équivaut à : uv run spark-submit pipeline/jobs/read_files_job.py --run-id=<id>
+make spark-job RUN_ID=<dag_run_id_du_listing> SOURCE=<nom_de_la_source>
+# équivaut à : uv run spark-submit pipeline/jobs/read_files_job.py --run-id=<id> --source-name=<nom>
 ```
 
-`--run-id` est obligatoire. Le job lit ses lignes dans `file_list` par la connexion du `.env`
+`--run-id` est obligatoire. `--source-name` (P5-3) restreint le job aux lignes `(run_id, source_name)` :
+les `dag_run_id` de deux DAGs de sources différentes peuvent être égaux. `ingest__<source>` le
+passe toujours ; sans lui (`make spark-job RUN_ID=...` seul), le job lit toutes les lignes du run. Le job lit ses lignes dans `file_list` par la connexion du `.env`
 (`DB_*`), pas par Airflow. Il écrit sous `LAKE_ROOT` (par défaut `./lake/`, ignoré par git).
 
 ## Ce qu'il fait pour chaque fichier
@@ -40,7 +43,7 @@ entreraient en collision.
 
 À la fin d'un run, la priorité est : **0** si rien n'a échoué, sinon **6** si chaque échec est de ce
 type qualité, sinon **1**. Les codes 2, 3, 5 et 6 sont *déterministes* : un retry échouerait pareil,
-donc `read_file_dag` ne les rejoue pas ([](dags.md)).
+donc les DAGs `ingest__<source>` ne les rejouent pas ([](dags.md)).
 
 Avec le code 5, chaque ligne du listing est marquée `failed` (`invalid reading config: ...` ou
 `invalid lake root: ...`) et Spark n'est même pas démarré.

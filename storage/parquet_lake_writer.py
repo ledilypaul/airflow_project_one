@@ -48,22 +48,21 @@ Ce module ne doit pas importer Airflow : le job Spark le charge
 """
 
 import logging
-import os
-from collections.abc import Mapping
-from pathlib import Path
-from urllib.parse import urlsplit
 
 from pyspark.sql import DataFrame, Observation, SparkSession, Window
 from pyspark.sql import functions as F
 
-from utils.path_utils import lake_relative_parts, normalize_spark_path
+from utils.path_utils import lake_relative_parts
 
 from .base_writer import BaseWriter
+from .lake_root import (  # réexportés : l'API publique du writer
+    DEFAULT_LAKE_ROOT,
+    LAKE_ROOT_ENV,
+    LakeRootError,
+    resolve_lake_root,
+)
 
 log = logging.getLogger(__name__)
-
-LAKE_ROOT_ENV = "LAKE_ROOT"
-DEFAULT_LAKE_ROOT = Path(__file__).resolve().parent.parent / "lake"
 
 RUN_ID_COLUMN = "lake_run_id"
 SOURCE_FILE_COLUMN = "lake_source_file"
@@ -74,51 +73,14 @@ TECHNICAL_COLUMNS = (*PARTITION_COLUMNS, FILE_ID_COLUMN, INGESTED_AT_COLUMN)
 
 WRITE_MODES = ("overwrite", "append")
 
-
-class LakeRootError(ValueError):
-    """`LAKE_ROOT` invalide (chemin relatif, URI comprise)."""
-
-
-def _is_uri(value: str) -> bool:
-    # Schéma d'au moins deux caractères : `C:\lake` (lecteur Windows) n'en est pas un.
-    scheme, sep, _ = value.partition(":")
-    return bool(sep) and len(scheme) > 1 and scheme.replace("+", "").replace("-", "").isalnum()
-
-
-def _relative_root_error(value: str) -> LakeRootError:
-    return LakeRootError(
-        f"{LAKE_ROOT_ENV}={value!r} est un chemin relatif : il dépendrait du répertoire "
-        "courant du worker. Donner un chemin absolu ou une URI avec un hôte ou un chemin "
-        "absolu (file:///..., s3://bucket/..., hdfs://namenode/...)."
-    )
-
-
-def resolve_lake_root(environ: Mapping[str, str] | None = None) -> str:
-    """Racine du lake, sous forme d'URI utilisable par Spark.
-
-    Args:
-        environ: l'environnement à lire (`os.environ` par défaut).
-
-    Raises:
-        LakeRootError: `LAKE_ROOT` est un chemin local relatif, ou une URI
-            sans hôte ni chemin absolu (`file:lake`, `hdfs:lake`, C-7).
-            Sous spark-submit, le répertoire courant est celui du worker : un
-            chemin relatif déplacerait le lake d'un run (ou d'un retry) à
-            l'autre.
-    """
-    env = os.environ if environ is None else environ
-    value = (env.get(LAKE_ROOT_ENV) or "").strip()
-    if not value:
-        return normalize_spark_path(str(DEFAULT_LAKE_ROOT))
-    if _is_uri(value):
-        parts = urlsplit(value)
-        if not parts.netloc and not parts.path.startswith("/"):
-            raise _relative_root_error(value)
-        return value
-    path = Path(value).expanduser()
-    if not path.is_absolute():
-        raise _relative_root_error(value)
-    return normalize_spark_path(str(path))
+__all__ = [
+    "DEFAULT_LAKE_ROOT",
+    "LAKE_ROOT_ENV",
+    "LakeRootError",
+    "ParquetLakeWriter",
+    "latest_snapshot",
+    "resolve_lake_root",
+]
 
 
 def latest_snapshot(data: DataFrame) -> DataFrame:
@@ -171,7 +133,7 @@ class ParquetLakeWriter(BaseWriter):
         self.lake_root = lake_root
 
     def location(self, target: str) -> str:
-        """URI de la table `target` (relative au lake, ex. `raw/orders`).
+        """URI de la table `target` (relative au lake, ex. `raw/<table>`).
 
         Raises:
             ValueError: `target` sortirait du lake (`..`, chemin absolu, URI).
@@ -194,7 +156,7 @@ class ParquetLakeWriter(BaseWriter):
 
         Args:
             data: les données, sans colonne technique (elles sont ajoutées ici).
-            target: la table, relative au lake (ex. `raw/orders`).
+            target: la table, relative au lake (ex. `raw/<table>`).
             mode: `overwrite` (défaut, idempotent : remplace la partition du
                 (run, fichier), même par 0 ligne) ou `append` (choix
                 explicite : un retry duplique les lignes).

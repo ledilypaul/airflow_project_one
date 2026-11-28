@@ -1,48 +1,56 @@
 # Premier run
 
-Ce pas à pas fait traverser tout le pipeline à un fichier d'exemple, `data/orders_sample.csv`
+Ce pas à pas fait traverser tout le pipeline à un fichier d'exemple, `examples/data/orders_sample.csv`
 (quatre colonnes : `order_id`, `customer`, `amount`, `order_date`). Il suppose l'installation
-terminée et `make airflow` en cours d'exécution ([](installation.md)).
+terminée et `make demo` en cours d'exécution ([](installation.md)) : le moteur ne livre aucune
+source, `make demo` lit celles de `examples/config` (`PIPELINE_CONFIG_ROOT`) et copie les fichiers
+d'exemple dans `data/`. Pour vos propres sources, déposez vos YAML dans `config/sources/` et lancez
+`make airflow`.
 
-## 1. Dépauser les trois DAGs
+## 1. Dépauser les DAGs
 
-Ouvrez <http://localhost:8080> (utilisateur `admin`, mot de passe affiché par `make airflow`) et
-**dépausez** `list_files_dag`, `read_file_dag` et `transform_dag`.
+Ouvrez <http://localhost:8080> (utilisateur `admin`, mot de passe affiché par `make airflow`). Les
+sources de `examples/config` donnent les DAGs `ingest__orders` et `ingest__imdb_movies` (un par YAML,
+générés par `dags/source_pipelines.py`), plus `ingest__unmatched` pour les fichiers sans source.
+**Dépausez** `ingest__orders` et `transform_dag`.
 
 :::{warning}
 C'est l'étape qu'on oublie le plus. Airflow ne met en file une exécution déclenchée par un Asset
-que pour un DAG **non pausé**. Un événement émis pendant la pause est perdu, et depuis Airflow 3.4
-aucune exécution ultérieure ne le rattrape : les fichiers de ce listing restent `pending`. Il faut
-alors relancer un listing, ou déclencher `read_file_dag` à la main avec
-`{"run_id": "<dag_run_id du listing>"}`.
+que pour un DAG **non pausé**. Un événement `lake_staging__orders` émis pendant la pause de
+`transform_dag` est perdu, et depuis Airflow 3.4 aucune exécution ultérieure ne le rattrape : le
+prochain événement reconstruit tout de toute façon, mais tant qu'il n'y en a pas, les tables DuckDB
+ne bougent pas.
 :::
 
 ## 2. Lancer un listing
 
-Dans l'interface, déclenchez `list_files_dag` (bouton *Trigger*). Autre possibilité, en ligne de
+Dans l'interface, déclenchez `ingest__orders` (bouton *Trigger*). Autre possibilité, en ligne de
 commande, avec le [client de l'API REST](../exploitation/api-rest.md) :
 
 ```bash
 export AIRFLOW_API_PASSWORD=<le mot de passe admin>
-make api-trigger DAG=list_files_dag
+make api-trigger DAG=ingest__orders
 ```
 
-Le DAG cherche les fichiers dans `./data/` (réglé dans `config/extractor_config.yaml`), garde ceux
-dont l'extension et le nom conviennent (ici `orders_*`), puis écrit une ligne `pending` par fichier
-dans la table `file_list`, marquée du `dag_run_id` du listing.
+Le DAG cherche dans `./data/` (`default_directories` de `config/pipeline.yaml`) les fichiers dont le
+nom correspond aux `source.patterns` de la source (`orders_*.csv`), puis écrit une ligne `pending`
+par fichier dans la table `file_list`, marquée du `dag_run_id` du run et du nom de la source. Une
+source qui a un `schedule` partirait seule ; ici le YAML n'en a pas, donc à la main.
 
 ## 3. Regarder la suite se déclencher seule
 
-Quand l'insertion réussit, `list_files_dag` émet l'Asset `file_list`. Airflow démarre alors, sans
-intervention :
+Dans le même DAG, une fois les lignes écrites :
 
-1. **`read_file_dag`**, une exécution par listing : il lance une application Spark par listing
-   (`spark-submit`) qui lit chaque fichier et l'écrit dans le lake ;
-2. **`transform_dag`**, dès qu'au moins un fichier est `processed` : dbt reconstruit les tables
-   DuckDB à partir de la zone `staging`.
+1. **`spark_read_files`** lance une application Spark (`spark-submit`) qui lit chaque fichier du
+   listing et l'écrit dans le lake ;
+2. **`publish_lake_staging`** émet l'Asset `lake_staging__orders` dès qu'au moins un fichier est
+   `processed` ;
+3. **`transform_dag`** démarre sur cet Asset : dbt reconstruit les tables DuckDB à partir de la zone
+   `staging`.
 
 Chaque DAG a sa vue en grille dans l'interface. Le premier démarrage de Spark prend quelques
-dizaines de secondes.
+dizaines de secondes. Sans fichier à traiter, `insert_files` et `spark_read_files` sont *skipped* :
+le run est vert et rien ne part.
 
 ## 4. Vérifier le résultat
 
@@ -81,7 +89,7 @@ print(c.sql('select * from main.stg_orders__current order by order_id'))
 ## 5. Relancer : c'est sans danger
 
 Relancer un listing ajoute un instantané par fichier, il n'écrase rien. Relancer
-`read_file_dag` pour un même listing réécrit les mêmes partitions à l'identique. L'état courant
+`spark_read_files` (*Clear*) pour un même listing réécrit les mêmes partitions à l'identique. L'état courant
 d'une table est toujours « la partition du listing le plus récent » (voir `latest_snapshot` dans
 [](../concepts/lake.md)).
 
@@ -92,7 +100,9 @@ d'une table est toujours « la partition du listing le plus récent » (voir `la
 | `spark_read_files` reste en `scheduled` | le pool `spark` n'existe pas (aucun avertissement dans l'interface) | `make airflow-init`, qui importe `deploy/airflow/pools.json` |
 | `spark-submit` échoue avec « HADOOP_CONF_DIR or YARN_CONF_DIR must be set » | la Connection `spark_default` manque : le fournisseur retombe sur `yarn` | `make airflow-init` |
 | `transform_dag` absent, ou erreur d'import | le manifest dbt manque ou est plus ancien que les modèles | `make dbt-parse` (`make airflow` le fait) |
-| `read_file_dag` ne démarre pas après un listing | le DAG était en pause lors de l'événement | dépauser, puis relancer un listing |
+| `transform_dag` ne démarre pas après un listing | le DAG était en pause lors de l'événement | dépauser, puis relancer un listing |
+| Un DAG `invalid_source__<fichier>` apparaît | le YAML de ce fichier ne valide pas | lancer sa tâche : le journal donne chaque erreur ; corriger le YAML |
+| `list_files` échoue avec « source director ... does not exist » | le répertoire du listing n'existe pas pour ce worker | créer `./data/`, ou régler `listing.directories` |
 | Fichier `failed` avec `invalid reading config` | une config de lecture est invalide : le job sort avec le code 5 | corriger le YAML, voir [](../configuration/sources.md) |
 | Fichier `failed` avec `quality checks failed` | un contrôle bloquant a échoué : staging non écrit, code 6 | voir [](../configuration/qualite.md) |
 

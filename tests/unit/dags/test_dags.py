@@ -4,12 +4,10 @@ Validates that DAGs load without errors and have the expected task topology.
 Uses Airflow's DagBag — no real database required.
 """
 
-import json
 from pathlib import Path
 
 import pytest
 from airflow.models import DagBag
-from airflow.sdk.exceptions import AirflowFailException
 
 DAGS_FOLDER = str(Path(__file__).resolve().parent.parent.parent.parent / "dags")
 
@@ -33,44 +31,34 @@ def test_no_import_errors(dagbag):
 
 
 # ---------------------------------------------------------------------------
-# list_files_dag
+# ingest__<source> (P5-3): the examples of examples/config, see conftest.py
 # ---------------------------------------------------------------------------
 
-
-def test_list_files_dag_exists(dagbag):
-    assert "list_files_dag" in dagbag.dags
+EXAMPLE_INGEST_DAGS = ["ingest__imdb_movies", "ingest__orders"]
 
 
-def test_list_files_dag_task_ids(dagbag):
-    # list_files_dag is the TaskFlow (@task) version: its task ids are
-    # "list_files" / "insert_files", not the classic PythonOperator DAG's
-    # "list_files_task" / "insert_files_to_db".
-    dag = dagbag.dags["list_files_dag"]
-    assert {"list_files", "insert_files"} == set(dag.task_ids)
+def test_one_ingest_dag_per_source_plus_unmatched(dagbag):
+    assert {d for d in dagbag.dags if d.startswith("ingest__")} == {
+        *EXAMPLE_INGEST_DAGS,
+        "ingest__unmatched",
+    }
 
 
-def test_list_files_dag_dependency(dagbag):
-    """insert_files must run after list_files."""
-    dag = dagbag.dags["list_files_dag"]
-    upstream = {t.task_id for t in dag.get_task("insert_files").upstream_list}
-    assert "list_files" in upstream
+@pytest.mark.parametrize("dag_id", [*EXAMPLE_INGEST_DAGS, "ingest__unmatched"])
+def test_ingest_dag_task_topology(dagbag, dag_id):
+    dag = dagbag.dags[dag_id]
+    expected = {"list_files", "insert_files", "spark_read_files", "fail_if_spark_failed"}
+    if dag_id != "ingest__unmatched":  # raw zone only: no staging, no Asset
+        expected.add("publish_lake_staging")
+    assert set(dag.task_ids) == expected
+    assert dag.get_task("insert_files").upstream_task_ids == {"list_files"}
+    assert dag.get_task("spark_read_files").upstream_task_ids == {"insert_files"}
 
 
-def test_list_files_dag_no_catchup(dagbag):
-    assert dagbag.dags["list_files_dag"].catchup is False
-
-
-# ---------------------------------------------------------------------------
-# read_file_dag
-# ---------------------------------------------------------------------------
-
-
-def test_read_file_dag_exists(dagbag):
-    assert "read_file_dag" in dagbag.dags
-
-
-def test_read_file_dag_no_catchup(dagbag):
-    assert dagbag.dags["read_file_dag"].catchup is False
+@pytest.mark.parametrize("dag_id", [*EXAMPLE_INGEST_DAGS, "ingest__unmatched"])
+def test_ingest_dag_no_catchup_one_active_run(dagbag, dag_id):
+    assert dagbag.dags[dag_id].catchup is False
+    assert dagbag.dags[dag_id].max_active_runs == 1
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +79,7 @@ def test_p0_3_dag_has_no_schedule_interval_attribute_access(dagbag):
     """T1 cause 3: DAG.schedule_interval was removed in Airflow 3; use
     DAG.schedule (or DAG.timetable) instead. (The schedule itself is checked
     once, by test_p1_4_read_file_dag_is_scheduled_on_file_list_asset.)"""
-    assert not hasattr(dagbag.dags["read_file_dag"], "schedule_interval")
+    assert not hasattr(dagbag.dags["ingest__orders"], "schedule_interval")
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +87,16 @@ def test_p0_3_dag_has_no_schedule_interval_attribute_access(dagbag):
 # ---------------------------------------------------------------------------
 
 
-def test_p1_3_read_file_dag_passes_run_id_param():
-    """P1-3: spark-submit is scoped to a run id. (The exact argv is checked by
-    test_p1_4_spark_command_round_trips_through_job_parser; P1-5: the run id
-    is an `application_args` entry of SparkSubmitOperator.)"""
-    from dags.local_read_file_dag import build_application_args
+def test_p1_3_ingest_dag_passes_run_id_and_source():
+    """P1-3: spark-submit is scoped to a run id (P5-3: and to its source). (The exact
+    argv is checked by test_p1_4_spark_command_round_trips_through_job_parser; P1-5:
+    these are `application_args` entries of SparkSubmitOperator.)"""
+    from utils.read_files_operator import build_application_args
 
-    assert build_application_args("some_run_id") == ["--run-id=some_run_id"]
+    assert build_application_args("some_run_id", "orders") == [
+        "--run-id=some_run_id",
+        "--source-name=orders",
+    ]
 
 
 def test_p1_1_no_deprecated_airflow_imports():
@@ -136,25 +127,3 @@ def test_p1_1_no_deprecated_airflow_imports():
                 violations.append(f"{dag_file.name}: {pattern!r}")
 
     assert not violations, "deprecated Airflow 2 import(s) found:\n" + "\n".join(violations)
-
-
-def test_c1_run_without_run_id_fails_explicitly(monkeypatch):
-    """C-1 (defence in depth): a run without an explicit scope must never
-    silently resolve to None (which the Spark job would otherwise stringify
-    to the literal "None").
-
-    P1-4: the `run_id` Param had to become optional (Asset-triggered runs
-    carry no conf), so the guard lives in resolve_source_run_ids: no
-    triggering asset event and no `run_id` in the conf -> explicit failure.
-    The job keeps its own guard (exit code 2).
-
-    P1-5 / C-2: resolve_source_run_ids first requires the `spark_default`
-    Connection, provided here so that the run-id guard is what fails."""
-    from dags.local_read_file_dag import dag_instance
-
-    monkeypatch.setenv(
-        "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[*]"})
-    )
-    resolve = dag_instance.get_task("resolve_source_run_ids").python_callable
-    with pytest.raises(AirflowFailException, match="No source run_id"):
-        resolve()

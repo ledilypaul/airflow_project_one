@@ -3,11 +3,14 @@ DAG: transform_dag
 Builds the dbt project of transform/ (DuckDB on top of the lake's staging
 zone), rendered by Astronomer Cosmos (P2-4).
 
-Third stage of the pipeline: list_files_dag -> `file_list` -> read_file_dag
--> `lake_staging` -> transform_dag -> `dbt_marts`.
+Second stage of the pipeline: `ingest__<source>` -> `lake_staging__<source>`
+-> transform_dag -> `dbt_marts`.
 
-- Schedule: the `lake_staging` Asset, emitted by read_file_dag once every
-  Spark application of its run succeeded. `max_active_runs=1` and
+- Schedule (P5-3): any of the `lake_staging__<source>` Assets, one per source with a
+  staging zone, emitted by its `ingest__<source>` DAG when at least one file of the
+  run is `processed` (`AssetAny`: dbt rebuilds the whole staging zone, whichever
+  source changed). The names come from the valid configs of the config root at each
+  parse; with no such source the DAG is manual. `max_active_runs=1` and
   `batch_asset_events=True` (P3-5: Airflow 3.4 creates one run per event by
   default): the events that arrive during a run are consumed together by the
   next one. An event emitted while the DAG is paused is not queued and no
@@ -81,7 +84,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from airflow.sdk import Asset, AssetTriggeredTimetable, BaseOperator, task
+from airflow.sdk import Asset, AssetAny, AssetTriggeredTimetable, BaseOperator, task
 from cosmos import DbtDag, ExecutionConfig, ProfileConfig, ProjectConfig, RenderConfig
 from cosmos.constants import (
     PRODUCER_WATCHER_TASK_ID,
@@ -91,8 +94,8 @@ from cosmos.constants import (
     TestBehavior,
 )
 
-# Same names as in read_file_dag (Airflow matches Assets by name).
-LAKE_STAGING_ASSET = Asset(name="lake_staging")
+from utils.failure_alert import log_dag_run_failure, log_task_failure
+
 DBT_MARTS_ASSET = Asset(name="dbt_marts")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -106,7 +109,7 @@ DEFAULT_DBT_DUCKDB_PATH = TRANSFORM_DIR / "warehouse.duckdb"
 # with a missing pool the scheduler leaves the tasks in `scheduled`.
 DBT_POOL = "dbt_duckdb"
 
-# P2-5: the dbt source (models/staging/_lake_staging__sources.yml) reading
+# P2-5: the dbt source (models/staging/generated/_lake_staging__sources.yml) reading
 # `<LAKE_ROOT>/<STAGING_ZONE>/<identifier>/`, written by the Spark job
 # (`storage.staging_path: staging/` of config/sources/*.yaml).
 LAKE_STAGING_SOURCE = "lake_staging"
@@ -114,47 +117,12 @@ STAGING_ZONE = "staging"
 LINEAGE_TASK_ID = "lineage_lake_staging"
 
 
-# P3-3: failure reports (one structured `airflow_failure` log line, see
-# utils/failure_alert.py). Imported inside the callbacks: a DAG file imports no
-# project code at parse time (the DAG processor does not have the project root
-# on sys.path). The report never raises. If `utils` cannot be imported (a worker
-# image without the project), a minimal line is logged instead (dag_id, run_id,
-# reason): a failure is never silent. The four DAG files carry the same few
-# lines, because a shared module would itself be project code.
-def _report_failure(context: Any, scope: str) -> None:
-    try:
-        from utils import failure_alert
-    except ImportError:
-        try:
-            get = context.get if isinstance(context, Mapping) else {}.get
-            ti, dag = get("ti"), get("dag")
-            record = {
-                "scope": scope,
-                "dag_id": getattr(ti, "dag_id", None) or getattr(dag, "dag_id", None),
-                "run_id": get("run_id") or getattr(ti, "run_id", None),
-                "reason": get("reason"),
-                "task_id": getattr(ti, "task_id", None),
-            }
-            line = json.dumps(
-                {k: v for k, v in record.items() if v is not None}, sort_keys=True, default=str
-            )
-            logging.getLogger(__name__).error("airflow_failure %s", line)
-        except Exception:
-            pass
-        return
-    report = (
-        failure_alert.log_task_failure if scope == "task" else failure_alert.log_dag_run_failure
-    )
-    report(context)
-
-
-def on_task_failure(context: Any) -> None:
-    _report_failure(context, "task")
-
-
-def on_dag_run_failure(context: Any) -> None:
-    _report_failure(context, "dag_run")
-
+# P3-3: failure reports, one structured `airflow_failure` log line (utils/failure_alert.py).
+# P5-3: imported at the top, like the project code this file reads at parse time
+# (the Asset names come from the configs): a worker without the project could not
+# parse it, so the minimal-line fallback this file used to carry is gone.
+on_task_failure = log_task_failure
+on_dag_run_failure = log_dag_run_failure
 
 DEFAULT_ARGS = {
     "owner": "airflow",
@@ -169,6 +137,29 @@ DEFAULT_ARGS = {
 }
 
 log = logging.getLogger(__name__)
+
+
+def lake_staging_schedule() -> AssetTriggeredTimetable | None:
+    """P5-3: the DAG runs when any `lake_staging__<source>` is emitted. One Asset per
+    source of the config root with a `staging_path`, in the valid configs (an invalid
+    one has its own `invalid_source__*` DAG and no Asset here). None, i.e. manual,
+    when there is none.
+
+    P3-5: the events queued during a run are consumed together by ONE next run: each
+    run rebuilds the whole staging zone, one `dbt build` per event would repeat the
+    same work. Explicit, because Airflow 3.4 creates one run per event by default.
+    """
+    from pipeline.config import SourceRegistry, default_config_root
+
+    registry, _ = SourceRegistry.load_valid(default_config_root())
+    assets = [
+        Asset(name=loaded.config.staging_asset_name)
+        for loaded in registry.sources
+        if loaded.config.staging_asset_name
+    ]
+    if not assets:
+        return None
+    return AssetTriggeredTimetable(AssetAny(*assets), batch_asset_events=True)
 
 
 def dbt_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -370,11 +361,7 @@ transform_dag = DbtDag(
     description="dbt build (DuckDB) of the lake's staging zone, rendered by Cosmos",
     default_args=DEFAULT_ARGS,
     start_date=datetime(2023, 1, 1),
-    # P3-5: the `lake_staging` events queued during a run are consumed
-    # together by ONE next run: each run rebuilds the whole staging zone, one
-    # `dbt build` per event would repeat the same work. Explicit, because
-    # Airflow 3.4 creates one run per event by default.
-    schedule=AssetTriggeredTimetable(LAKE_STAGING_ASSET, batch_asset_events=True),
+    schedule=lake_staging_schedule(),
     catchup=False,
     max_active_runs=1,
     # A stuck producer or sensor must not block the next `lake_staging`

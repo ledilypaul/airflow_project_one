@@ -45,7 +45,7 @@ AIRFLOW__OPENLINEAGE__NAMESPACE ?= $(OPENLINEAGE_NAMESPACE)
 PYTHON ?= $(UV) run python
 # Spark listener (JVM): openlineage-spark for Scala 2.13 (PySpark 4), one
 # self-contained jar from Maven Central, pinned by version and SHA-256.
-# Without a valid file, read_file_dag runs Spark without its listener.
+# Without a valid file, the ingest__<source> DAGs run Spark without its listener.
 # Provenance of the digest (2026-11-14): equal to the `.sha256` Maven Central
 # publishes next to the jar, and the jar's `.asc` signature verifies with the
 # key B4AD C6AE E76F 4EED 97FA 78A1 C6C9 B79C 9583 2D71 (an OpenLineage
@@ -56,7 +56,7 @@ OPENLINEAGE_SPARK_JAR ?= $(LINEAGE_DIR)/jars/openlineage-spark_2.13-$(OPENLINEAG
 OPENLINEAGE_SPARK_URL := https://repo1.maven.org/maven2/io/openlineage/openlineage-spark_2.13/$(OPENLINEAGE_SPARK_VERSION)/openlineage-spark_2.13-$(OPENLINEAGE_SPARK_VERSION).jar
 $(AIRFLOW_TARGETS): export AIRFLOW__OPENLINEAGE__NAMESPACE := $(AIRFLOW__OPENLINEAGE__NAMESPACE)
 $(AIRFLOW_TARGETS): export OPENLINEAGE_SPARK_JAR := $(OPENLINEAGE_SPARK_JAR)
-# read_file_dag checks the jar against it when the task runs.
+# the ingest__<source> DAGs check the jar against it when the task runs.
 $(AIRFLOW_TARGETS): export OPENLINEAGE_SPARK_SHA256 := $(OPENLINEAGE_SPARK_SHA256)
 # The hook lineage collector keeps 100 inputs per task by default: a listing
 # of more files would declare only the first 100 (a warning says how many
@@ -177,7 +177,7 @@ IMAGE_TAG ?= dev
 IMAGE := $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
-	airflow-init airflow spark-job transform-sync dbt-parse dbt-build \
+	airflow-init airflow demo spark-job transform-sync dbt-codegen dbt-parse dbt-build \
 	lineage-jar lineage-show lineage-transport lineage-clean \
 	lineage-up lineage-down metrics-env observability-up observability-down \
 	k8s-tools kind-up kind-down image kind-load k8s-chart k8s-install \
@@ -210,6 +210,7 @@ test: dbt-parse ## Run the test suite (includes the DAG import check; generates 
 check: ## CI order: both uv.lock up to date, then lint, then tests
 	$(UV) lock --check
 	$(UV) --directory transform lock --check
+	$(UV) run python scripts/generate_dbt_staging.py --check
 	@$(MAKE) --no-print-directory lint
 	@$(MAKE) --no-print-directory test
 
@@ -267,15 +268,25 @@ airflow: dbt-parse ## Run Airflow standalone (api-server, scheduler, dag-process
 	AIRFLOW__OPENLINEAGE__TRANSPORT="$${AIRFLOW__OPENLINEAGE__TRANSPORT:-$$($(PYTHON) scripts/openlineage_transport.py)}" \
 		$(UV) run airflow standalone
 
+# P5-1: the engine ships no source. The demo reads the example sources of
+# examples/config (PIPELINE_CONFIG_ROOT, absolute) and lists ./data/, into
+# which the example files are copied without overwriting anything.
+demo: export PIPELINE_CONFIG_ROOT := $(CURDIR)/examples/config
+demo: ## Run Airflow standalone on the example sources (examples/)
+	@mkdir -p data && cp -n examples/data/* data/
+	@echo "demo: sources of $$PIPELINE_CONFIG_ROOT, example files copied into ./data/"
+	$(MAKE) --no-print-directory airflow
+
 ##@ Spark
 
 spark-job: export RUN_ID := $(RUN_ID)
-spark-job: ## Run the Spark job outside Airflow: make spark-job RUN_ID=<dag_run_id>
+spark-job: export SOURCE := $(SOURCE)
+spark-job: ## Run the Spark job outside Airflow: make spark-job RUN_ID=<dag_run_id> [SOURCE=<name>]
 	@if [ -z "$$RUN_ID" ]; then \
-		echo "error: RUN_ID is empty. Usage: make spark-job RUN_ID=<dag_run_id of list_files_dag>" >&2; \
+		echo "error: RUN_ID is empty. Usage: make spark-job RUN_ID=<dag_run_id of an ingest__<source> run> [SOURCE=<source>]" >&2; \
 		exit 1; \
 	fi
-	$(UV) run spark-submit pipeline/jobs/read_files_job.py "--run-id=$$RUN_ID"
+	$(UV) run spark-submit pipeline/jobs/read_files_job.py "--run-id=$$RUN_ID" $${SOURCE:+"--source-name=$$SOURCE"}
 
 ##@ Documentation (Sphinx, docs/; only the `docs` group of pyproject.toml, no Spark or Airflow needed)
 
@@ -309,10 +320,13 @@ api-trigger: ## Start a run: make api-trigger DAG=<dag_id> [CONF='{"run_id": "..
 transform-sync: ## Create/update transform/.venv (dbt-core, dbt-duckdb) from transform/uv.lock
 	$(UV) --directory transform sync --locked
 
-dbt-parse: transform-sync ## Write transform/target/manifest.json (transform_dag is rendered from it)
+dbt-codegen: ## Generate the dbt staging layer from the reading configs
+	$(UV) run python scripts/generate_dbt_staging.py
+
+dbt-parse: transform-sync dbt-codegen ## Write transform/target/manifest.json (transform_dag is rendered from it)
 	$(DBT) parse $(DBT_FLAGS)
 
-dbt-build: transform-sync ## dbt build outside Airflow (LAKE_ROOT, DBT_DUCKDB_PATH overridable)
+dbt-build: transform-sync dbt-codegen ## dbt build outside Airflow (LAKE_ROOT, DBT_DUCKDB_PATH overridable)
 	$(DBT) build $(DBT_FLAGS)
 
 ##@ Lineage (OpenLineage, P2-5)

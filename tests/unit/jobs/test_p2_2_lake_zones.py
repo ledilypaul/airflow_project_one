@@ -13,13 +13,15 @@ P2-2 (constat A1): what the Spark job writes for one file.
 Real Spark (session-wide `spark` fixture), `tmp_path` as `LAKE_ROOT`.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from pipeline.config import SourceConfig
-from pipeline.jobs import read_files_job
-from pipeline.jobs.read_files_job import clean_for_staging, write_to_lake
+from pipeline.engine.spark.engine import SparkEngine
+from pipeline.jobs import ingest, read_files_job
+from pipeline.jobs.ingest import write_to_lake
 from storage.parquet_lake_writer import ParquetLakeWriter, resolve_lake_root
 
 RUN_ID = "manual__2026-11-13T14:21:36.519211+00:00"
@@ -58,7 +60,12 @@ def orders(spark):
 
 def _write(writer, data, config, source_file="orders_1.csv"):
     return write_to_lake(
-        writer, data, config, run_id=RUN_ID, source_file=source_file, file_id=FILE_ID
+        SparkEngine(data.sparkSession, writer),
+        data,
+        config,
+        run_id=RUN_ID,
+        source_file=source_file,
+        file_id=FILE_ID,
     )
 
 
@@ -124,7 +131,7 @@ def test_p2_2_staging_with_zero_rows_removes_the_previous_staging_partition(
 
 
 def test_p2_2_clean_for_staging_ignores_nothing_but_empty_rows_and_duplicates(spark, orders):
-    cleaned = clean_for_staging(orders)
+    cleaned = SparkEngine(orders.sparkSession, None).clean_for_staging(orders)
     assert cleaned.columns == orders.columns
     assert cleaned.count() == 3
 
@@ -187,6 +194,10 @@ def test_p2_2_main_writes_real_file_end_to_end(spark, tmp_path, monkeypatch):
     )
     lake_root = tmp_path / "lake"
     monkeypatch.setenv("LAKE_ROOT", str(lake_root))
+    # P5-1: `orders` is an example source, not part of the engine.
+    monkeypatch.setattr(
+        read_files_job, "CONFIG_ROOT", Path(__file__).resolve().parents[3] / "examples" / "config"
+    )
     # The session is shared by the whole test run: main() must not stop it.
     monkeypatch.setattr(spark, "stop", lambda: None)
     update = MagicMock()
@@ -194,8 +205,8 @@ def test_p2_2_main_writes_real_file_end_to_end(spark, tmp_path, monkeypatch):
 
     with (
         patch.object(read_files_job, "get_spark_session", return_value=spark),
-        patch.object(read_files_job, "list_file_from_db", return_value=rows),
-        patch.object(read_files_job, "update_file_status", update),
+        patch.object(ingest, "list_file_from_db", return_value=rows),
+        patch.object(ingest, "update_file_status", update),
     ):
         with pytest.raises(SystemExit) as exc:
             read_files_job.main(run_id=RUN_ID)

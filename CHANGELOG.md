@@ -25,6 +25,35 @@ Versioning : [Semantic Versioning](https://semver.org/lang/fr/) — `MAJOR.MINOR
 
 ---
 
+## [0.5.0] — 2026-11-28
+
+Phase 5, jalon de démo (`docs/audit/2026-11-23-backlog-phase5.md`) : P5-1 à P5-4 et P5-6. Chaque entrée a sa note dans `docs/architecture/`.
+
+### Added
+
+- **Un DAG par source** (P5-3) — `dags/source_pipelines.py` génère `ingest__<source>` depuis chaque YAML de `config/sources/` (`listing`, `schedule`, `retries`, `tags`), plus `ingest__unmatched` ; une config invalide donne `invalid_source__<fichier>` sans casser les autres. Asset `lake_staging__<source>` par source.
+- **Couche staging dbt générée** (P5-4) — `make dbt-codegen` écrit les sources, les modèles `stg_<table>__current` et leurs contrats depuis `reader.columns_type` ; `--check` dans `make check` et la CI. Clé `dbt.generate`.
+- **Interface `Engine`** (P5-6) — orchestration commune dans `pipeline/jobs/ingest.py`, sans import de moteur ; `SparkEngine` derrière, lake identique avant et après.
+- Type `long` (64 bits) et clé `source.engine` (`spark` | `polars`, P5-2).
+
+### Changed
+
+- **Moteur séparé des exemples** (P5-1) — `imdb.yaml` et `orders.yaml` passent dans `examples/config/sources/`, les échantillons dans `examples/data/` ; `config/sources/` est vide dans le dépôt. `PIPELINE_CONFIG_ROOT` choisit la racine de config. `make demo` lance la démo.
+- **Config indépendante du moteur** (P5-2) — `pipeline.config` n'importe plus PySpark ; types neutres (`NEUTRAL_TYPES`) ; options du reader validées par (moteur, format).
+- `file_list` porte `source_name`, clé unique `(file_path, dag_run_id, source_name)` : rejouer `utils/SQL/script_tables.sql` avant de déployer (P5-3).
+- `stg_orders__current` passe en `select *` : une colonne en plus dans le lake fait échouer le contrat (P5-4).
+
+### Fixed
+
+- `apache-airflow-providers-smtp` 3.2.2 (PYSEC-2026-4396).
+
+### Removed
+
+- `list_files_dag`, `list_files_dag_classic`, `read_file_dag` et `config/extractor_config.yaml`, remplacés par les DAG par source (P5-3).
+- `pipeline/IMDBExtractor.py`, `IMDBTransform.py`, `config_file.json`, `dags/test_dag.py`, `sandbox/`, `test_notebook.ipynb`, `start_env.sh`, `setup_airflow.sh`, `ExcelReader.read_polars`, `JSONReader`, `HiveWriter` (aucun usage, P5-1).
+
+---
+
 ## [0.4.0] — 2026-11-23
 
 Phases 0 à 4-1 du backlog (`docs/audit/2026-11-05-baseline.md`). Chaque entrée a sa note dans `docs/architecture/`.

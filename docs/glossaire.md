@@ -3,8 +3,8 @@
 ```{glossary}
 Asset
   Objet d'Airflow 3 qui représente des données. Un DAG le **produit** (`outlets`) ou s'en sert pour
-  se **déclencher** (`schedule`). Les trois Assets du projet sont `file_list`, `lake_staging` et
-  `dbt_marts`, identifiés par leur nom.
+  se **déclencher** (`schedule`). Les Assets du projet sont un `lake_staging__<source>` par source
+  qui a une zone staging, et `dbt_marts`, identifiés par leur nom.
 
 Cosmos
   Bibliothèque d'Astronomer qui transforme un projet dbt en DAG Airflow : un producteur lance
@@ -35,8 +35,8 @@ Lignage
   OpenLineage.
 
 Listing
-  Une exécution de `list_files_dag` : elle enregistre les fichiers trouvés, sous un même
-  `dag_run_id`.
+  Une exécution du DAG `ingest__<source>` : elle enregistre les fichiers trouvés, sous un même
+  `dag_run_id` et le nom de la source.
 
 OpenLineage
   Standard ouvert d'événements de lignage, que le projet émet depuis Airflow, Spark et dbt.

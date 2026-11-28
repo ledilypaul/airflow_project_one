@@ -2,9 +2,10 @@
 P2-4 — dbt transformation layer orchestrated by Cosmos.
 
 Covers:
-  - read_file_dag emits the `lake_staging` Asset from a final task that only
-    runs when every mapped `spark_read_files` instance succeeded;
-  - transform_dag (dags/local_transform_dag.py): scheduled on `lake_staging`,
+  - `ingest__<source>` emits its `lake_staging__<source>` Asset from a final task
+    that runs once the Spark task is done and only when a file was processed;
+  - transform_dag (dags/local_transform_dag.py): scheduled on any
+    `lake_staging__<source>` (P5-3),
     `max_active_runs=1`, no catchup, WATCHER execution with the dbt of
     transform/.venv (subprocess), manifest rendering without
     `RenderConfig.dbt_executable_path` (Cosmos 1.16 bug), every dbt task in
@@ -12,10 +13,7 @@ Covers:
     `dbt_marts` Asset emitted after every dbt task;
   - the dbt environment (LAKE_ROOT, DBT_DUCKDB_PATH) and its defaults;
   - a missing manifest is an import error of that file only;
-  - the dbt project matches the lake: sources = staging tables of the
-    reading configs, movies columns = imdb.yaml `columns_type`, orders
-    columns = orders.yaml `columns_type` (P2-6), both with an enforced
-    contract.
+  - the dbt staging layer: generated, see tests/unit/test_p5_4_dbt_codegen.py.
 
 The manifest (transform/target/manifest.json) comes from `make dbt-parse`,
 which CI runs before pytest.
@@ -37,7 +35,7 @@ TRANSFORM_DAG_FILE = DAGS_FOLDER / "local_transform_dag.py"
 TRANSFORM_DIR = PROJECT_ROOT / "transform"
 MANIFEST = TRANSFORM_DIR / "target" / "manifest.json"
 POOLS_FILE = PROJECT_ROOT / "deploy" / "airflow" / "pools.json"
-SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "_lake_staging__sources.yml"
+SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "generated" / "_lake_staging__sources.yml"
 
 PRODUCER = "dbt_producer_watcher"
 PUBLISH = "publish_dbt_marts"
@@ -63,19 +61,23 @@ def _dbt_tasks(dag):
 
 
 # ---------------------------------------------------------------------------
-# read_file_dag -> lake_staging
+# ingest__<source> -> lake_staging__<source>
 # ---------------------------------------------------------------------------
 
+# Sources of examples/config with a staging zone (the unmatched DAG has none).
+STAGED_SOURCES = ["imdb_movies", "orders"]
 
-def test_p2_4_c2_read_file_dag_publishes_lake_staging_once_spark_is_done(dagbag):
+
+@pytest.mark.parametrize("source", STAGED_SOURCES)
+def test_p2_4_c2_ingest_dag_publishes_lake_staging_once_spark_is_done(dagbag, source):
     """C-2: `all_done`, not `all_success`: one permanently failing file must
-    not block `lake_staging` (hence dbt) forever. Whether to emit is decided
-    from file_list (test below), not from the Spark task states."""
-    dag = dagbag.dags["read_file_dag"]
+    not block `lake_staging__<source>` (hence dbt) forever. Whether to emit is
+    decided from file_list (tests below), not from the Spark task state."""
+    dag = dagbag.dags[f"ingest__{source}"]
     publish = dag.get_task("publish_lake_staging")
 
     assert [type(a) for a in publish.outlets] == [Asset]
-    assert [a.name for a in publish.outlets] == ["lake_staging"]
+    assert [a.name for a in publish.outlets] == [f"lake_staging__{source}"]
     assert publish.upstream_task_ids == {"spark_read_files"}
     assert publish.trigger_rule == "all_done"
     # Only that final task updates the Asset.
@@ -84,13 +86,20 @@ def test_p2_4_c2_read_file_dag_publishes_lake_staging_once_spark_is_done(dagbag)
             assert other.outlets == [], other.task_id
 
 
+def test_p5_3_unmatched_dag_publishes_nothing(dagbag):
+    """It reads with the defaults per extension, which have no staging zone."""
+    dag = dagbag.dags["ingest__unmatched"]
+    assert "publish_lake_staging" not in dag.task_ids
+    assert all(t.outlets == [] for t in dag.tasks)
+
+
 def test_p2_4_c2_failed_spark_task_still_fails_the_run(dagbag):
     """A DagRun takes its state from its leaves: an `all_done` leaf that
     succeeds would turn a run with a failed spark_read_files green.
     `fail_if_spark_failed` (`one_failed`, also a leaf) fails it again; it is
-    skipped when every Spark instance succeeded. Checked for real by
-    tests/integration/test_p1_4_read_file_dag_e2e.py."""
-    dag = dagbag.dags["read_file_dag"]
+    skipped when the Spark task succeeded. Checked for real by
+    tests/integration/test_p1_4_ingest_dag_e2e.py."""
+    dag = dagbag.dags["ingest__orders"]
     guard = dag.get_task("fail_if_spark_failed")
 
     assert guard.trigger_rule == "one_failed"
@@ -101,19 +110,9 @@ def test_p2_4_c2_failed_spark_task_still_fails_the_run(dagbag):
 
 
 def _publish_callable():
-    from dags.local_read_file_dag import dag_instance
+    from dags.source_pipelines import build_dags
 
-    return dag_instance.get_task("publish_lake_staging").python_callable
-
-
-class _FakeTI:
-    def __init__(self, run_ids):
-        self.run_ids = run_ids
-        self.pulled = []
-
-    def xcom_pull(self, task_ids):
-        self.pulled.append(task_ids)
-        return self.run_ids
+    return build_dags()["ingest__orders"].get_task("publish_lake_staging").python_callable
 
 
 def test_p2_4_c2_publish_emits_when_at_least_one_file_was_processed(monkeypatch):
@@ -121,16 +120,16 @@ def test_p2_4_c2_publish_emits_when_at_least_one_file_was_processed(monkeypatch)
 
     asked = []
 
-    def fake_count(run_ids):
-        asked.append(list(run_ids))
+    def fake_count(run_ids, source_name=None):
+        asked.append((list(run_ids), source_name))
         return 1
 
     monkeypatch.setattr(functions_utils, "count_processed_files", fake_count)
-    ti = _FakeTI(["run_a", "run_b"])
 
-    assert _publish_callable()(ti=ti) == 1
-    assert ti.pulled == ["resolve_source_run_ids"]
-    assert asked == [["run_a", "run_b"]]
+    assert _publish_callable()(run_id="run_a") == 1
+    # P5-3: the run id of this DAG run, and the source (run ids of two source DAGs
+    # can be equal).
+    assert asked == [(["run_a"], "orders")]
 
 
 def test_p2_4_c2_publish_skips_when_no_file_was_processed(monkeypatch):
@@ -138,48 +137,39 @@ def test_p2_4_c2_publish_skips_when_no_file_was_processed(monkeypatch):
 
     import utils.functions_utils as functions_utils
 
-    monkeypatch.setattr(functions_utils, "count_processed_files", lambda run_ids: 0)
+    monkeypatch.setattr(functions_utils, "count_processed_files", lambda run_ids, source_name: 0)
 
     with pytest.raises(AirflowSkipException, match="no file_list row is `processed`"):
-        _publish_callable()(ti=_FakeTI(["run_a"]))
-
-
-@pytest.mark.parametrize("run_ids", [None, []], ids=["resolve_failed", "empty"])
-def test_p2_4_c2_publish_skips_without_resolved_run_ids(monkeypatch, run_ids):
-    """resolve_source_run_ids failed (no XCom): nothing to look up, nothing
-    emitted, and file_list is not queried."""
-    from airflow.sdk.exceptions import AirflowSkipException
-
-    import utils.functions_utils as functions_utils
-
-    def must_not_be_called(run_ids):
-        raise AssertionError("file_list must not be queried")
-
-    monkeypatch.setattr(functions_utils, "count_processed_files", must_not_be_called)
-
-    with pytest.raises(AirflowSkipException, match="no source run id"):
-        _publish_callable()(ti=_FakeTI(run_ids))
+        _publish_callable()(run_id="run_a")
 
 
 def test_p2_4_c2_guard_fails_explicitly():
     from airflow.sdk.exceptions import AirflowFailException
 
-    from dags.local_read_file_dag import dag_instance
+    from dags.source_pipelines import build_dags
 
+    guard = build_dags()["ingest__orders"].get_task("fail_if_spark_failed")
     with pytest.raises(AirflowFailException, match="spark_read_files"):
-        dag_instance.get_task("fail_if_spark_failed").python_callable()
+        guard.python_callable()
 
 
 def test_p2_4_lake_staging_is_what_transform_dag_waits_for(dagbag, transform_dag):
+    """P5-3: the union of the Assets the ingest DAGs emit, in an `AssetAny` that
+    keeps `batch_asset_events=True` (P3-5: one `dbt build` for the events queued)."""
+    from airflow.sdk import AssetAny
     from airflow.sdk.definitions.timetables.assets import AssetTriggeredTimetable
 
-    produced = dagbag.dags["read_file_dag"].get_task("publish_lake_staging").outlets
+    produced = [
+        dagbag.dags[f"ingest__{name}"].get_task("publish_lake_staging").outlets[0]
+        for name in STAGED_SOURCES
+    ]
     assert isinstance(transform_dag.timetable, AssetTriggeredTimetable)
-    # P3-5: the condition is the Asset itself (AssetTriggeredTimetable with
-    # an explicit batch_asset_events).
-    assert [transform_dag.timetable.asset_condition] == list(produced)
+    assert transform_dag.timetable.batch_asset_events is True
+    condition = transform_dag.timetable.asset_condition
+    assert isinstance(condition, AssetAny)
+    assert sorted(a.name for a in condition.objects) == sorted(a.name for a in produced)
     # No URI scheme a provider would try to validate.
-    assert "://" not in produced[0].uri
+    assert all("://" not in a.uri for a in produced)
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +318,7 @@ def test_p2_4_missing_manifest_is_an_import_error_of_that_file_only(tmp_path):
     (message,) = bag.import_errors.values()
     assert "dbt manifest not found" in message
     assert "make dbt-parse" in message
-    assert {"list_files_dag", "list_files_dag_classic", "read_file_dag"} <= set(bag.dag_ids)
+    assert {"ingest__orders", "ingest__unmatched"} <= set(bag.dag_ids)
     assert "transform_dag" not in bag.dag_ids
 
 
@@ -368,7 +358,7 @@ def test_p2_4_c4_stale_manifest_is_an_import_error(dagbag, tmp_path):
     assert "older than" in message
     assert "mart_movies__by_release_year_language.sql" in message
     assert "make dbt-parse" in message
-    assert "read_file_dag" in bag.dag_ids
+    assert "ingest__orders" in bag.dag_ids
 
 
 def test_p2_4_c4_every_manifest_node_is_waited_for(transform_dag):
@@ -394,95 +384,8 @@ def test_p2_4_c4_every_manifest_node_is_waited_for(transform_dag):
 
 
 # ---------------------------------------------------------------------------
-# dbt project <-> lake
+# dbt profile and environment
 # ---------------------------------------------------------------------------
-
-# Spark types of pipeline/config/types.py -> DuckDB type read from the
-# Parquet written by Spark (checked for real by tests/integration).
-DUCKDB_TYPES = {
-    "string": "VARCHAR",
-    "int": "INTEGER",
-    "integer": "INTEGER",
-    "float": "FLOAT",
-    "double": "DOUBLE",
-    "boolean": "BOOLEAN",
-    "date": "DATE",
-    "timestamp": "TIMESTAMP",
-}
-TECHNICAL_COLUMNS = [
-    ("lake_file_id", "BIGINT"),
-    ("lake_ingested_at", "TIMESTAMP"),
-    ("lake_run_id", "VARCHAR"),
-    ("lake_source_file", "VARCHAR"),
-]
-
-
-def _dbt_sources():
-    (source,) = yaml.safe_load(SOURCES_YML.read_text(encoding="utf-8"))["sources"]
-    return source
-
-
-def test_p2_4_dbt_sources_are_staging_tables_of_the_reading_configs():
-    """Every dbt source table is the staging table of a reading config: a
-    renamed `storage.table_name` or a removed `staging_path` must not leave
-    dbt reading a table nobody writes."""
-    from pipeline.config.registry import SourceRegistry
-
-    registry = SourceRegistry.from_directory()
-    staging_tables = {
-        loaded.config.storage.staging_path + loaded.config.storage.table_name
-        for loaded in registry.sources
-        if loaded.config.storage.staging_path
-    }
-    source = _dbt_sources()
-    assert source["name"] == "lake_staging"
-    assert "/staging/$identifier/" in source["config"]["external_location"]
-    for table in source["tables"]:
-        assert f"staging/{table['name']}" in staging_tables, table["name"]
-
-
-def test_p2_4_movies_source_columns_follow_the_imdb_schema():
-    """The typed empty relation (no movies file read yet) is built from these
-    columns: same names, order and types as the files Spark writes."""
-    from pipeline.config.registry import load_source_config
-
-    columns_type = load_source_config(
-        PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
-    ).reader.columns_type
-    (movies,) = [t for t in _dbt_sources()["tables"] if t["name"] == "movies"]
-    declared = [(c["name"], c["data_type"]) for c in movies["columns"]]
-
-    expected = [(name, DUCKDB_TYPES[spark_type]) for name, spark_type in columns_type.items()]
-    assert declared == expected + TECHNICAL_COLUMNS
-
-
-def test_p2_6_orders_source_columns_follow_the_orders_schema():
-    """P2-6 (replaces test_p2_4_orders_source_declares_only_technical_columns):
-    orders.yaml declares `columns_type`, so the typed empty relation of
-    orders has the business columns too, like movies."""
-    from pipeline.config.registry import load_source_config
-
-    columns_type = load_source_config(
-        PROJECT_ROOT / "config" / "sources" / "orders.yaml"
-    ).reader.columns_type
-    (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
-    declared = [(c["name"], c["data_type"]) for c in orders["columns"]]
-
-    expected = [(name, DUCKDB_TYPES[spark_type]) for name, spark_type in columns_type.items()]
-    assert declared == expected + TECHNICAL_COLUMNS
-
-
-def test_p2_6_every_dbt_source_table_is_typed_like_its_reading_config():
-    """No staging table read with an inferred schema reaches dbt: each
-    source table has a `columns_type` to align its columns on."""
-    from pipeline.config.registry import SourceRegistry
-
-    typed = {
-        loaded.config.storage.table_name
-        for loaded in SourceRegistry.from_directory().sources
-        if loaded.config.reader.columns_type
-    }
-    assert {t["name"] for t in _dbt_sources()["tables"]} <= typed
 
 
 def test_p2_4_dbt_profile_reads_paths_from_the_environment():
@@ -492,37 +395,6 @@ def test_p2_4_dbt_profile_reads_paths_from_the_environment():
     assert output["type"] == "duckdb"
     assert output["path"] == "{{ env_var('DBT_DUCKDB_PATH') }}"
     assert output["threads"] == 1
-
-
-def test_p2_4_c3_movies_contract_matches_the_source_columns():
-    """C-3: the enforced contract of stg_movies__current declares exactly the
-    columns and types of the movies source (imdb.yaml + technical columns,
-    checked above), so a type widened by union_by_name fails the build."""
-    models = yaml.safe_load(
-        (TRANSFORM_DIR / "models" / "staging" / "_staging__models.yml").read_text(encoding="utf-8")
-    )["models"]
-    (model,) = [m for m in models if m["name"] == "stg_movies__current"]
-    (movies,) = [t for t in _dbt_sources()["tables"] if t["name"] == "movies"]
-
-    assert model["config"]["contract"] == {"enforced": True}
-    assert [(c["name"], c["data_type"]) for c in model["columns"]] == [
-        (c["name"], c["data_type"]) for c in movies["columns"]
-    ]
-
-
-def test_p2_6_orders_contract_matches_the_source_columns():
-    """P2-6: same enforced contract as stg_movies__current, on the orders
-    source columns (orders.yaml + technical columns, checked above)."""
-    models = yaml.safe_load(
-        (TRANSFORM_DIR / "models" / "staging" / "_staging__models.yml").read_text(encoding="utf-8")
-    )["models"]
-    (model,) = [m for m in models if m["name"] == "stg_orders__current"]
-    (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
-
-    assert model["config"]["contract"] == {"enforced": True}
-    assert [(c["name"], c["data_type"]) for c in model["columns"]] == [
-        (c["name"], c["data_type"]) for c in orders["columns"]
-    ]
 
 
 def test_p2_4_c5_duckdb_extensions_are_never_installed_or_loaded_implicitly():

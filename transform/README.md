@@ -8,23 +8,22 @@ Pourquoi cette couche et les choix qui la composent : voir
 [`docs/architecture/2026-11-14-p2-4-transform-layer.md`](../docs/architecture/2026-11-14-p2-4-transform-layer.md).
 
 ```
-list_files_dag --file_list--> read_file_dag --lake_staging--> transform_dag --dbt_marts-->
-                              (Spark : raw, staging)          (dbt build, DuckDB)
+ingest__<source> --lake_staging__<source>--> transform_dag --dbt_marts-->
+(listage, Spark : raw, staging)              (dbt build, DuckDB)
 ```
 
-- `read_file_dag` émet l'Asset `lake_staging` depuis sa tâche finale
-  `publish_lake_staging`.
-  - Elle s'exécute une fois toutes ses applications Spark terminées
-    (`all_done`), et émet si **au moins un** fichier de ses run ids est
-    `processed` dans `file_list`. Un fichier en échec permanent ne bloque
-    donc pas dbt.
-  - Elle se met en `skipped` (rien d'émis) si aucun fichier n'a été traité,
-    ou si les run ids n'ont pas pu être résolus.
-  - Le run reste `failed` si une application Spark a échoué : la feuille
+- Chaque DAG `ingest__<source>` qui a une zone staging émet l'Asset
+  `lake_staging__<source>` depuis sa tâche `publish_lake_staging`.
+  - Elle s'exécute une fois l'application Spark terminée (`all_done`), et émet
+    si **au moins un** fichier de ce run et de cette source est `processed`
+    dans `file_list`. Un fichier en échec permanent ne bloque donc pas dbt.
+  - Elle se met en `skipped` (rien d'émis) si aucun fichier n'a été traité ou
+    listé.
+  - Le run reste `failed` si l'application Spark a échoué : la feuille
     `fail_if_spark_failed` (`one_failed`) l'y maintient.
 - `transform_dag` (`dags/local_transform_dag.py`, Cosmos) est planifié sur
-  cet Asset et émet `dbt_marts` (tâche `publish_dbt_marts`) quand toutes ses
-  tâches dbt ont réussi.
+  l'union de ces Assets et émet `dbt_marts` (tâche `publish_dbt_marts`) quand
+  toutes ses tâches dbt ont réussi.
 - Chaque run reconstruit tout l'état courant (tables, pas d'incrémental) : il
   est idempotent et n'a pas besoin du run id source.
 
@@ -90,8 +89,10 @@ Pour modifier les dépendances, utiliser `uv add` / `uv lock` **dans
 
 ## Lecture du lake
 
-Les sources sont déclarées dans `models/staging/_lake_staging__sources.yml`
-(`external_location`, `formatter: template`) :
+Les sources sont déclarées dans `models/staging/generated/_lake_staging__sources.yml`
+(`external_location`, `formatter: template`), généré avec les modèles `stg_*__current` par
+`make dbt-codegen` (`scripts/generate_dbt_staging.py`) depuis les YAML de sources ; ne pas
+l'éditer :
 
 ```sql
 read_parquet('<LAKE_ROOT>/staging/<table>/lake_run_id=*/lake_source_file=*/*.parquet',
@@ -116,13 +117,8 @@ macro `lake_staging()` (`macros/lake.sql`). Si le glob ne trouve aucun
 fichier, elle renvoie une **relation vide typée** par les colonnes déclarées
 dans la source, et le build réussit avec 0 ligne.
 
-- `movies` déclare toutes ses colonnes, avec les types de
-  `config/sources/imdb.yaml` (un test pytest le vérifie). La relation vide a
-  donc exactement le schéma réel.
-- `orders` fait de même avec les types de `config/sources/orders.yaml`
-  (P2-6, même test).
-- Une nouvelle source doit déclarer au moins ses colonnes techniques, chacune
-  avec son `data_type`.
+- Chaque table déclare les colonnes de `reader.columns_type`, avec leur type DuckDB, puis les
+  colonnes techniques : la relation vide a exactement le schéma réel.
 
 ## Modèles
 
@@ -236,7 +232,7 @@ Pourquoi et comment : voir
   fichier ouvert à l'exécution : la première partie non vide de son nom
   (`warehouse.duckdb` et `warehouse.prod.duckdb` donnent `warehouse`,
   `.hidden.duckdb` donne `hidden`). Les sources du lake
-  (`_lake_staging__sources.yml`) sont donc nommées
+  (`generated/_lake_staging__sources.yml`) sont donc nommées
   `warehouse.lake_staging.movies` : le processeur ne tient pas compte de
   `external_location`.
 - **Le pont.** Spark nomme la même table par son répertoire (`file`,

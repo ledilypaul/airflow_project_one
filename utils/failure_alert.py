@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 
 EVENT = "airflow_failure"
 
-# Exit codes of pipeline/jobs/read_files_job.py (`EXIT_*`). Duplicated: the
+# Exit codes of pipeline/jobs/ingest.py (`EXIT_*`). Duplicated: the
 # job imports pyspark, which a callback must not load. A test keeps them equal.
 JOB_EXIT_CODES: dict[int, str] = {
     1: "at least one file failed (read or write error, quality engine error, or mixed causes)",
@@ -100,7 +100,7 @@ def failure_record(context: Any, *, scope: str) -> dict[str, Any]:
     if isinstance(exception, BaseException):
         record["exception_type"] = type(exception).__name__
 
-    # Set by ReadFilesSparkSubmitOperator (dags/local_read_file_dag.py) once
+    # Set by ReadFilesSparkSubmitOperator (utils/read_files_operator.py) once
     # spark-submit has run. A bool is an int in Python, never an exit code.
     code = _get(task, "spark_exit_code")
     if isinstance(code, int) and not isinstance(code, bool):

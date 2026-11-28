@@ -41,8 +41,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TRANSFORM_DIR = PROJECT_ROOT / "transform"
 DBT_EXECUTABLE = TRANSFORM_DIR / ".venv" / "bin" / "dbt"
 DBT_PYTHON = TRANSFORM_DIR / ".venv" / "bin" / "python"
-IMDB_CONFIG = PROJECT_ROOT / "config" / "sources" / "imdb.yaml"
-ORDERS_CONFIG = PROJECT_ROOT / "config" / "sources" / "orders.yaml"
+IMDB_CONFIG = PROJECT_ROOT / "examples" / "config" / "sources" / "imdb.yaml"
+ORDERS_CONFIG = PROJECT_ROOT / "examples" / "config" / "sources" / "orders.yaml"
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="needs a POSIX venv layout")
 
@@ -162,7 +162,7 @@ def _movie(schema, **values):
 
 def _write_movies(spark, writer) -> None:
     from pipeline.config.registry import load_source_config
-    from pipeline.config.types import build_schema
+    from pipeline.engine.spark.types import build_schema
 
     schema = build_schema(load_source_config(IMDB_CONFIG).reader.columns_type)
 
@@ -195,7 +195,7 @@ def _write_orders(spark, writer) -> None:
     """P2-6: the schema of orders.yaml (`columns_type`), which the enforced
     contract of stg_orders__current mirrors."""
     from pipeline.config.registry import load_source_config
-    from pipeline.config.types import build_schema
+    from pipeline.engine.spark.types import build_schema
 
     schema = build_schema(load_source_config(ORDERS_CONFIG).reader.columns_type)
 
@@ -390,7 +390,7 @@ def test_p2_4_c6_failing_dbt_test_fails_the_build(dbt_executable, spark, tmp_pat
     publish_dbt_marts (all_success) emits nothing. The Airflow side cannot be
     run by dag.test(), see transform/README.md."""
     from pipeline.config.registry import load_source_config
-    from pipeline.config.types import build_schema
+    from pipeline.engine.spark.types import build_schema
     from storage.parquet_lake_writer import ParquetLakeWriter
 
     schema = build_schema(load_source_config(IMDB_CONFIG).reader.columns_type)

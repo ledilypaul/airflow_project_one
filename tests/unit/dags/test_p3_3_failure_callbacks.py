@@ -1,10 +1,11 @@
 """
 P3-3 - failure callbacks of the DAGs.
 
-Every task and every DAG run of the four DAGs reports its failure with
-`utils.failure_alert` (one structured `airflow_failure` line). The DAG files
-import it inside the callback, never at parse time (the DAG processor does
-not have the project root on `sys.path`, see test_p1_4_assets.py).
+Every task and every DAG run of the DAGs reports its failure with
+`utils.failure_alert` (one structured `airflow_failure` line). P5-3: the DAG files
+import it at the top, since they read the project's configs at parse time anyway:
+the minimal-line fallback for a worker without the project is gone with the tests
+of it (C-6).
 
 `spark_read_files` also records the exit code of spark-submit on its
 operator, so the line says which of the job's codes (1 to 6) ended the task.
@@ -12,7 +13,6 @@ operator, so the line says which of the job's codes (1 to 6) ended the task.
 
 import json
 import logging
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,10 +22,18 @@ from airflow.sdk.exceptions import AirflowException, AirflowFailException
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DAGS_FOLDER = PROJECT_ROOT / "dags"
-DAG_IDS = ["list_files_dag", "list_files_dag_classic", "read_file_dag", "transform_dag"]
-# Sentinel of read_file_dag: it fails on purpose when a Spark instance failed,
-# the failing instance has already reported itself.
-SENTINEL = ("read_file_dag", "fail_if_spark_failed")
+DAG_IDS = ["ingest__imdb_movies", "ingest__orders", "ingest__unmatched", "transform_dag"]
+# Sentinel of the ingest DAGs: it fails on purpose when the Spark task failed, the
+# failing task has already reported itself.
+SENTINEL_TASK_ID = "fail_if_spark_failed"
+
+
+@pytest.fixture(autouse=True)
+def _spark_connection(monkeypatch):
+    """`execute` first checks that `spark_default` exists (test_p1_5_spark_submit.py)."""
+    monkeypatch.setenv(
+        "AIRFLOW_CONN_SPARK_DEFAULT", json.dumps({"conn_type": "spark", "host": "local[1]"})
+    )
 
 
 @pytest.fixture(scope="module")
@@ -49,22 +57,22 @@ def test_p3_3_every_task_and_the_dag_report_their_failure(dagbag, dag_id):
     missing = [
         t.task_id
         for t in dag.tasks
-        if not _callbacks(t.on_failure_callback) and (dag_id, t.task_id) != SENTINEL
+        if not _callbacks(t.on_failure_callback) and t.task_id != SENTINEL_TASK_ID
     ]
     assert not missing, f"{dag_id}: tasks without on_failure_callback: {missing}"
 
 
 def test_p3_3_the_sentinel_task_does_not_report_a_second_time(dagbag):
-    task = dagbag.dags["read_file_dag"].get_task("fail_if_spark_failed")
+    task = dagbag.dags["ingest__orders"].get_task(SENTINEL_TASK_ID)
     assert not _callbacks(task.on_failure_callback)
 
 
 def test_p3_3_failure_callbacks_do_not_change_the_retry_policy(dagbag):
     """Callbacks run on the final failure only: no retry is added or removed."""
-    read = dagbag.dags["read_file_dag"]
-    assert read.get_task("spark_read_files").retries == 1
-    assert read.get_task("fail_if_spark_failed").retries == 0
-    assert dagbag.dags["list_files_dag"].get_task("insert_files").retries == 1
+    ingest = dagbag.dags["ingest__orders"]
+    assert ingest.get_task("spark_read_files").retries == 1
+    assert ingest.get_task(SENTINEL_TASK_ID).retries == 0
+    assert ingest.get_task("insert_files").retries == 1
 
 
 @pytest.mark.parametrize("dag_id", DAG_IDS)
@@ -72,7 +80,7 @@ def test_p3_3_callbacks_log_through_utils_failure_alert(dagbag, dag_id, caplog):
     """Calling the DAG's own callbacks with a context ends in the shared
     line: the file's wrapper is wired to the right module and scope."""
     dag = dagbag.dags[dag_id]
-    task = next(t for t in dag.tasks if (dag_id, t.task_id) != SENTINEL)
+    task = next(t for t in dag.tasks if t.task_id != SENTINEL_TASK_ID)
     context = {
         "ti": SimpleNamespace(
             dag_id=dag_id, task_id=task.task_id, run_id="r1", map_index=-1, try_number=1
@@ -134,7 +142,7 @@ class _FakeHook:
 
 
 def _operator(hook):
-    from dags.local_read_file_dag import ReadFilesSparkSubmitOperator
+    from utils.read_files_operator import ReadFilesSparkSubmitOperator
 
     operator = ReadFilesSparkSubmitOperator(
         task_id="spark_read_files",
@@ -148,7 +156,7 @@ def _operator(hook):
 
 @pytest.mark.parametrize("code", [1, 2, 3, 4, 5, 6])
 def test_p3_3_spark_operator_records_the_exit_code(code):
-    from dags.local_read_file_dag import NO_RETRY_EXIT_CODES
+    from utils.read_files_operator import NO_RETRY_EXIT_CODES
 
     operator = _operator(_FakeHook(returncode=code))
     expected = AirflowFailException if code in NO_RETRY_EXIT_CODES else AirflowException
@@ -190,89 +198,13 @@ def test_p3_3_spark_exit_code_reaches_the_failure_line(caplog):
     assert "quality" in record["spark_exit_code_meaning"]
 
 
-# ---------------------------------------------------------------------------
-# C-6 - without the project on sys.path, the callbacks still report
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def dagbag_without_project(monkeypatch):
-    """The DAG files as a DAG processor / a bare worker image sees them: the
-    project root is not on sys.path and no project package is imported (same
-    setup as test_p1_4_dags_parse_without_project_root_on_sys_path)."""
-    import importlib
-    import sys
-
-    root = PROJECT_ROOT.resolve()
-    kept = [p for p in sys.path if Path(p or os.getcwd()).resolve() != root]
-    monkeypatch.setattr(sys, "path", [str(DAGS_FOLDER), *kept])
-    for name in list(sys.modules):
-        if name.split(".")[0] in {"dags", "pipeline", "utils", "storage"}:
-            monkeypatch.delitem(sys.modules, name)
-    importlib.invalidate_caches()
-    with pytest.raises(ModuleNotFoundError):
-        importlib.import_module("utils")
-    bag = DagBag(dag_folder=str(DAGS_FOLDER))
-    assert not bag.import_errors, bag.import_errors
-    return bag
-
-
-def _fallback_records(caplog) -> list[dict]:
+def _failure_records(caplog) -> list[dict]:
     records = []
     for record in caplog.records:
         message = record.getMessage()
         if message.startswith("airflow_failure "):
             records.append(json.loads(message.split(" ", 1)[1]))
     return records
-
-
-@pytest.mark.parametrize("dag_id", DAG_IDS)
-def test_p3_3_c6_callbacks_report_a_minimal_line_when_utils_cannot_be_imported(
-    dagbag_without_project, dag_id, caplog
-):
-    dag = dagbag_without_project.dags[dag_id]
-    task = next(t for t in dag.tasks if (dag_id, t.task_id) != SENTINEL)
-    context = {
-        "ti": SimpleNamespace(dag_id=dag_id, task_id=task.task_id, run_id="r1", map_index=-1),
-        "task": task,
-        "dag": dag,
-        "run_id": "r1",
-        "reason": "task_failure",
-        "exception": RuntimeError("boom"),
-    }
-    caplog.set_level(logging.INFO)
-
-    for callback in _callbacks(task.on_failure_callback):
-        callback(context)  # must not raise
-    for callback in _callbacks(dag.on_failure_callback):
-        callback(context)  # must not raise
-
-    records = _fallback_records(caplog)
-    assert [r["scope"] for r in records] == ["task", "dag_run"], caplog.text
-    for record in records:
-        assert record["dag_id"] == dag_id
-        assert record["run_id"] == "r1"
-    assert records[0]["task_id"] == task.task_id
-    assert records[1]["reason"] == "task_failure"
-    # The exception text is not copied here either (C-2).
-    assert "boom" not in caplog.text
-
-
-@pytest.mark.parametrize("dag_id", DAG_IDS)
-@pytest.mark.parametrize("context", [None, {}, {"ti": None}, "not a mapping"], ids=repr)
-def test_p3_3_c6_the_fallback_never_raises_on_a_bad_context(
-    dagbag_without_project, dag_id, context
-):
-    dag = dagbag_without_project.dags[dag_id]
-    task = next(t for t in dag.tasks if (dag_id, t.task_id) != SENTINEL)
-
-    ours = {"on_task_failure", "on_dag_run_failure"}
-    callbacks = [*_callbacks(task.on_failure_callback), *_callbacks(dag.on_failure_callback)]
-    # Cosmos adds callbacks of its own on some tasks (XCom backup): not ours.
-    callbacks = [c for c in callbacks if getattr(c, "__name__", "") in ours]
-    assert len(callbacks) == 2
-    for callback in callbacks:
-        callback(context)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -303,12 +235,12 @@ def test_p3_3_c7_the_dag_processor_runs_the_dag_level_callback(dagbag, dag_id, c
 
     _execute_dag_callbacks(dagbag, request, structlog.get_logger())
 
-    records = _fallback_records(caplog)  # same parsing as the C-6 test
-    assert records == [
-        {
-            "scope": "dag_run",
-            "dag_id": dag_id,
-            "run_id": "scheduled__2026-11-17",
-            "reason": "timed_out",
-        }
-    ]
+    records = _failure_records(caplog)
+    assert len(records) == 1, caplog.text
+    assert records[0] | {"last_task_id": None} == {
+        "scope": "dag_run",
+        "dag_id": dag_id,
+        "run_id": "scheduled__2026-11-17",
+        "reason": "timed_out",
+        "last_task_id": None,
+    }

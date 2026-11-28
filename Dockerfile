@@ -115,10 +115,14 @@ COPY --chown=airflow:0 pipeline/ /opt/airflow/pipeline/
 COPY --chown=airflow:0 utils/ /opt/airflow/utils/
 COPY --chown=airflow:0 storage/ /opt/airflow/storage/
 COPY --chown=airflow:0 config/ /opt/airflow/config/
+# P5-1: the engine ships no source; this dev image carries the example ones
+# (the kind run). A real deployment mounts or bakes its own config/sources.
+COPY --chown=airflow:0 examples/config/ /opt/airflow/examples/config/
+ENV PIPELINE_CONFIG_ROOT=/opt/airflow/examples/config
 COPY --chown=airflow:0 deploy/airflow/pools.json /opt/airflow/deploy/airflow/pools.json
 
 # Source files are read from the shared volume (mounted at /opt/airflow/shared):
-# config/extractor_config.yaml lists `./data/`, relative to the working directory.
+# config/pipeline.yaml lists `./data/` (default_directories), relative to the working directory.
 RUN ln -s shared/data /opt/airflow/data
 
 # SPARK_HOME: the Spark distribution of the PySpark wheel (bin/spark-submit,

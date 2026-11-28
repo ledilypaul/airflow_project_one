@@ -31,13 +31,3 @@ class ExcelReader:
         except Exception as e:
             log.error("Error reading Excel file '%s': %s", file_path, e)
             raise
-
-    def read_polars(self, file_path: str, file_config: dict = None):
-        import polars as pl  # import local : polars est optionnel
-
-        options = file_config.get("reader_options", {}) if file_config else {}
-        try:
-            return pl.read_excel(file_path, **options)
-        except Exception as e:
-            log.error("Error reading Excel file '%s' with Polars: %s", file_path, e)
-            raise

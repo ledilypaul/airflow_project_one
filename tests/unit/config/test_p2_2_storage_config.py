@@ -23,7 +23,8 @@ import yaml
 from pipeline.config import ConfigError, SourceConfig, SourceRegistry, load_source_config
 
 REPO_CONFIG_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "config"
-REPO_SOURCE_FILES = sorted((REPO_CONFIG_ROOT / "sources").glob("*.yaml"))
+EXAMPLES_CONFIG_ROOT = REPO_CONFIG_ROOT.parent / "examples" / "config"
+REPO_SOURCE_FILES = sorted((EXAMPLES_CONFIG_ROOT / "sources").glob("*.yaml"))
 REPO_DEFAULT_FILES = sorted((REPO_CONFIG_ROOT / "defaults").glob("*.yaml"))
 
 RAW_ONLY = {"format": "parquet", "mode": "overwrite", "raw_path": "raw/"}
@@ -262,10 +263,12 @@ def test_p2_2_dangerous_table_names_are_refused(tmp_path, value):
 
 
 def test_p2_2_source_name_used_as_table_must_be_a_safe_name(tmp_path):
-    message = _error(_config(name="../orders"), tmp_path)
-    assert "table_name" in message
-    # An explicit table_name lifts the constraint on source.name.
-    SourceConfig.model_validate(_config(name="../orders", storage={**RAW_ONLY, "table_name": "o"}))
+    # P5-3: `source.name` is an identifier (`[a-z0-9_]+`, it names the DAG), which is
+    # always a safe table name: refused there, whatever `storage.table_name` says.
+    assert "source.name" in _error(_config(name="../orders"), tmp_path)
+    assert "source.name" in _error(
+        _config(name="../orders", storage={**RAW_ONLY, "table_name": "o"}), tmp_path
+    )
 
 
 @pytest.mark.parametrize("value", ["raw", "raw/", "zones/raw/", "lake-v1.0/raw_zone"])
@@ -299,7 +302,7 @@ def test_p2_2_defaults_land_in_raw_only(config_file):
 
 
 def test_p2_2_dedicated_sources_have_a_staging_zone():
-    registry = SourceRegistry.from_directory(REPO_CONFIG_ROOT)
+    registry = SourceRegistry.from_directory(EXAMPLES_CONFIG_ROOT)
     orders = registry.match("orders_2024.csv")
     assert (orders.raw_target, orders.staging_target) == ("raw/orders", "staging/orders")
     movies = registry.match("IMDB_movies.csv")

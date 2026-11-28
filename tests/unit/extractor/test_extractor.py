@@ -1,111 +1,46 @@
-import os
-import tempfile
+"""Listing d'une source : `pipeline.extractor.extractor` (P5-3, remplace la config
+`extractor_config.yaml`). Les tests P1-6 gardent leur sens : un répertoire absent
+échoue, un répertoire sans correspondance donne `[]`."""
 
 import pytest
-import yaml
 
-from pipeline.extractor.extractor import Extractor  # Import de la classe à tester
-
-
-@pytest.fixture
-def config_file():
-    # Création d'une configuration temporaire pour le test
-    config_content = {
-        "extractor_config": {
-            "source_directories": [],
-            "files_extensions": [".csv", ".json"],
-        }
-    }
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yaml") as tmp:
-        yaml.dump(config_content, tmp)
-        yield tmp.name
-    os.remove(tmp.name)
+from pipeline.extractor.extractor import list_source_files, list_unmatched_files
 
 
 @pytest.fixture
-def temp_directory_with_files():
-    # Création d'un répertoire temporaire
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Création de fichiers temporaires
-        file_paths = [
-            os.path.join(temp_dir, "file1.csv"),
-            os.path.join(temp_dir, "file2.json"),
-            os.path.join(temp_dir, "file3.txt"),  # Ce fichier ne devrait pas être listé
-        ]
-        for file_path in file_paths:
-            with open(file_path, "w") as f:
-                f.write("test data")  # Écriture de contenu de test
-
-        yield temp_dir, file_paths[:2]  # On retourne le répertoire et les fichiers attendus
+def data_dir(tmp_path):
+    directory = tmp_path / "data"
+    directory.mkdir()
+    for name in ("orders_1.csv", "ORDERS_2.CSV", "orders_old.csv", "other.csv", "notes.txt"):
+        (directory / name).write_text("a\n1\n")
+    (directory / "orders_dir.csv").mkdir()  # un répertoire n'est pas un fichier
+    return directory
 
 
-def test_list_files(config_file, temp_directory_with_files):
-    temp_dir, expected_files = temp_directory_with_files
-
-    with open(config_file) as file:
-        config_content = yaml.safe_load(file)
-    config_content["extractor_config"]["source_directories"] = [temp_dir]
-
-    with open(config_file, "w") as file:
-        yaml.dump(config_content, file)
-    extractor = Extractor(config_file)
-
-    listed_files = extractor.list_files()
-    assert sorted(listed_files) == sorted(expected_files), (
-        f"Les fichiers listés {listed_files} ne correspondent pas "
-        f"aux fichiers attendus {expected_files}"
-    )
+def _names(paths):
+    return [p.rsplit("/", 1)[-1] for p in paths]
 
 
-def test_check_integrity_files(config_file, temp_directory_with_files):
-    temp_dir, expected_files = temp_directory_with_files
-
-    with open(config_file) as file:
-        config_content = yaml.safe_load(file)
-    config_content["extractor_config"]["source_directories"] = [temp_dir]
-
-    with open(config_file, "w") as file:
-        yaml.dump(config_content, file)
-    extractor = Extractor(config_file)
-
-    listed_files = extractor.check_integrity_files(temp_directory_with_files[1])
-    assert sorted(listed_files) == sorted(expected_files), (
-        f"Les fichiers listés {listed_files} ne correspondent pas "
-        f"aux fichiers attendus {expected_files}"
-    )
+def test_p5_3_lists_names_matching_the_patterns_case_insensitively(data_dir):
+    files = list_source_files([str(data_dir)], ["orders_*.csv"])
+    assert _names(files) == ["ORDERS_2.CSV", "orders_1.csv", "orders_old.csv"]
 
 
-# ---------------------------------------------------------------------------
-# P1-6 / C-1 — a missing source directory must fail loudly, not look "empty".
-#
-# Since P1-6, an empty listing makes the insertion task skip (green run).
-# A configured directory that does not exist (typo, unmounted volume, other
-# working directory on the worker) must therefore raise instead of silently
-# producing [], otherwise a deployment failure turns into a green run.
-# ---------------------------------------------------------------------------
+def test_p5_3_exclude_removes_names(data_dir):
+    files = list_source_files([str(data_dir)], ["orders_*.csv"], exclude=["*_OLD.csv"])
+    assert _names(files) == ["ORDERS_2.CSV", "orders_1.csv"]
 
 
-def _make_extractor(tmp_path, source_directories, extensions=(".csv",)):
-    config_path = tmp_path / "extractor_config.yaml"
-    config_path.write_text(
-        yaml.dump(
-            {
-                "extractor_config": {
-                    "source_directories": [str(d) for d in source_directories],
-                    "files_extensions": list(extensions),
-                }
-            }
-        )
-    )
-    return Extractor(str(config_path))
+def test_p5_3_unmatched_files_are_the_ones_no_source_claims(data_dir):
+    files = list_unmatched_files([str(data_dir)], ["orders_*.csv"], ["*.csv", "*.parquet"])
+    assert _names(files) == ["other.csv"]
 
 
 def test_p1_6_list_files_raises_on_missing_directory(tmp_path):
     missing = tmp_path / "does_not_exist"
-    extractor = _make_extractor(tmp_path, [missing])
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        extractor.list_files()
+        list_source_files([str(missing)], ["*.csv"])
 
     message = str(exc_info.value)
     assert str(missing) in message
@@ -114,10 +49,9 @@ def test_p1_6_list_files_raises_on_missing_directory(tmp_path):
 
 def test_p1_6_list_files_reports_resolved_path_for_relative_directory(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    extractor = _make_extractor(tmp_path, ["./no_such_data/"])
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        extractor.list_files()
+        list_source_files(["./no_such_data/"], ["*.csv"])
 
     message = str(exc_info.value)
     assert "./no_such_data/" in message
@@ -130,10 +64,9 @@ def test_p1_6_list_files_reports_only_missing_directories(tmp_path):
     (existing / "file.csv").write_text("a,b\n1,2\n")
     missing_1 = tmp_path / "missing_one"
     missing_2 = tmp_path / "missing_two"
-    extractor = _make_extractor(tmp_path, [existing, missing_1, missing_2])
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        extractor.list_files()
+        list_source_files([str(existing), str(missing_1), str(missing_2)], ["*.csv"])
 
     message = str(exc_info.value)
     assert str(missing_1) in message
@@ -142,17 +75,9 @@ def test_p1_6_list_files_reports_only_missing_directories(tmp_path):
 
 
 def test_p1_6_list_files_returns_empty_list_when_directory_has_no_match(tmp_path):
-    existing = tmp_path / "existing"
-    existing.mkdir()
-    (existing / "notes.txt").write_text("not a csv")
-    extractor = _make_extractor(tmp_path, [existing])
-
-    assert extractor.list_files() == []
+    (tmp_path / "notes.txt").write_text("not a csv")
+    assert list_source_files([str(tmp_path)], ["*.csv"]) == []
 
 
 def test_p1_6_list_files_returns_empty_list_for_empty_directory(tmp_path):
-    existing = tmp_path / "empty"
-    existing.mkdir()
-    extractor = _make_extractor(tmp_path, [existing])
-
-    assert extractor.list_files() == []
+    assert list_source_files([str(tmp_path)], ["*.csv"]) == []

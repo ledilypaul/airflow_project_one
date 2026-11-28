@@ -115,8 +115,8 @@ def test_p3_3_unknown_or_missing_spark_exit_code():
 def test_p3_3_job_exit_codes_match_the_job_and_the_dag():
     """The DAG and `utils` do not import the job (pyspark): its codes are
     duplicated, and must stay equal. Exit 0 is success, never a failure."""
-    from dags.local_read_file_dag import NO_RETRY_EXIT_CODES
     from pipeline.jobs import read_files_job as job
+    from utils.read_files_operator import NO_RETRY_EXIT_CODES
 
     assert (
         set(JOB_EXIT_CODES)

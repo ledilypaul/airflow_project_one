@@ -3,7 +3,7 @@ from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
 
-from pipeline.config import DEFAULT_CONFIG_ROOT, SourceConfig, SourceRegistry
+from pipeline.config import DEFAULT_CONFIG_ROOT, ConfigError, SourceConfig, SourceRegistry
 from utils.path_utils import normalize_spark_path
 
 from .reader_factory import ReaderFactory
@@ -53,6 +53,13 @@ class BaseFileReader:
         et la passe : la même sert à la lecture et à l'écriture (P2-2 / C-8)."""
         if config is None:
             config = self.get_config(file_path)
+        if config.engine != "spark":
+            # Transitoire : le moteur Polars arrive en P5-7. Sans ce refus, les
+            # options Polars partiraient dans `DataFrameReader.option`.
+            raise ConfigError(
+                f"{file_path}: la source {config.source.name!r} déclare le moteur "
+                f"{config.engine!r}, que ce job (Spark) ne sait pas exécuter"
+            )
         log.info("%s: source %r (format %s)", file_path, config.source.name, config.source.format)
         reader_instance = ReaderFactory.get_reader(config.source.format, self.spark)
         return reader_instance.read(normalize_spark_path(file_path), config)

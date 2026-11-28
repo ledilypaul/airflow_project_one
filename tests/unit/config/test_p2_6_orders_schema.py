@@ -29,7 +29,7 @@ from pipeline.config import load_source_config
 from pipeline.file_reader.base_reader import BaseFileReader
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-ORDERS_YAML = PROJECT_ROOT / "config" / "sources" / "orders.yaml"
+ORDERS_YAML = PROJECT_ROOT / "examples" / "config" / "sources" / "orders.yaml"
 
 # Same bytes as data/orders_sample.csv (UTF-8, LF, accented name).
 SAMPLE = (
@@ -71,7 +71,7 @@ def test_p2_6_repo_orders_checks_are_warnings():
 def _read(spark, tmp_path: Path, name: str, content: str):
     path = tmp_path / name
     path.write_bytes(content.encode("utf-8"))
-    reader = BaseFileReader(spark)
+    reader = BaseFileReader(spark, config_path=PROJECT_ROOT / "examples" / "config")
     assert reader.get_config(str(path)).source.name == "orders"
     return reader.read_file(str(path))
 

@@ -17,8 +17,10 @@ Tout est matérialisé en **table**, dans le schéma `main` du fichier DuckDB
 - **Contrats.** `stg_movies__current` et `stg_orders__current` ont un contrat imposé (colonnes et
   types de leur source, alignés sur le `columns_type` de `imdb.yaml` et `orders.yaml`). Raison :
   `union_by_name` élargit une colonne au type le plus large de **tous** les instantanés, anciens
-  compris, ce qui ferait dériver les types sans contrat. Un test vérifie que chaque table du lake
-  déclare un `columns_type`.
+  compris, ce qui ferait dériver les types sans contrat. Une table sans `columns_type` n'a pas de
+  modèle généré.
+- **Génération.** Les sources dbt et les modèles `stg_*__current` sont écrits par `make dbt-codegen`
+  depuis les YAML (voir [](../configuration/sources.md)), jamais à la main.
 - **Table vide.** Les modèles lisent le lake par la macro `lake_staging()`, pas par `source()`.
   Quand une table n'a encore aucun fichier (aucune commande lue par exemple), la macro renvoie une
   relation vide typée par les colonnes déclarées, au lieu de l'erreur de DuckDB sur un motif sans
