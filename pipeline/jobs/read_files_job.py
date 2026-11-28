@@ -102,10 +102,7 @@ the JVM), and only then the files.
 """
 
 import logging
-import os
 import sys
-import threading
-import time
 from pathlib import Path
 
 # airflow-project-one est installé en mode éditable (`uv sync`), donc
@@ -129,6 +126,7 @@ try:
         final_exit_code,
         parse_args,
         run,
+        start_parent_watchdog,
     )
     from storage.parquet_lake_writer import ParquetLakeWriter
     from utils.spark_session import get_spark_session
@@ -148,6 +146,7 @@ except ModuleNotFoundError:
         final_exit_code,
         parse_args,
         run,
+        start_parent_watchdog,
     )
     from storage.parquet_lake_writer import ParquetLakeWriter
     from utils.spark_session import get_spark_session
@@ -171,46 +170,6 @@ log = logging.getLogger(__name__)
 # Root of the reading configs (`sources/`, `defaults/`); a module attribute so
 # that tests can point it at a temporary directory.
 CONFIG_ROOT = DEFAULT_CONFIG_ROOT
-
-
-def start_parent_watchdog(interval: float = 1.0) -> threading.Thread:
-    """Exit the process with `EXIT_PARENT_GONE` as soon as its parent dies.
-
-    P1-5 / C-1: in local/client mode `spark-submit` execs a JVM that starts
-    this script as its child. When Airflow kills the task (timeout, "mark
-    success/failed", dagrun_timeout...), `SparkSubmitHook.on_kill` sends
-    SIGKILL to the spark-submit PID only: the JVM dies but this Python driver
-    would keep running, re-parented, outside Airflow's control (pool slot
-    released, `failed` written for the remaining files while a retry runs).
-
-    A daemon thread records `os.getppid()` and checks every `interval`
-    seconds that it has not changed: once the parent is gone the process is
-    re-parented (to init or a subreaper) and its ppid changes for good. It
-    then logs an error and calls `os._exit` (no cleanup, no `finally`, no
-    status written to file_list: a retry of the run reprocesses every file
-    of the run id idempotently, P1-3). Run directly from a shell, the parent
-    is that shell: closing it stops the job the same way.
-    """
-    parent_pid = os.getppid()
-
-    def _watch() -> None:
-        while True:
-            time.sleep(interval)
-            if os.getppid() != parent_pid:
-                try:
-                    log.error(
-                        "parent process (pid %d) is gone: spark-submit was killed (Airflow "
-                        "task killed or timed out?). Exiting with code %d without updating "
-                        "file_list; a retry of the run reprocesses its files.",
-                        parent_pid,
-                        EXIT_PARENT_GONE,
-                    )
-                finally:
-                    os._exit(EXIT_PARENT_GONE)
-
-    thread = threading.Thread(target=_watch, name="parent-watchdog", daemon=True)
-    thread.start()
-    return thread
 
 
 def create_spark_engine(registry: SourceRegistry, lake_root: str) -> SparkEngine:

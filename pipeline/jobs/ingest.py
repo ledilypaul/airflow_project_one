@@ -10,6 +10,8 @@ import argparse
 import logging
 import os
 import sys
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
@@ -26,16 +28,57 @@ from pipeline.quality.results import (
     short_error,
 )
 from storage.lake_root import LakeRootError, resolve_lake_root
+from utils.exit_codes import (
+    EXIT_FILES_FAILED,
+    EXIT_INVALID_CONFIG,
+    EXIT_INVALID_RUN_ID,
+    EXIT_NO_ROWS,
+    EXIT_PARENT_GONE,
+    EXIT_QUALITY_FAILED,
+)
 from utils.functions_utils import list_file_from_db, update_file_status
 
 log = logging.getLogger(__name__)
 
-EXIT_FILES_FAILED = 1
-EXIT_INVALID_RUN_ID = 2
-EXIT_NO_ROWS = 3
-EXIT_PARENT_GONE = 4
-EXIT_INVALID_CONFIG = 5
-EXIT_QUALITY_FAILED = 6
+
+def start_parent_watchdog(interval: float = 1.0) -> threading.Thread:
+    """Exit the process with `EXIT_PARENT_GONE` as soon as its parent dies.
+
+    P1-5 / C-1: in local/client mode `spark-submit` execs a JVM that starts
+    this script as its child. When Airflow kills the task (timeout, "mark
+    success/failed", dagrun_timeout...), `SparkSubmitHook.on_kill` sends
+    SIGKILL to the spark-submit PID only: the JVM dies but this Python driver
+    would keep running, re-parented, outside Airflow's control (pool slot
+    released, `failed` written for the remaining files while a retry runs).
+
+    A daemon thread records `os.getppid()` and checks every `interval`
+    seconds that it has not changed: once the parent is gone the process is
+    re-parented (to init or a subreaper) and its ppid changes for good. It
+    then logs an error and calls `os._exit` (no cleanup, no `finally`, no
+    status written to file_list: a retry of the run reprocesses every file
+    of the run id idempotently, P1-3). Run directly from a shell, the parent
+    is that shell: closing it stops the job the same way.
+    """
+    parent_pid = os.getppid()
+
+    def _watch() -> None:
+        while True:
+            time.sleep(interval)
+            if os.getppid() != parent_pid:
+                try:
+                    log.error(
+                        "parent process (pid %d) is gone: spark-submit or the Airflow task "
+                        "was killed (timeout?). Exiting with code %d without updating "
+                        "file_list; a retry of the run reprocesses its files.",
+                        parent_pid,
+                        EXIT_PARENT_GONE,
+                    )
+                finally:
+                    os._exit(EXIT_PARENT_GONE)
+
+    thread = threading.Thread(target=_watch, name="parent-watchdog", daemon=True)
+    thread.start()
+    return thread
 
 
 def write_to_lake(

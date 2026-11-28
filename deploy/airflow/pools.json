@@ -8,5 +8,10 @@
     "slots": 1,
     "description": "dbt tasks of transform_dag: DuckDB accepts a single writer per database file, see transform/README.md",
     "include_deferred": false
+  },
+  "polars": {
+    "slots": 1,
+    "description": "Polars jobs (subprocess) of the ingest__<source> DAGs of an engine: polars source, see CLAUDE.md",
+    "include_deferred": false
   }
 }

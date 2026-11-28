@@ -5,6 +5,8 @@ DAG factory (P5-3): one DAG `ingest__<source>` per YAML of `config/sources/`, pl
     list_files -> insert_files -> spark_read_files -> publish_lake_staging
                                                    \\-> fail_if_spark_failed
 
+    (`polars_read_files` and `fail_if_polars_failed` for a source `engine: polars`)
+
 - `list_files`: the files of `listing.directories` (default: `default_directories`
   of `pipeline.yaml`) whose name matches `source.patterns`, minus `listing.exclude`.
   A missing directory fails the task: it is a deployment problem, not an empty
@@ -15,8 +17,10 @@ DAG factory (P5-3): one DAG `ingest__<source>` per YAML of `config/sources/`, pl
   (no red run, no useless retry). Returns the arguments of the Spark job.
 - `spark_read_files`: `ReadFilesSparkSubmitOperator` (utils/read_files_operator.py),
   one application per run, in the `spark` pool. The job reads the rows of
-  (run id, source name) and writes the lake. The engine (`source.engine`) is not yet
-  consulted: Polars runs in Airflow with P5-8.
+  (run id, source name) and writes the lake. For a source `engine: polars` (P5-8),
+  `polars_read_files` runs the Polars job in a subprocess instead, in the `polars`
+  pool, with the same exit codes and the same retry rule (utils/polars_task.py).
+  `ingest__unmatched` uses the engine default (`PIPELINE_DEFAULT_ENGINE`).
 - `publish_lake_staging` (sources with a `staging_path` only): emits the Asset
   `lake_staging__<source>` when at least one file of the run is `processed`
   (`all_done`: one file failing for good must not block dbt forever). `transform_dag`
@@ -50,8 +54,10 @@ from typing import Any
 from airflow.sdk import DAG, Asset, TriggerRule, task
 
 from pipeline.config import SourceConfig, SourceRegistry, default_config_root, default_directories
+from pipeline.config.engine import default_engine
 from pipeline.config.models import UNMATCHED_SOURCE
 from utils.failure_alert import log_dag_run_failure, log_task_failure
+from utils.polars_task import POLARS_POOL, POLARS_TASK_ID, run_polars_job
 from utils.read_files_operator import (
     JOB_PATH,
     SPARK_CONN_ID,
@@ -149,19 +155,47 @@ def count_run_processed_files(run_id: str, source_name: str) -> int:
     return functions_utils.count_processed_files([run_id], source_name=source_name)
 
 
-def _add_spark_tasks(
-    dag: DAG, listed: Any, source_name: str, asset_name: str | None, spark_settings: dict[str, Any]
+def _add_read_tasks(
+    dag: DAG,
+    listed: Any,
+    source_name: str,
+    asset_name: str | None,
+    spark_settings: dict[str, Any],
+    *,
+    engine: str,
+    targets: list[str],
 ) -> None:
-    """`insert_files` -> `spark_read_files` -> publish / guard, after the `listed` task."""
+    """`insert_files` -> the read task of `engine` -> publish / guard, after the
+    `listed` task. `targets`: the lake tables the job writes (Polars lineage)."""
 
     @task(task_id="insert_files")
     def insert_files(file_list: list[str]) -> list[str]:
         return insert_listed_files(file_list, source_name)
 
-    spark_read_files = ReadFilesSparkSubmitOperator(
+    if engine == "polars":
+
+        @task(task_id=POLARS_TASK_ID, pool=POLARS_POOL)
+        def polars_read_files(application_args: list[str], source_files: list[str]) -> None:
+            from airflow.sdk import get_current_context
+
+            run_polars_job(
+                application_args,
+                source_files=source_files,
+                targets=targets,
+                task=get_current_context()["task"],
+            )
+
+        read_files = polars_read_files(insert_files(listed), listed)
+    else:
+        read_files = _spark_read_files(insert_files(listed), spark_settings)
+    _add_guard_and_publish(read_files, engine, source_name, asset_name)
+
+
+def _spark_read_files(application_args: Any, spark_settings: dict[str, Any]) -> Any:
+    return ReadFilesSparkSubmitOperator(
         task_id="spark_read_files",
         application=str(JOB_PATH),
-        application_args=insert_files(listed),
+        application_args=application_args,
         conn_id=SPARK_CONN_ID,
         pool=SPARK_POOL,
         # Added to the worker's environment in local/client mode (PATH, JAVA_HOME,
@@ -174,23 +208,27 @@ def _add_spark_tasks(
         pre_execute=prepare_spark_lineage,
     )
 
-    # on_failure_callback=None: the failed spark_read_files has already reported
+
+def _add_guard_and_publish(
+    read_files: Any, engine: str, source_name: str, asset_name: str | None
+) -> None:
+    # on_failure_callback=None: the failed read task has already reported
     # itself, and the DAG-level callback reports the run (P3-3).
     @task(
-        task_id="fail_if_spark_failed",
+        task_id=f"fail_if_{engine}_failed",
         trigger_rule=TriggerRule.ONE_FAILED,
         retries=0,
         on_failure_callback=None,
     )
-    def fail_if_spark_failed() -> None:
+    def fail_if_read_failed() -> None:
         from airflow.sdk.exceptions import AirflowFailException
 
         raise AirflowFailException(
-            "at least one spark_read_files instance failed or did not run: the run fails "
+            f"at least one {engine}_read_files instance failed or did not run: the run fails "
             "(`lake_staging__<source>` was emitted only if some file was processed)"
         )
 
-    spark_read_files >> fail_if_spark_failed()
+    read_files >> fail_if_read_failed()
     if asset_name is None:
         return
 
@@ -211,7 +249,7 @@ def _add_spark_tasks(
         log.info("%d processed file(s): emitting the `%s` asset", processed, asset_name)
         return processed
 
-    spark_read_files >> publish_lake_staging()
+    read_files >> publish_lake_staging()
 
 
 def _new_dag(
@@ -263,7 +301,18 @@ def build_source_dag(
             log.info("Found %d file(s) for source %r in %s", len(files), name, directories)
             return files
 
-        _add_spark_tasks(dag, list_files(), name, config.staging_asset_name, spark_settings)
+        targets = [config.raw_target, config.staging_target]
+        if config.quality is not None:
+            targets.append(config.quality_target)
+        _add_read_tasks(
+            dag,
+            list_files(),
+            name,
+            config.staging_asset_name,
+            spark_settings,
+            engine=config.engine,
+            targets=[t for t in targets if t is not None],
+        )
     # Airflow checks the schedule (`99 99 * * *`) here, not when the DAG is created:
     # raised later, by the DagBag, it would be an import error of the whole file.
     dag.validate()
@@ -294,7 +343,15 @@ def build_unmatched_dag(
             log.info("Found %d file(s) matching no source in %s", len(files), default_dirs)
             return files
 
-        _add_spark_tasks(dag, list_files(), UNMATCHED_SOURCE, None, spark_settings)
+        _add_read_tasks(
+            dag,
+            list_files(),
+            UNMATCHED_SOURCE,
+            None,
+            spark_settings,
+            engine=default_engine(),
+            targets=[loaded.config.raw_target for loaded in registry.defaults],
+        )
     return dag
 
 
