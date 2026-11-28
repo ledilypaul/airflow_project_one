@@ -156,7 +156,6 @@ def count_run_processed_files(run_id: str, source_name: str) -> int:
 
 
 def _add_read_tasks(
-    dag: DAG,
     listed: Any,
     source_name: str,
     asset_name: str | None,
@@ -175,10 +174,10 @@ def _add_read_tasks(
     if engine == "polars":
 
         @task(task_id=POLARS_TASK_ID, pool=POLARS_POOL)
-        def polars_read_files(application_args: list[str], source_files: list[str]) -> None:
+        def polars_read_files(application_args: list[str], source_files: list[str]) -> int:
             from airflow.sdk import get_current_context
 
-            run_polars_job(
+            return run_polars_job(
                 application_args,
                 source_files=source_files,
                 targets=targets,
@@ -305,7 +304,6 @@ def build_source_dag(
         if config.quality is not None:
             targets.append(config.quality_target)
         _add_read_tasks(
-            dag,
             list_files(),
             name,
             config.staging_asset_name,
@@ -344,7 +342,6 @@ def build_unmatched_dag(
             return files
 
         _add_read_tasks(
-            dag,
             list_files(),
             UNMATCHED_SOURCE,
             None,

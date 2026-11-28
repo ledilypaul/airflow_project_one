@@ -48,8 +48,8 @@ def run_polars_job(
     source_files: Iterable[str] = (),
     targets: Iterable[str] = (),
     task: Any = None,
-) -> None:
-    """Lance le job Polars et applique la règle des codes de sortie."""
+) -> int:
+    """Lance le job Polars et applique la règle des codes de sortie ; 0 s'il réussit."""
     from airflow.sdk.exceptions import AirflowException, AirflowFailException
 
     command = job_command(application_args)
@@ -72,7 +72,7 @@ def run_polars_job(
     if task is not None:
         task.polars_exit_code = code
     if code == 0:
-        return
+        return code
     meaning = MEANINGS.get(code)
     if code in NO_RETRY:
         raise AirflowFailException(
