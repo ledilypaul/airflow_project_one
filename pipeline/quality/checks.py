@@ -47,7 +47,6 @@ qu'une erreur n'emporte pas les autres.
 Ce module ne doit pas importer Airflow : le job Spark le charge.
 """
 
-import difflib
 import logging
 from collections.abc import Iterable, Sequence
 from functools import reduce
@@ -73,8 +72,6 @@ from pipeline.config.quality import (
     QualityCheck,
     RangeCheck,
     RegexCheck,
-    RowCountCheck,
-    UniqueCheck,
 )
 from pipeline.quality import results as neutral
 from pipeline.quality.results import (
@@ -85,8 +82,11 @@ from pipeline.quality.results import (
     CheckResult,
     QualityChecksError,
     QualityChecksFailed,
+    as_text,
     blocking_failures,
+    evaluate_checks,
     failure_summary,
+    missing_column_error,
     result_rows,
     short_error,
 )
@@ -134,35 +134,13 @@ def run_quality_checks(data: DataFrame, checks: Sequence[QualityCheck]) -> list[
     devrait être en cache (plusieurs actions) : c'est à l'appelant de le
     faire, il sait s'il le réutilise ensuite.
     """
-    checks = list(checks)
-    errors: dict[int, str] = {}
-    conditions: dict[int, Column] = {}
-    unique_keys: dict[int, list[Column]] = {}
-    for index, check in enumerate(checks):
-        try:
-            if isinstance(check, UniqueCheck):
-                unique_keys[index] = [_column(data, name) for name in check.columns]
-            elif not isinstance(check, RowCountCheck):
-                conditions[index] = _failing_row_condition(data, check)
-        except Exception as exc:  # noqa: BLE001 - C-1 : un contrôle n'arrête pas les autres
-            errors[index] = short_error(exc)
-
-    total, counts = _aggregate(data, conditions, errors)
-    if total is None:
-        for index, check in enumerate(checks):
-            if isinstance(check, RowCountCheck):
-                errors.setdefault(index, errors.get(-1, "row count failed"))
-
-    for index, keys in unique_keys.items():
-        try:
-            counts[index] = _duplicated_rows(data, keys)
-        except Exception as exc:  # noqa: BLE001 - un contrôle n'arrête pas les autres
-            errors[index] = short_error(exc)
-
-    return [
-        _result(check, counts.get(index), total, errors.get(index))
-        for index, check in enumerate(checks)
-    ]
+    return evaluate_checks(
+        checks,
+        condition=lambda check: _failing_row_condition(data, check),
+        key=lambda name: _column(data, name),
+        aggregate=lambda conditions, errors: _aggregate(data, conditions, errors),
+        duplicated_rows=lambda keys: _duplicated_rows(data, keys),
+    )
 
 
 def results_dataframe(
@@ -180,18 +158,9 @@ def results_dataframe(
 def _column(data: DataFrame, name: str) -> Column:
     """La colonne `name`, nom exact ; erreur claire si elle est absente."""
     if name not in data.columns:
-        same_case = [c for c in data.columns if c.casefold() == name.casefold()]
-        hint = same_case or difflib.get_close_matches(name, data.columns, n=1, cutoff=0.6)
-        suggestion = f" (did you mean {hint[0]!r}?)" if hint else ""
-        raise _CheckError(f"check error: column {name!r} not found in the data{suggestion}")
+        raise _CheckError(missing_column_error(name, data.columns))
     # Backquotes : `a.b` est un nom de colonne, pas le champ b d'une struct a.
     return F.col("`" + name.replace("`", "``") + "`")
-
-
-def _as_text(value: bool | int | str) -> str:
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
 
 
 def _failing_row_condition(data: DataFrame, check: QualityCheck) -> Column:
@@ -201,7 +170,7 @@ def _failing_row_condition(data: DataFrame, check: QualityCheck) -> Column:
     if isinstance(check, NotNullCheck):
         return column.isNull()
     if isinstance(check, AcceptedValuesCheck):
-        accepted = [_as_text(v) for v in check.values]
+        accepted = [as_text(v) for v in check.values]
         return column.isNotNull() & ~column.cast("string").isin(accepted)
     if isinstance(check, RangeCheck):
         data_type = data.schema[check.column].dataType
@@ -325,44 +294,3 @@ def _duplicated_rows(data: DataFrame, keys: list[Column]) -> int:
         .first()[0]
     )
     return int(duplicated or 0)
-
-
-# ---------------------------------------------------------------------------
-# Résultats
-# ---------------------------------------------------------------------------
-
-
-def _rows(count: int) -> str:
-    return f"{count} row" if count == 1 else f"{count} rows"
-
-
-def _result(
-    check: QualityCheck, failed: int | None, total: int | None, error: str | None
-) -> CheckResult:
-    if error is not None:
-        if not error.startswith("check error:"):
-            error = f"check error: {error}"
-        return CheckResult(check, ERROR, None, total, error)
-
-    if isinstance(check, RowCountCheck):
-        too_few = check.min is not None and total < check.min
-        too_many = check.max is not None and total > check.max
-        if not (too_few or too_many):
-            return CheckResult(check, PASS, None, total, None)
-        if check.min is not None and check.max is not None:
-            expected = f"between {check.min} and {check.max}"
-        elif check.min is not None:
-            expected = f">= {check.min}"
-        else:
-            expected = f"<= {check.max}"
-        message = f"{_rows(total)}, expected {expected}"
-        return CheckResult(check, _failed_status(check), None, total, message)
-
-    failed = int(failed)
-    if failed == 0:
-        return CheckResult(check, PASS, 0, total, None)
-    return CheckResult(check, _failed_status(check), failed, total, _rows(failed))
-
-
-def _failed_status(check: QualityCheck) -> str:
-    return WARN if check.severity == "warn" else FAIL
