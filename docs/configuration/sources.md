@@ -101,8 +101,9 @@ les options de `reader.options` et la syntaxe des regex qualité. Il s'applique 
 repli par extension compris.
 
 :::{note}
-Seul Spark exécute des fichiers aujourd'hui : le moteur Polars arrive avec le backlog P5-7. Une
-source `engine: polars` se valide et se charge, mais le job Spark marque ses fichiers `failed`
+Seul Spark exécute des fichiers aujourd'hui. Le moteur Polars arrive par étapes avec le backlog
+P5-7 : sa lecture existe (`pipeline/engine/polars/reader.py`), mais aucun job ne l'appelle encore.
+Une source `engine: polars` se valide et se charge, mais le job Spark marque ses fichiers `failed`
 (`la source ... déclare le moteur 'polars'`). Elle ne change rien pour les sources Spark.
 :::
 
@@ -166,6 +167,14 @@ Les types sont **neutres**, communs à tous les moteurs ; la table de `pipeline/
 
 Une colonne d'identifiants qui dépasse 2³¹ se déclare `long` (`int` reste sur 32 bits). La
 conversion en objets de moteur se fait dans le moteur (`pipeline/engine/spark/types.py`).
+
+**Même résultat avec les deux moteurs.** Avec Polars, le fichier est lu en texte puis converti
+selon les règles de Spark : une valeur non convertible devient null, `""` devient null, un `double`
+accepte des espaces autour, `NaN` et `Infinity` mais pas `nan`, une `date` accepte `2026-11` ou
+une heure à la suite. Un `timestamp` sans décalage est pris en **UTC** (Spark le prend dans le
+fuseau de sa session). Sont lus null par Polars, mais pas par Spark : les nombres hexadécimaux, les
+années hors de 4 chiffres et les fuseaux nommés (`UTC`, `Europe/Paris`). Polars compare toujours
+l'en-tête aux colonnes déclarées, comme Spark avec `enforceSchema: false`.
 
 Seuls les types **atomiques** sont acceptés : le lecteur CSV de Spark ne sait pas lire un tableau, une map ni une
 structure. Une colonne de liste comme `genre_list` (IMDB) est donc lue en `string`, puis découpée
