@@ -72,8 +72,6 @@ from pipeline.config.quality import (
     QualityCheck,
     RangeCheck,
     RegexCheck,
-    RowCountCheck,
-    UniqueCheck,
 )
 from pipeline.quality import results as neutral
 from pipeline.quality.results import (
@@ -86,7 +84,7 @@ from pipeline.quality.results import (
     QualityChecksFailed,
     as_text,
     blocking_failures,
-    check_result,
+    evaluate_checks,
     failure_summary,
     missing_column_error,
     result_rows,
@@ -136,35 +134,13 @@ def run_quality_checks(data: DataFrame, checks: Sequence[QualityCheck]) -> list[
     devrait être en cache (plusieurs actions) : c'est à l'appelant de le
     faire, il sait s'il le réutilise ensuite.
     """
-    checks = list(checks)
-    errors: dict[int, str] = {}
-    conditions: dict[int, Column] = {}
-    unique_keys: dict[int, list[Column]] = {}
-    for index, check in enumerate(checks):
-        try:
-            if isinstance(check, UniqueCheck):
-                unique_keys[index] = [_column(data, name) for name in check.columns]
-            elif not isinstance(check, RowCountCheck):
-                conditions[index] = _failing_row_condition(data, check)
-        except Exception as exc:  # noqa: BLE001 - C-1 : un contrôle n'arrête pas les autres
-            errors[index] = short_error(exc)
-
-    total, counts = _aggregate(data, conditions, errors)
-    if total is None:
-        for index, check in enumerate(checks):
-            if isinstance(check, RowCountCheck):
-                errors.setdefault(index, errors.get(-1, "row count failed"))
-
-    for index, keys in unique_keys.items():
-        try:
-            counts[index] = _duplicated_rows(data, keys)
-        except Exception as exc:  # noqa: BLE001 - un contrôle n'arrête pas les autres
-            errors[index] = short_error(exc)
-
-    return [
-        check_result(check, counts.get(index), total, errors.get(index))
-        for index, check in enumerate(checks)
-    ]
+    return evaluate_checks(
+        checks,
+        condition=lambda check: _failing_row_condition(data, check),
+        key=lambda name: _column(data, name),
+        aggregate=lambda conditions, errors: _aggregate(data, conditions, errors),
+        duplicated_rows=lambda keys: _duplicated_rows(data, keys),
+    )
 
 
 def results_dataframe(

@@ -23,13 +23,11 @@ from pipeline.config.quality import (
     QualityCheck,
     RangeCheck,
     RegexCheck,
-    RowCountCheck,
-    UniqueCheck,
 )
 from pipeline.quality.results import (
     CheckResult,
     as_text,
-    check_result,
+    evaluate_checks,
     missing_column_error,
     short_error,
 )
@@ -54,36 +52,14 @@ class _CheckError(Exception):
 
 def run_quality_checks(data: pl.LazyFrame, checks: Sequence[QualityCheck]) -> list[CheckResult]:
     """Exécute `checks` sur `data` ; un résultat par contrôle, dans l'ordre."""
-    checks = list(checks)
     schema = data.collect_schema()
-    errors: dict[int, str] = {}
-    conditions: dict[int, pl.Expr] = {}
-    unique_keys: dict[int, list[str]] = {}
-    for index, check in enumerate(checks):
-        try:
-            if isinstance(check, UniqueCheck):
-                unique_keys[index] = [_column(schema, name) for name in check.columns]
-            elif not isinstance(check, RowCountCheck):
-                conditions[index] = _failing_row_condition(schema, check)
-        except Exception as exc:  # noqa: BLE001 - un contrôle n'arrête pas les autres
-            errors[index] = short_error(exc)
-
-    total, counts = _aggregate(data, conditions, errors)
-    if total is None:
-        for index, check in enumerate(checks):
-            if isinstance(check, RowCountCheck):
-                errors.setdefault(index, errors.get(-1, "row count failed"))
-
-    for index, keys in unique_keys.items():
-        try:
-            counts[index] = _duplicated_rows(data, keys)
-        except Exception as exc:  # noqa: BLE001
-            errors[index] = short_error(exc)
-
-    return [
-        check_result(check, counts.get(index), total, errors.get(index))
-        for index, check in enumerate(checks)
-    ]
+    return evaluate_checks(
+        checks,
+        condition=lambda check: _failing_row_condition(schema, check),
+        key=lambda name: _column(schema, name),
+        aggregate=lambda conditions, errors: _aggregate(data, conditions, errors),
+        duplicated_rows=lambda keys: _duplicated_rows(data, keys),
+    )
 
 
 def polars_regex_problems(configs: Iterable[tuple[object, object]]) -> list[str]:

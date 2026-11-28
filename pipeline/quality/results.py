@@ -2,12 +2,12 @@
 et schéma Arrow de `quality/<table>`. Les moteurs importent d'ici."""
 
 import difflib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import pyarrow as pa
 
-from pipeline.config.quality import QualityCheck, RowCountCheck
+from pipeline.config.quality import QualityCheck, RowCountCheck, UniqueCheck
 
 PASS = "pass"
 FAIL = "fail"
@@ -189,3 +189,47 @@ def check_result(
 
 def _failed_status(check: QualityCheck) -> str:
     return WARN if check.severity == "warn" else FAIL
+
+
+def evaluate_checks(
+    checks: Sequence[QualityCheck],
+    *,
+    condition: Callable[[QualityCheck], object],
+    key: Callable[[str], object],
+    aggregate: Callable[[dict, dict], tuple[int | None, dict[int, int]]],
+    duplicated_rows: Callable[[list], int],
+) -> list[CheckResult]:
+    """Déroulé commun aux moteurs : `condition` (lignes en échec d'un contrôle
+    par ligne) et `key` (colonne d'un `unique`) construisent les expressions du
+    moteur ; `aggregate` compte les lignes et chaque condition en une passe ;
+    `duplicated_rows` compte les lignes d'une clé partagée. Un contrôle qui ne
+    peut pas s'exécuter échoue seul (statut `error`)."""
+    checks = list(checks)
+    errors: dict[int, str] = {}
+    conditions: dict[int, object] = {}
+    unique_keys: dict[int, list] = {}
+    for index, check in enumerate(checks):
+        try:
+            if isinstance(check, UniqueCheck):
+                unique_keys[index] = [key(name) for name in check.columns]
+            elif not isinstance(check, RowCountCheck):
+                conditions[index] = condition(check)
+        except Exception as exc:  # noqa: BLE001 - C-1 : un contrôle n'arrête pas les autres
+            errors[index] = short_error(exc)
+
+    total, counts = aggregate(conditions, errors)
+    if total is None:
+        for index, check in enumerate(checks):
+            if isinstance(check, RowCountCheck):
+                errors.setdefault(index, errors.get(-1, "row count failed"))
+
+    for index, keys in unique_keys.items():
+        try:
+            counts[index] = duplicated_rows(keys)
+        except Exception as exc:  # noqa: BLE001 - un contrôle n'arrête pas les autres
+            errors[index] = short_error(exc)
+
+    return [
+        check_result(check, counts.get(index), total, errors.get(index))
+        for index, check in enumerate(checks)
+    ]
