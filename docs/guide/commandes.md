@@ -35,6 +35,7 @@ range par usage. Un test garde la page à jour : il échoue si une cible du Make
 |---|---|
 | `make spark-job RUN_ID=<id> [SOURCE=<nom>]` | lance le job de lecture seul, pour le `dag_run_id` d'un run `ingest__<source>` (`SOURCE` : seulement les lignes de cette source) |
 | `make transform-sync` | crée ou met à jour `transform/.venv` (dbt-core, dbt-duckdb) |
+| `make dbt-codegen` | génère la couche staging dbt (`transform/models/staging/generated/`) depuis les YAML de sources ; `dbt-parse` et `dbt-build` la lancent, `make check` et la CI vérifient qu'elle est à jour |
 | `make dbt-parse` | écrit `transform/target/manifest.json`, dont `transform_dag` est rendu |
 | `make dbt-build` | lance `dbt build` ; `LAKE_ROOT` et `DBT_DUCKDB_PATH` sont surchargeables |
 

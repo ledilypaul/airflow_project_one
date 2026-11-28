@@ -109,7 +109,7 @@ DEFAULT_DBT_DUCKDB_PATH = TRANSFORM_DIR / "warehouse.duckdb"
 # with a missing pool the scheduler leaves the tasks in `scheduled`.
 DBT_POOL = "dbt_duckdb"
 
-# P2-5: the dbt source (models/staging/_lake_staging__sources.yml) reading
+# P2-5: the dbt source (models/staging/generated/_lake_staging__sources.yml) reading
 # `<LAKE_ROOT>/<STAGING_ZONE>/<identifier>/`, written by the Spark job
 # (`storage.staging_path: staging/` of config/sources/*.yaml).
 LAKE_STAGING_SOURCE = "lake_staging"

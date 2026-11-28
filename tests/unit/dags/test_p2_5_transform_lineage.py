@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DAGS_FOLDER = PROJECT_ROOT / "dags"
 TRANSFORM_DIR = PROJECT_ROOT / "transform"
 MANIFEST = TRANSFORM_DIR / "target" / "manifest.json"
-SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "_lake_staging__sources.yml"
+SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "generated" / "_lake_staging__sources.yml"
 LINEAGE_TASK = "lineage_lake_staging"
 
 

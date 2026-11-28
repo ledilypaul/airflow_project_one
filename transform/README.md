@@ -89,8 +89,10 @@ Pour modifier les dépendances, utiliser `uv add` / `uv lock` **dans
 
 ## Lecture du lake
 
-Les sources sont déclarées dans `models/staging/_lake_staging__sources.yml`
-(`external_location`, `formatter: template`) :
+Les sources sont déclarées dans `models/staging/generated/_lake_staging__sources.yml`
+(`external_location`, `formatter: template`), généré avec les modèles `stg_*__current` par
+`make dbt-codegen` (`scripts/generate_dbt_staging.py`) depuis les YAML de sources ; ne pas
+l'éditer :
 
 ```sql
 read_parquet('<LAKE_ROOT>/staging/<table>/lake_run_id=*/lake_source_file=*/*.parquet',
@@ -115,13 +117,8 @@ macro `lake_staging()` (`macros/lake.sql`). Si le glob ne trouve aucun
 fichier, elle renvoie une **relation vide typée** par les colonnes déclarées
 dans la source, et le build réussit avec 0 ligne.
 
-- `movies` déclare toutes ses colonnes, avec les types de
-  `config/sources/imdb.yaml` (un test pytest le vérifie). La relation vide a
-  donc exactement le schéma réel.
-- `orders` fait de même avec les types de `config/sources/orders.yaml`
-  (P2-6, même test).
-- Une nouvelle source doit déclarer au moins ses colonnes techniques, chacune
-  avec son `data_type`.
+- Chaque table déclare les colonnes de `reader.columns_type`, avec leur type DuckDB, puis les
+  colonnes techniques : la relation vide a exactement le schéma réel.
 
 ## Modèles
 
@@ -235,7 +232,7 @@ Pourquoi et comment : voir
   fichier ouvert à l'exécution : la première partie non vide de son nom
   (`warehouse.duckdb` et `warehouse.prod.duckdb` donnent `warehouse`,
   `.hidden.duckdb` donne `hidden`). Les sources du lake
-  (`_lake_staging__sources.yml`) sont donc nommées
+  (`generated/_lake_staging__sources.yml`) sont donc nommées
   `warehouse.lake_staging.movies` : le processeur ne tient pas compte de
   `external_location`.
 - **Le pont.** Spark nomme la même table par son répertoire (`file`,
