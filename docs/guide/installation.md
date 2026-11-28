@@ -31,17 +31,24 @@ uv sync
 fonctionne sans `PYTHONPATH`), Airflow et les outils de développement. Préfixez ensuite vos
 commandes par `uv run`, ou activez `.venv`.
 
-Pour un environnement **Spark seul**, sans Airflow :
+Pour un environnement **sans Airflow**, ou **sans Spark** (moteur Polars seul, P5-8) :
 
 ```bash
 uv sync --no-group airflow
+uv sync --no-group spark
 ```
+
+Sans le groupe `spark`, le fournisseur Spark d'Airflow installe encore `pyspark-client` (le client
+Spark Connect, sans JVM) ; le job Polars ne l'utilise pas. Le cœur seul
+(`uv sync --no-default-groups`) n'a ni Spark ni Airflow : c'est ce que vérifie le job CI
+`polars-only`.
 
 Les groupes de dépendances sont les suivants.
 
 | Groupe | Contenu | Installé par `uv sync` |
 |---|---|---|
-| *(projet)* | PySpark, pandas, pyarrow, SQLAlchemy, Pydantic… | oui |
+| *(projet)* | Polars, pyarrow, SQLAlchemy, Pydantic… : le job Polars | oui |
+| `spark` | PySpark, pandas (`<3`) : le job Spark | oui |
 | `airflow` | Airflow 3.4.0, providers (Postgres, Spark, OpenLineage, Kubernetes), Cosmos | oui |
 | `dev` | pytest, ruff, pre-commit | oui |
 | `docs` | Sphinx et son thème | non : `uv sync --group docs` |

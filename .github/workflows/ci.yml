@@ -99,6 +99,42 @@ jobs:
           REQUIRE_LINEAGE: "1"
           AIRFLOW__COSMOS__ENABLE_TELEMETRY: "False"
 
+  # P5-8 : le moteur Polars sans Spark ni Airflow. Seules les dépendances du cœur
+  # (`--no-default-groups`) : ni PySpark, ni pyspark-client, ni Airflow. `--no-build`
+  # refuse de construire quoi que ce soit (tout le cœur existe en wheels) ; le projet
+  # n'est donc pas installé, le dépôt est sur PYTHONPATH. Puis le vrai job Polars sur
+  # les fichiers d'exemple (tests/unit/engine/test_p5_8_polars_only.py, sans pytest).
+  polars-only:
+    name: Polars engine without PySpark nor Airflow
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    env:
+      UV_PROJECT_ENVIRONMENT: .venv-core
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+
+      - name: Install the core dependencies only
+        run: uv sync --locked --no-default-groups --no-build --no-install-project
+
+      - name: Check that neither Spark nor Airflow is installed
+        run: |
+          .venv-core/bin/python -c "
+          import importlib.metadata as m, sys
+          names = {d.metadata['Name'].lower() for d in m.distributions()}
+          unexpected = sorted(names & {'pyspark', 'pyspark-client', 'apache-airflow', 'pandas'})
+          sys.exit(f'unexpected distributions: {unexpected}' if unexpected else 0)
+          "
+
+      - name: Run the Polars job on the example files
+        run: .venv-core/bin/python tests/unit/engine/test_p5_8_polars_only.py
+
   # P3-4 : audit des dépendances Python figées (uv.lock de la racine ET de transform/).
   # Bloquant : le lock actuel n'a aucune CVE connue (vérifié le 2026-11-15), tout
   # constat futur doit donc être vu. Une CVE sans correctif disponible se traite

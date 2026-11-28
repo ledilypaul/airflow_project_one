@@ -156,12 +156,10 @@ source = { editable = "." }
 dependencies = [
     { name = "fastexcel" },
     { name = "openpyxl" },
-    { name = "pandas" },
     { name = "polars" },
     { name = "psycopg2-binary" },
     { name = "pyarrow" },
     { name = "pydantic" },
-    { name = "pyspark" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
@@ -193,17 +191,19 @@ docs = [
     { name = "sphinx-copybutton" },
     { name = "sphinxcontrib-mermaid" },
 ]
+spark = [
+    { name = "pandas" },
+    { name = "pyspark" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "fastexcel", specifier = ">=0.14" },
     { name = "openpyxl", specifier = ">=3.1" },
-    { name = "pandas", specifier = ">=2.2,<3" },
     { name = "polars", specifier = ">=1.0" },
     { name = "psycopg2-binary", specifier = ">=2.9" },
     { name = "pyarrow", specifier = ">=15" },
     { name = "pydantic", specifier = ">=2.14,<3" },
-    { name = "pyspark", specifier = ">=4.0,<4.4" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "sqlalchemy", specifier = ">=2.0.50,!=2.1.0" },
@@ -233,6 +233,10 @@ docs = [
     { name = "sphinx-autodoc2", specifier = ">=0.5.0" },
     { name = "sphinx-copybutton", specifier = ">=0.5.2" },
     { name = "sphinxcontrib-mermaid", specifier = ">=2.1.1" },
+]
+spark = [
+    { name = "pandas", specifier = ">=2.2,<3" },
+    { name = "pyspark", specifier = ">=4.0,<4.4" },
 ]
 
 [[package]]

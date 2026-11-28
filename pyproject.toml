@@ -6,11 +6,10 @@ readme = "README.md"
 authors = [{ name = "ledilypaul", email = "paul.ledily@hotmail.fr" }]
 requires-python = ">=3.12,<3.14"
 
-# Code métier (pipeline/, utils/, storage/) : ce dont le job Spark a besoin pour tourner seul.
+# Code métier (pipeline/, utils/, storage/) : ce dont le job Polars a besoin pour tourner seul.
+# Le moteur Spark est dans le groupe `spark` (P5-8), installé par défaut.
 dependencies = [
-    "pyspark>=4.0,<4.4",
     "pyyaml>=6.0",
-    "pandas>=2.2,<3",     # pandas 3 casse pyspark.pandas (vérifié avec PySpark 4.3.0)
     "pyarrow>=15",
     "polars>=1.0",
     "openpyxl>=3.1",        # requis par read_excel (pandas / pandas-on-Spark)
@@ -22,6 +21,11 @@ dependencies = [
 ]
 
 [dependency-groups]
+# Moteur Spark (P5-8) : `uv sync --no-group spark` donne un environnement Polars seul.
+spark = [
+    "pyspark>=4.0,<4.4",
+    "pandas>=2.2,<3",     # pandas 3 casse pyspark.pandas (vérifié avec PySpark 4.3.0)
+]
 # Orchestration : séparé pour pouvoir construire une image Spark sans Airflow.
 airflow = [
     "apache-airflow==3.4.0",
@@ -50,8 +54,9 @@ docs = [
 ]
 
 [tool.uv]
-# `uv sync` installe tout par défaut ; `uv sync --no-group airflow` pour un environnement Spark seul.
-default-groups = ["dev", "airflow"]
+# `uv sync` installe tout par défaut ; `uv sync --no-group airflow` pour un environnement sans
+# Airflow, `uv sync --no-group spark` pour un environnement Polars seul (P5-8).
+default-groups = ["dev", "airflow", "spark"]
 
 [build-system]
 requires = ["hatchling>=1.27"]
