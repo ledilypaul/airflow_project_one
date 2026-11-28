@@ -101,7 +101,6 @@ then the Java compilation of every quality regex of the registry (5, needs
 the JVM), and only then the files.
 """
 
-import argparse
 import logging
 import os
 import sys
@@ -128,6 +127,7 @@ try:
         EXIT_PARENT_GONE,
         EXIT_QUALITY_FAILED,
         final_exit_code,
+        parse_args,
         run,
     )
     from storage.parquet_lake_writer import ParquetLakeWriter
@@ -146,6 +146,7 @@ except ModuleNotFoundError:
         EXIT_PARENT_GONE,
         EXIT_QUALITY_FAILED,
         final_exit_code,
+        parse_args,
         run,
     )
     from storage.parquet_lake_writer import ParquetLakeWriter
@@ -226,27 +227,6 @@ def main(run_id: str, source_name: str | None = None):
     # First thing: the driver must never outlive a killed spark-submit (C-1).
     start_parent_watchdog()
     run(run_id, source_name, config_root=CONFIG_ROOT, create_engine=create_spark_engine)
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the job's command line (`sys.argv[1:]` when `argv` is None).
-
-    The ingest DAG passes the run id as a single `--run-id=<value>` argument,
-    so a run id starting with `-` is not mistaken for an option (P1-4 / C-4).
-    """
-    parser = argparse.ArgumentParser(
-        description="Read files listed in the DB for a given Airflow run_id."
-    )
-    parser.add_argument(
-        "--run-id", required=True, help="dag_run_id of the ingest__<source> run to process."
-    )
-    parser.add_argument(
-        "--source-name",
-        default=None,
-        help="Only the file_list rows of this source (P5-3): the run ids of two source DAGs can "
-        "be equal. Without it, every row of the run id (make spark-job).",
-    )
-    return parser.parse_args(argv)
 
 
 if __name__ == "__main__":

@@ -101,10 +101,10 @@ les options de `reader.options` et la syntaxe des regex qualité. Il s'applique 
 repli par extension compris.
 
 :::{note}
-Seul Spark exécute des fichiers aujourd'hui. Le moteur Polars arrive par étapes avec le backlog
-P5-7 : sa lecture existe (`pipeline/engine/polars/reader.py`), mais aucun job ne l'appelle encore.
-Une source `engine: polars` se valide et se charge, mais le job Spark marque ses fichiers `failed`
-(`la source ... déclare le moteur 'polars'`). Elle ne change rien pour les sources Spark.
+Les DAG ne lancent que le job Spark. Le job Polars existe (P5-7,
+`uv run python -m pipeline.jobs.polars_job --run-id=<id>`) et écrit le même lake que Spark, mais
+aucun DAG ne le lance encore (backlog P5-8). Le job Spark marque `failed` les fichiers d'une source
+`engine: polars` (`la source ... déclare le moteur 'polars'`), et inversement.
 :::
 
 La config n'importe ni PySpark ni Polars : on la charge, au parsing d'un DAG par exemple, sans
