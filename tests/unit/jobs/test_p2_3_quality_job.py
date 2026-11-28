@@ -34,8 +34,9 @@ import pytest
 import yaml
 
 from pipeline.config import SourceConfig
-from pipeline.jobs import read_files_job
-from pipeline.jobs.read_files_job import write_to_lake
+from pipeline.engine.spark import engine as spark_engine
+from pipeline.jobs import ingest, read_files_job
+from pipeline.jobs.ingest import write_to_lake
 from pipeline.quality.checks import ERROR, FAIL, PASS, WARN, QualityChecksFailed
 from storage.parquet_lake_writer import ParquetLakeWriter, resolve_lake_root
 
@@ -83,7 +84,12 @@ def writer(tmp_path):
 
 def _write(writer, data, config, run_id=RUN_ID, source_file=SOURCE_FILE):
     return write_to_lake(
-        writer, data, config, run_id=run_id, source_file=source_file, file_id=FILE_ID
+        spark_engine.SparkEngine(data.sparkSession, writer),
+        data,
+        config,
+        run_id=run_id,
+        source_file=source_file,
+        file_id=FILE_ID,
     )
 
 
@@ -280,8 +286,8 @@ def _run_main(spark, tmp_path, monkeypatch, files: dict[str, str], checks=CHECKS
     update = MagicMock()
     with (
         patch.object(read_files_job, "get_spark_session", return_value=spark),
-        patch.object(read_files_job, "list_file_from_db", return_value=rows),
-        patch.object(read_files_job, "update_file_status", update),
+        patch.object(ingest, "list_file_from_db", return_value=rows),
+        patch.object(ingest, "update_file_status", update),
     ):
         with pytest.raises(SystemExit) as exc:
             read_files_job.main(run_id=RUN_ID)
@@ -363,7 +369,7 @@ def test_p2_3_engine_crash_removes_the_previous_staging_and_fails_the_file_short
             + "\tat java.base/java.lang.NumberFormatException.forInputString\n" * 20
         )
 
-    monkeypatch.setattr(read_files_job, "run_quality_checks", _crash)
+    monkeypatch.setattr(spark_engine, "run_quality_checks", _crash)
     code, update = _run_main(spark, tmp_path, monkeypatch, {"orders_good.csv": GOOD_CSV})
 
     assert code == 1

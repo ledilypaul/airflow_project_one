@@ -1,6 +1,7 @@
 # Le job Spark
 
-`pipeline/jobs/read_files_job.py` lit les fichiers d'**un listing** et les écrit dans le lake. Il
+`pipeline/jobs/read_files_job.py` (point d'entrée Spark ; l'orchestration, commune aux moteurs, est
+dans `pipeline/jobs/ingest.py`) lit les fichiers d'**un listing** et les écrit dans le lake. Il
 tourne dans son propre processus, lancé par `spark-submit`, et se lance aussi seul, sans Airflow :
 
 ```bash

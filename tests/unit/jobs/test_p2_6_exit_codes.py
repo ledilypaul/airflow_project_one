@@ -27,7 +27,8 @@ import pytest
 import yaml
 
 from pipeline.config.quality import NotNullCheck
-from pipeline.jobs import read_files_job
+from pipeline.engine.spark import engine as spark_engine
+from pipeline.jobs import ingest, read_files_job
 from pipeline.quality.checks import ERROR, FAIL, CheckResult, QualityChecksFailed
 from tests.unit.jobs.test_p2_3_quality_job import (
     BAD_CSV,
@@ -139,8 +140,8 @@ def _run_main(spark, tmp_path, monkeypatch, files: list[tuple[str, str]], checks
     update = MagicMock()
     with (
         patch.object(read_files_job, "get_spark_session", return_value=spark),
-        patch.object(read_files_job, "list_file_from_db", return_value=rows),
-        patch.object(read_files_job, "update_file_status", update),
+        patch.object(ingest, "list_file_from_db", return_value=rows),
+        patch.object(ingest, "update_file_status", update),
     ):
         with pytest.raises(SystemExit) as exc:
             read_files_job.main(run_id=RUN_ID)
@@ -224,7 +225,7 @@ def test_p2_6_engine_that_cannot_run_exits_1(spark, tmp_path, monkeypatch):
     def _crash(data, checks):
         raise RuntimeError("py4j: connection reset")
 
-    monkeypatch.setattr(read_files_job, "run_quality_checks", _crash)
+    monkeypatch.setattr(spark_engine, "run_quality_checks", _crash)
     code, update = _run_main(spark, tmp_path, monkeypatch, [("orders_good.csv", GOOD_CSV)])
 
     assert code == 1

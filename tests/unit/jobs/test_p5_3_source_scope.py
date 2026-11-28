@@ -17,7 +17,7 @@ def test_p5_3_source_name_is_an_optional_argument():
 @pytest.mark.parametrize("source_name", ["orders", None])
 def test_p5_3_main_scopes_the_rows_to_the_source(source_name):
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=[]) as mock_list,
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=[]) as mock_list,
         pytest.raises(SystemExit) as exit_info,
     ):
         main(run_id="r1", source_name=source_name)
@@ -28,7 +28,7 @@ def test_p5_3_main_scopes_the_rows_to_the_source(source_name):
 
 def test_p5_3_the_no_row_message_names_the_source(caplog):
     with (
-        patch("pipeline.jobs.read_files_job.list_file_from_db", return_value=[]),
+        patch("pipeline.jobs.ingest.list_file_from_db", return_value=[]),
         pytest.raises(SystemExit),
     ):
         main(run_id="r1", source_name="orders")
