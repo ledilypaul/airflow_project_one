@@ -171,8 +171,7 @@ conversion en objets de moteur se fait dans le moteur (`pipeline/engine/spark/ty
 **Même résultat avec les deux moteurs.** Avec Polars, le fichier est lu en texte puis converti
 selon les règles de Spark : une valeur non convertible devient null, `""` devient null, un `double`
 accepte des espaces autour, `NaN` et `Infinity` mais pas `nan`, une `date` accepte `2026-11` ou
-une heure à la suite. Un `timestamp` sans décalage est pris en **UTC** (Spark le prend dans le
-fuseau de sa session). Sont lus null par Polars, mais pas par Spark : les nombres hexadécimaux, les
+une heure à la suite. Un `timestamp` sans décalage est pris en **UTC** par les deux moteurs. Sont lus null par Polars, mais pas par Spark : les nombres hexadécimaux, les
 années hors de 4 chiffres et les fuseaux nommés (`UTC`, `Europe/Paris`). Polars compare toujours
 l'en-tête aux colonnes déclarées, comme Spark avec `enforceSchema: false`.
 

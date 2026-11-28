@@ -7,6 +7,9 @@ def get_spark_session(app_name="DataPipelineApp") -> SparkSession:
     spark_builder = SparkSession.builder.appName(app_name)
     spark_builder.config("spark.sql.shuffle.partitions", "4")
     spark_builder.config("spark.sql.ansi.enabled", "false")
+    # Un horodatage sans décalage est lu dans ce fuseau : UTC, comme DuckDB relit
+    # le lake et comme le moteur Polars, quel que soit le fuseau de la machine.
+    spark_builder.config("spark.sql.session.timeZone", "UTC")
 
     if os.getenv("ENV") == "prod":
         # In prod, master is managed by the cluster (YARN, K8s, etc.)
