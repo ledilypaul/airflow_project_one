@@ -8,7 +8,8 @@ Dependencies are managed with **uv**. `pyproject.toml` (PEP 621) is the single s
 
 ```bash
 uv sync                          # creates .venv with everything (runtime + airflow + dev groups)
-uv sync --no-group airflow       # Spark-only environment (no Airflow)
+uv sync --no-group airflow       # environment without Airflow
+uv sync --no-group spark         # without PySpark (P5-8: Polars engine only; pyspark-client stays, from the Spark provider)
 uv add <pkg>                     # runtime dependency
 uv add --group dev <pkg>         # dev tool
 uv add --group airflow <pkg>     # Airflow provider
@@ -21,7 +22,7 @@ Use uv ≥ 0.11 for anything that writes a lock (`~/.local/bin/uv` here): the py
 
 The project is installed in editable mode in `.venv`, so `import pipeline.*` / `utils.*` / `storage.*` works without `PYTHONPATH`. Always prefix commands with `uv run` (or activate `.venv`).
 
-Version pins worth knowing: `pandas<3` because pandas 3 breaks `pyspark.pandas` (verified with PySpark 4.3.0); `apache-airflow==3.4.0` exact (P3-5; Task SDK 1.4.0 comes with it); `astronomer-cosmos>=1.16,<1.17` (group `airflow`); `apache-airflow-providers-cncf-kubernetes>=11.0,<12` (group `airflow`, P3-2: the KubernetesExecutor, and the Spark hook refuses a `k8s://` master without it). Cosmos 1.16 still uses deprecated Airflow imports: `pyproject.toml` ignores `DeprecatedImportWarning` raised from the `cosmos` package only.
+Dependency groups (P5-8): the project's own dependencies are what the Polars job needs; `pyspark` and `pandas` are in the group `spark`, a default group like `airflow` and `dev` (the image and `uv sync` keep them). The CI job `polars-only` installs the core only (`uv sync --locked --no-default-groups --no-build --no-install-project`, repo on `PYTHONPATH`), checks that neither `pyspark`, `pyspark-client`, `apache-airflow` nor `pandas` is installed, and runs the real Polars job on the example files (`tests/unit/engine/test_p5_8_polars_only.py`, as a script, without pytest: the pytest config imports Airflow). Version pins worth knowing: `pandas<3` because pandas 3 breaks `pyspark.pandas` (verified with PySpark 4.3.0); `apache-airflow==3.4.0` exact (P3-5; Task SDK 1.4.0 comes with it); `astronomer-cosmos>=1.16,<1.17` (group `airflow`); `apache-airflow-providers-cncf-kubernetes>=11.0,<12` (group `airflow`, P3-2: the KubernetesExecutor, and the Spark hook refuses a `k8s://` master without it). Cosmos 1.16 still uses deprecated Airflow imports: `pyproject.toml` ignores `DeprecatedImportWarning` raised from the `cosmos` package only.
 
 ### Tests
 
@@ -371,7 +372,7 @@ tags: [finance]             # optional
   There is no `default_format`: an unknown extension is an error, not a CSV read.
 - **Readers.** `CSVReader`, `ParquetReader` and `ExcelReader` all implement `read(path, config: SourceConfig) -> DataFrame` and do not inherit from `BaseFileReader` (the router). The router calls `ReaderFactory.get_reader(config.source.format, spark)`. The keys of `READER_CLASSES` must equal `FileFormat`, which a test checks. `ExcelReader` imports `pyspark.pandas` inside `read()`: reading a CSV must not load pandas-on-Spark, which a subprocess test checks.
 - **Adding a source.** Create `config/sources/<name>.yaml` with patterns that do not overlap another dedicated source, and a `storage` section whose tables neither contain nor sit inside another source's tables. Then run `uv run pytest tests/unit/config` (parametrized on every YAML present) and `uv run pytest tests/unit/file_reader -k synthetic`, which reads a synthetic file with every csv/txt config. If the whitelist rejects a legitimate option, add it to `reader_options.py` with its documentation source, and add a non-text option to `SPARK_OPTION_TYPES` (or `POLARS_OPTION_TYPES`) too. A new format means a reader, an entry in `READER_CLASSES` and `FileFormat`, a whitelist and a test.
-- **Dependencies.** `pydantic` is a runtime dependency, because the job runs with `uv sync --no-group airflow`. `pipeline/config` must not import Airflow.
+- **Dependencies.** `pydantic` is a runtime dependency, because the jobs run with `uv sync --no-group airflow`, and the Polars job with the core only. `pipeline/config` must not import Airflow.
 
 ### Quality checks
 

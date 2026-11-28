@@ -37,7 +37,7 @@ uv --directory transform add <paquet>  # côté dbt : un projet uv séparé, son
 
 Utilisez `uv` **0.11 ou plus** pour tout ce qui écrit un lock : le `uv` d'un `pyenv` ancien le
 réécrit dans un ancien format. `make check` lance `uv lock --check` à la racine **et** dans
-`transform/`. Quelques bornes sont volontaires : `pandas<3` (pandas 3 casse `pyspark.pandas`),
+`transform/`. Quelques bornes sont volontaires : `pandas<3` (groupe `spark` : pandas 3 casse `pyspark.pandas`),
 `apache-airflow==3.4.0` exact, `astronomer-cosmos>=1.16,<1.17`.
 
 ## Lancer les tests
