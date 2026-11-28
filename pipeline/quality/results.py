@@ -1,12 +1,13 @@
 """Résultats des contrôles qualité, sans moteur (P5-6) : statuts, exceptions
 et schéma Arrow de `quality/<table>`. Les moteurs importent d'ici."""
 
+import difflib
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pyarrow as pa
 
-from pipeline.config.quality import QualityCheck
+from pipeline.config.quality import QualityCheck, RowCountCheck
 
 PASS = "pass"
 FAIL = "fail"
@@ -136,3 +137,55 @@ def short_error(exc: BaseException) -> str:
     text = str(java_exception) if java_exception is not None else str(exc)
     first = next((line.strip() for line in text.splitlines() if line.strip()), type(exc).__name__)
     return first if len(first) <= _MAX_MESSAGE else first[: _MAX_MESSAGE - 3] + "..."
+
+
+def as_text(value: bool | int | str) -> str:
+    """Une valeur de `accepted_values`, comparée à la forme texte de la colonne."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def missing_column_error(name: str, columns: Sequence[str]) -> str:
+    """Message d'un contrôle dont la colonne manque, avec la colonne la plus proche."""
+    same_case = [c for c in columns if c.casefold() == name.casefold()]
+    hint = same_case or difflib.get_close_matches(name, list(columns), n=1, cutoff=0.6)
+    suggestion = f" (did you mean {hint[0]!r}?)" if hint else ""
+    return f"check error: column {name!r} not found in the data{suggestion}"
+
+
+def _rows(count: int) -> str:
+    return f"{count} row" if count == 1 else f"{count} rows"
+
+
+def check_result(
+    check: QualityCheck, failed: int | None, total: int | None, error: str | None
+) -> CheckResult:
+    """Le résultat d'un contrôle, depuis ses comptes (communs aux moteurs)."""
+    if error is not None:
+        if not error.startswith("check error:"):
+            error = f"check error: {error}"
+        return CheckResult(check, ERROR, None, total, error)
+
+    if isinstance(check, RowCountCheck):
+        too_few = check.min is not None and total < check.min
+        too_many = check.max is not None and total > check.max
+        if not (too_few or too_many):
+            return CheckResult(check, PASS, None, total, None)
+        if check.min is not None and check.max is not None:
+            expected = f"between {check.min} and {check.max}"
+        elif check.min is not None:
+            expected = f">= {check.min}"
+        else:
+            expected = f"<= {check.max}"
+        message = f"{_rows(total)}, expected {expected}"
+        return CheckResult(check, _failed_status(check), None, total, message)
+
+    failed = int(failed)
+    if failed == 0:
+        return CheckResult(check, PASS, 0, total, None)
+    return CheckResult(check, _failed_status(check), failed, total, _rows(failed))
+
+
+def _failed_status(check: QualityCheck) -> str:
+    return WARN if check.severity == "warn" else FAIL

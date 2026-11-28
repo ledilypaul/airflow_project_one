@@ -67,13 +67,6 @@ def _config(engine: str, options: dict, columns_type=None, file_format="csv") ->
     )
 
 
-@pytest.fixture(scope="module")
-def spark_utc(spark):
-    session = spark.newSession()
-    session.conf.set("spark.sql.session.timeZone", "UTC")
-    return session
-
-
 def _norm(value):
     """Une valeur comparable entre moteurs (horodatages en UTC, flottants exacts)."""
     if isinstance(value, float):

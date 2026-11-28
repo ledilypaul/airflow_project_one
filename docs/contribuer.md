@@ -72,7 +72,9 @@ obligatoires (la CI les pose) :
 
 - **Une source de données** : [](configuration/sources.md#ajouter-une-source).
 - **Un contrôle qualité** : un modèle dans `pipeline/config/quality.py`, son exécution dans
-  `pipeline/quality/checks.py`, et des tests ; ces deux modules n'importent pas Airflow.
+  `pipeline/quality/checks.py` (Spark) et `pipeline/engine/polars/quality.py` (Polars), avec un
+  cas dans le test de parité `tests/unit/engine/test_p5_7_polars_quality.py` ; ces modules
+  n'importent pas Airflow.
 - **Un format de fichier** : un lecteur, une entrée dans `READER_CLASSES` et `FileFormat`, une liste
   blanche d'options et un test.
 - **Une règle d'alerte** : `deploy/observability/rules/airflow.yml` **et** son test `promtool`. Chaque

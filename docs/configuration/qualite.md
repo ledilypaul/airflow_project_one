@@ -1,7 +1,8 @@
 # Contrôles qualité
 
 Les contrôles sont **natifs** : des modèles Pydantic (`pipeline/config/quality.py`), un moteur en
-Spark pur (`pipeline/quality/checks.py`), sans Soda ni Great Expectations. Ils décident si la zone
+Spark pur (`pipeline/quality/checks.py`) et son équivalent Polars (`pipeline/engine/polars/quality.py`,
+P5-7, mêmes règles et mêmes résultats), sans Soda ni Great Expectations. Ils décident si la zone
 `staging` d'un fichier est écrite.
 
 ## Déclarer des contrôles
@@ -53,7 +54,11 @@ quality:
   `engine: polars`, la regex s'exécute en Rust (crate `regex`) : la config refuse au chargement
   les lookaround (`(?=`, `(?!`, `(?<=`, `(?<!`), les groupes atomiques et les références arrière,
   et n'exige rien du sous-ensemble Python/Java (`\p{L}` y est valide). Le reste de la syntaxe
-  n'est vérifié que par Polars, à l'exécution.
+  est vérifié par Polars au démarrage du job (`polars_regex_problems`, code 5, comme Java pour
+  Spark).
+- **Forme texte.** `accepted_values` et `regex` lisent la colonne comme Spark la convertit en
+  texte, avec les deux moteurs : `true`, `2026-11-01 10:00:00.12`, `NaN`, `Infinity`. Seul écart :
+  la notation scientifique des doubles (`1.0E10` chez Spark, `10000000000.0` chez Polars).
 
 ## Exécution
 
