@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 
 EVENT = "airflow_failure"
 
-# Exit codes of pipeline/jobs/read_files_job.py (`EXIT_*`). Duplicated: the
+# Exit codes of pipeline/jobs/ingest.py (`EXIT_*`). Duplicated: the
 # job imports pyspark, which a callback must not load. A test keeps them equal.
 JOB_EXIT_CODES: dict[int, str] = {
     1: "at least one file failed (read or write error, quality engine error, or mixed causes)",

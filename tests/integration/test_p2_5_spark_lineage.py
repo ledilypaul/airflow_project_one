@@ -58,6 +58,7 @@ DRIVER = textwrap.dedent(
     import sys
 
     import pipeline.jobs.read_files_job as job
+    from pipeline.jobs import ingest
 
     run_id, rows, status_file = sys.argv[1], json.loads(sys.argv[2]), sys.argv[3]
 
@@ -65,8 +66,8 @@ DRIVER = textwrap.dedent(
         with open(status_file, "a") as f:
             f.write(json.dumps([file_id, status, error_message]) + "\\n")
 
-    job.list_file_from_db = lambda wanted, source_name=None: rows if wanted == run_id else []
-    job.update_file_status = update_file_status
+    ingest.list_file_from_db = lambda wanted, source_name=None: rows if wanted == run_id else []
+    ingest.update_file_status = update_file_status
     job.main(run_id=run_id)
     """
 )

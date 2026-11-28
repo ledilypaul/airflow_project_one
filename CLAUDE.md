@@ -81,7 +81,7 @@ make spark-job RUN_ID=<dag_run_id of an ingest__<source> run> [SOURCE=<source>]
 # = uv run spark-submit pipeline/jobs/read_files_job.py --run-id=<id> [--source-name=<source>]
 ```
 
-`--run-id` is required: the job reads the `file_list` rows of that run and writes each file to the Parquet lake under `LAKE_ROOT`. `LAKE_ROOT` defaults to `<project root>/lake` (gitignored) and is resolved from the code. The job exits (constants `EXIT_*` in `pipeline/jobs/read_files_job.py`):
+`--run-id` is required: the job reads the `file_list` rows of that run and writes each file to the Parquet lake under `LAKE_ROOT`. `LAKE_ROOT` defaults to `<project root>/lake` (gitignored) and is resolved from the code. The job exits (constants `EXIT_*` in `pipeline/jobs/ingest.py`, re-exported by the job):
 - **0** when every file is `processed`;
 - **2** when `--run-id` is missing or empty;
 - **3** when the run has no rows;
@@ -374,7 +374,7 @@ tags: [finance]             # optional
 
 ### Quality checks
 
-Quality checks are native: Pydantic models in `pipeline/config/quality.py`, a pure-Spark engine in `pipeline/quality/checks.py`, and no Soda or Great Expectations dependency. Neither module may import Airflow or `pipeline.file_reader`.
+Quality checks are native: Pydantic models in `pipeline/config/quality.py`, a pure-Spark engine in `pipeline/quality/checks.py` (results and statuses, engine-independent, in `pipeline/quality/results.py`), and no Soda or Great Expectations dependency. None of these modules may import Airflow or `pipeline.file_reader`.
 
 - **Declaring checks.** `quality.checks` is a list discriminated on `type`:
   - `not_null` (`column`);
@@ -409,6 +409,7 @@ Quality checks are native: Pydantic models in `pipeline/config/quality.py`, a pu
 
 ### Processing and storage layers
 
+- Engine interface (P5-6): `pipeline/engine/base.py::Engine` is what `pipeline/jobs/ingest.py` drives. `ingest.py` holds the common orchestration (`file_list` rows and statuses, zones, quality outcomes, exit codes) and imports no engine (a test checks it); `pipeline/jobs/read_files_job.py` is only the Spark entry point (CLI, watchdog, session); `pipeline/engine/spark/engine.py::SparkEngine` delegates to the existing reader, processor, checks and writer. Engine-independent pieces: `pipeline/quality/results.py` (statuses, exceptions, Arrow `RESULTS_SCHEMA`, from which the Spark one is derived) and `storage/lake_root.py`. Tests patch `list_file_from_db`, `update_file_status` and `write_to_lake` on `pipeline.jobs.ingest`. Design note: `docs/architecture/2026-11-28-p5-6-engine-interface.md`.
 - `pipeline/processor/base_processor.py` (`BaseProcessor`) wraps a Spark `DataFrame` with chainable cleanup methods (`remove_empty_rows`, `drop_na_rows`, `fill_na`, `remove_duplicates`, `cast_column`, `rename_columns`), each returning `self`.
 - `storage/base_writer.py` defines the `BaseWriter` ABC (`write(data, target, **kwargs)`); `storage/postgresql_writer.py` (`PostgresWriter`) implements it for both Spark DataFrames (via JDBC) and Pandas DataFrames (via `to_sql`). Writers must subclass `BaseWriter` and implement `write()` to satisfy the interface.
 - `storage/parquet_lake_writer.py` is the writer the Spark job uses.

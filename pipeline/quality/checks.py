@@ -50,13 +50,14 @@ Ce module ne doit pas importer Airflow : le job Spark le charge.
 import difflib
 import logging
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from functools import reduce
 
+import pyarrow as pa
 from pyspark.sql import Column, DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.types import (
     ArrayType,
+    DataType,
     DoubleType,
     FloatType,
     LongType,
@@ -75,114 +76,55 @@ from pipeline.config.quality import (
     RowCountCheck,
     UniqueCheck,
 )
+from pipeline.quality import results as neutral
+from pipeline.quality.results import (
+    ERROR,
+    FAIL,
+    PASS,
+    WARN,
+    CheckResult,
+    QualityChecksError,
+    QualityChecksFailed,
+    blocking_failures,
+    failure_summary,
+    result_rows,
+    short_error,
+)
 
 log = logging.getLogger(__name__)
 
-PASS = "pass"
-FAIL = "fail"
-WARN = "warn"
-ERROR = "error"
+__all__ = [
+    "ERROR",
+    "FAIL",
+    "PASS",
+    "RESULTS_SCHEMA",
+    "WARN",
+    "CheckResult",
+    "QualityChecksError",
+    "QualityChecksFailed",
+    "blocking_failures",
+    "failure_summary",
+    "java_regex_problems",
+    "results_dataframe",
+    "run_quality_checks",
+    "short_error",
+]
 
-_MAX_MESSAGE = 500
 
-# Une ligne par contrôle ; le writer y ajoute lake_run_id, lake_source_file,
-# lake_file_id et lake_ingested_at.
+def _spark_type(arrow: pa.DataType) -> DataType:
+    if pa.types.is_list(arrow):
+        return ArrayType(_spark_type(arrow.value_type), arrow.value_field.nullable)
+    return {pa.string(): StringType(), pa.int64(): LongType()}[arrow]
+
+
+# Le schéma Spark des résultats est dérivé du schéma neutre (Arrow).
 RESULTS_SCHEMA = StructType(
-    [
-        StructField("source_name", StringType(), False),
-        StructField("check_name", StringType(), False),
-        StructField("check_type", StringType(), False),
-        StructField("check_columns", ArrayType(StringType(), False), False),
-        StructField("severity", StringType(), False),
-        # pass | fail | warn | error (voir le docstring du module).
-        StructField("status", StringType(), False),
-        # Lignes en échec ; null pour row_count et pour le statut error.
-        StructField("failed_rows", LongType(), True),
-        # Lignes contrôlées (DataFrame du staging) ; null si le comptage a échoué.
-        StructField("checked_rows", LongType(), True),
-        # Détail lisible ; null quand le contrôle passe ; `check error: ...` pour error.
-        StructField("message", StringType(), True),
-        # La règle appliquée (JSON), pour l'audit : la config peut changer d'un run à l'autre.
-        StructField("check_definition", StringType(), False),
-    ]
+    [StructField(f.name, _spark_type(f.type), f.nullable) for f in neutral.RESULTS_SCHEMA]
 )
-
-
-@dataclass(frozen=True)
-class CheckResult:
-    check: QualityCheck
-    status: str
-    failed_rows: int | None
-    checked_rows: int | None
-    message: str | None
-
-    @property
-    def name(self) -> str:
-        return self.check.check_name
-
-    @property
-    def type(self) -> str:
-        return self.check.type
-
-    @property
-    def columns(self) -> tuple[str, ...]:
-        return self.check.check_columns
-
-    @property
-    def severity(self) -> str:
-        return self.check.severity
-
-    @property
-    def blocking(self) -> bool:
-        """Sévérité `error` et statut `fail` ou `error` : staging non écrit."""
-        return self.severity == "error" and self.status in (FAIL, ERROR)
-
-
-class QualityChecksFailed(Exception):
-    """Au moins un contrôle bloquant : le staging n'est pas écrit.
-
-    `notes` complète le résumé sans le remplacer (ex. `results not recorded:
-    disk full` quand l'écriture des résultats échoue elle aussi)."""
-
-    def __init__(self, results: Sequence[CheckResult], *, notes: Sequence[str] = ()):
-        self.results = list(results)
-        self.notes = list(notes)
-        message = failure_summary(self.results)
-        if self.notes:
-            message += f" ({'; '.join(self.notes)})"
-        super().__init__(message)
-
-    @property
-    def deterministic(self) -> bool:
-        """Vrai quand une nouvelle tentative échouerait de la même façon
-        (P2-6) : chaque contrôle bloquant a trouvé des lignes en échec
-        (statut `fail`), et rien d'autre n'a échoué (aucune note : résultats
-        enregistrés, partition staging précédente supprimée). Un contrôle
-        bloquant qui n'a pas pu s'exécuter (statut `error`) ne l'est pas :
-        sa cause peut être passagère (erreur Spark)."""
-        failures = blocking_failures(self.results)
-        return bool(failures) and not self.notes and all(r.status == FAIL for r in failures)
-
-
-class QualityChecksError(Exception):
-    """Le moteur lui-même a levé une exception (C-1) : aucun résultat, le
-    staging n'est pas écrit (« fermé par défaut »). Message court."""
 
 
 class _CheckError(Exception):
     """Le contrôle ne peut pas s'exécuter sur ces données."""
-
-
-def blocking_failures(results: Sequence[CheckResult]) -> list[CheckResult]:
-    return [r for r in results if r.blocking]
-
-
-def failure_summary(results: Sequence[CheckResult]) -> str:
-    """`quality checks failed: not_null(id): 3 rows; range(amount): 1 row`
-    (contrôles bloquants seulement ; un contrôle `error` qui n'a pas pu
-    s'exécuter y figure avec son message `check error: ...`)."""
-    failures = "; ".join(f"{r.name}: {r.message}" for r in blocking_failures(results))
-    return f"quality checks failed: {failures}"
 
 
 def run_quality_checks(data: DataFrame, checks: Sequence[QualityCheck]) -> list[CheckResult]:
@@ -227,22 +169,7 @@ def results_dataframe(
     spark: SparkSession, results: Sequence[CheckResult], *, source_name: str
 ) -> DataFrame:
     """Les résultats en DataFrame (`RESULTS_SCHEMA`), une ligne par contrôle."""
-    rows = [
-        (
-            source_name,
-            r.name,
-            r.type,
-            list(r.columns),
-            r.severity,
-            r.status,
-            r.failed_rows,
-            r.checked_rows,
-            r.message,
-            r.check.model_dump_json(exclude_none=True),
-        )
-        for r in results
-    ]
-    return spark.createDataFrame(rows, RESULTS_SCHEMA)
+    return spark.createDataFrame(result_rows(results, source_name=source_name), RESULTS_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
@@ -439,11 +366,3 @@ def _result(
 
 def _failed_status(check: QualityCheck) -> str:
     return WARN if check.severity == "warn" else FAIL
-
-
-def short_error(exc: BaseException) -> str:
-    """Première ligne utile d'une exception (Spark/Py4J en font des pages)."""
-    java_exception = getattr(exc, "java_exception", None)
-    text = str(java_exception) if java_exception is not None else str(exc)
-    first = next((line.strip() for line in text.splitlines() if line.strip()), type(exc).__name__)
-    return first if len(first) <= _MAX_MESSAGE else first[: _MAX_MESSAGE - 3] + "..."
