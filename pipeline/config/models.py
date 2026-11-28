@@ -263,6 +263,16 @@ class ListingSection(_StrictModel):
     )
 
 
+class DbtSection(_StrictModel):
+    generate: bool = Field(
+        default=True,
+        description=(
+            "Génère `stg_<table>__current` (`make dbt-codegen`) ; false : vous écrivez le "
+            "modèle, la source dbt reste déclarée."
+        ),
+    )
+
+
 class SourceConfig(_StrictModel):
     source: SourceSection
     reader: ReaderSection = Field(default_factory=ReaderSection)
@@ -283,6 +293,8 @@ class SourceConfig(_StrictModel):
         default=None, ge=0, le=10, description="Reprises des tâches du DAG ; 1 s'il est absent."
     )
     tags: list[Tag] = Field(default_factory=list, description="Étiquettes du DAG dans l'UI.")
+    # P5-4 : couche staging dbt générée depuis cette config.
+    dbt: DbtSection = Field(default_factory=DbtSection)
 
     def _require_storage(self) -> StorageSection:
         if self.storage is None:  # seulement via model_construct, sans validation

@@ -13,10 +13,7 @@ Covers:
     `dbt_marts` Asset emitted after every dbt task;
   - the dbt environment (LAKE_ROOT, DBT_DUCKDB_PATH) and its defaults;
   - a missing manifest is an import error of that file only;
-  - the dbt project matches the lake: sources = staging tables of the
-    reading configs, movies columns = imdb.yaml `columns_type`, orders
-    columns = orders.yaml `columns_type` (P2-6), both with an enforced
-    contract.
+  - the dbt staging layer: generated, see tests/unit/test_p5_4_dbt_codegen.py.
 
 The manifest (transform/target/manifest.json) comes from `make dbt-parse`,
 which CI runs before pytest.
@@ -32,15 +29,13 @@ import yaml
 from airflow.models import DagBag
 from airflow.sdk import Asset
 
-from pipeline.config.types import SUPPORTED_COLUMN_TYPES, resolve_column_type
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DAGS_FOLDER = PROJECT_ROOT / "dags"
 TRANSFORM_DAG_FILE = DAGS_FOLDER / "local_transform_dag.py"
 TRANSFORM_DIR = PROJECT_ROOT / "transform"
 MANIFEST = TRANSFORM_DIR / "target" / "manifest.json"
 POOLS_FILE = PROJECT_ROOT / "deploy" / "airflow" / "pools.json"
-SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "_lake_staging__sources.yml"
+SOURCES_YML = TRANSFORM_DIR / "models" / "staging" / "generated" / "_lake_staging__sources.yml"
 
 PRODUCER = "dbt_producer_watcher"
 PUBLISH = "publish_dbt_marts"
@@ -389,86 +384,8 @@ def test_p2_4_c4_every_manifest_node_is_waited_for(transform_dag):
 
 
 # ---------------------------------------------------------------------------
-# dbt project <-> lake
+# dbt profile and environment
 # ---------------------------------------------------------------------------
-
-# Neutral types of pipeline/config/types.py -> DuckDB type read from the
-# Parquet written by Spark (checked for real by tests/integration, P5-2).
-DUCKDB_TYPES = {name: resolve_column_type(name).duckdb for name in SUPPORTED_COLUMN_TYPES}
-TECHNICAL_COLUMNS = [
-    ("lake_file_id", "BIGINT"),
-    ("lake_ingested_at", "TIMESTAMP"),
-    ("lake_run_id", "VARCHAR"),
-    ("lake_source_file", "VARCHAR"),
-]
-
-
-def _dbt_sources():
-    (source,) = yaml.safe_load(SOURCES_YML.read_text(encoding="utf-8"))["sources"]
-    return source
-
-
-def test_p2_4_dbt_sources_are_staging_tables_of_the_reading_configs():
-    """Every dbt source table is the staging table of a reading config: a
-    renamed `storage.table_name` or a removed `staging_path` must not leave
-    dbt reading a table nobody writes."""
-    from pipeline.config.registry import SourceRegistry
-
-    registry = SourceRegistry.from_directory(PROJECT_ROOT / "examples" / "config")
-    staging_tables = {
-        loaded.config.storage.staging_path + loaded.config.storage.table_name
-        for loaded in registry.sources
-        if loaded.config.storage.staging_path
-    }
-    source = _dbt_sources()
-    assert source["name"] == "lake_staging"
-    assert "/staging/$identifier/" in source["config"]["external_location"]
-    for table in source["tables"]:
-        assert f"staging/{table['name']}" in staging_tables, table["name"]
-
-
-def test_p2_4_movies_source_columns_follow_the_imdb_schema():
-    """The typed empty relation (no movies file read yet) is built from these
-    columns: same names, order and types as the files Spark writes."""
-    from pipeline.config.registry import load_source_config
-
-    columns_type = load_source_config(
-        PROJECT_ROOT / "examples" / "config" / "sources" / "imdb.yaml"
-    ).reader.columns_type
-    (movies,) = [t for t in _dbt_sources()["tables"] if t["name"] == "movies"]
-    declared = [(c["name"], c["data_type"]) for c in movies["columns"]]
-
-    expected = [(name, DUCKDB_TYPES[spark_type]) for name, spark_type in columns_type.items()]
-    assert declared == expected + TECHNICAL_COLUMNS
-
-
-def test_p2_6_orders_source_columns_follow_the_orders_schema():
-    """P2-6 (replaces test_p2_4_orders_source_declares_only_technical_columns):
-    orders.yaml declares `columns_type`, so the typed empty relation of
-    orders has the business columns too, like movies."""
-    from pipeline.config.registry import load_source_config
-
-    columns_type = load_source_config(
-        PROJECT_ROOT / "examples" / "config" / "sources" / "orders.yaml"
-    ).reader.columns_type
-    (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
-    declared = [(c["name"], c["data_type"]) for c in orders["columns"]]
-
-    expected = [(name, DUCKDB_TYPES[spark_type]) for name, spark_type in columns_type.items()]
-    assert declared == expected + TECHNICAL_COLUMNS
-
-
-def test_p2_6_every_dbt_source_table_is_typed_like_its_reading_config():
-    """No staging table read with an inferred schema reaches dbt: each
-    source table has a `columns_type` to align its columns on."""
-    from pipeline.config.registry import SourceRegistry
-
-    typed = {
-        loaded.config.storage.table_name
-        for loaded in SourceRegistry.from_directory(PROJECT_ROOT / "examples" / "config").sources
-        if loaded.config.reader.columns_type
-    }
-    assert {t["name"] for t in _dbt_sources()["tables"]} <= typed
 
 
 def test_p2_4_dbt_profile_reads_paths_from_the_environment():
@@ -478,37 +395,6 @@ def test_p2_4_dbt_profile_reads_paths_from_the_environment():
     assert output["type"] == "duckdb"
     assert output["path"] == "{{ env_var('DBT_DUCKDB_PATH') }}"
     assert output["threads"] == 1
-
-
-def test_p2_4_c3_movies_contract_matches_the_source_columns():
-    """C-3: the enforced contract of stg_movies__current declares exactly the
-    columns and types of the movies source (imdb.yaml + technical columns,
-    checked above), so a type widened by union_by_name fails the build."""
-    models = yaml.safe_load(
-        (TRANSFORM_DIR / "models" / "staging" / "_staging__models.yml").read_text(encoding="utf-8")
-    )["models"]
-    (model,) = [m for m in models if m["name"] == "stg_movies__current"]
-    (movies,) = [t for t in _dbt_sources()["tables"] if t["name"] == "movies"]
-
-    assert model["config"]["contract"] == {"enforced": True}
-    assert [(c["name"], c["data_type"]) for c in model["columns"]] == [
-        (c["name"], c["data_type"]) for c in movies["columns"]
-    ]
-
-
-def test_p2_6_orders_contract_matches_the_source_columns():
-    """P2-6: same enforced contract as stg_movies__current, on the orders
-    source columns (orders.yaml + technical columns, checked above)."""
-    models = yaml.safe_load(
-        (TRANSFORM_DIR / "models" / "staging" / "_staging__models.yml").read_text(encoding="utf-8")
-    )["models"]
-    (model,) = [m for m in models if m["name"] == "stg_orders__current"]
-    (orders,) = [t for t in _dbt_sources()["tables"] if t["name"] == "orders"]
-
-    assert model["config"]["contract"] == {"enforced": True}
-    assert [(c["name"], c["data_type"]) for c in model["columns"]] == [
-        (c["name"], c["data_type"]) for c in orders["columns"]
-    ]
 
 
 def test_p2_4_c5_duckdb_extensions_are_never_installed_or_loaded_implicitly():

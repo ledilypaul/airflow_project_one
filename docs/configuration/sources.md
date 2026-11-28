@@ -197,6 +197,19 @@ registre une fois (depuis `DEFAULT_CONFIG_ROOT`, résolu depuis le code et non d
 courant), trouve la config du fichier, puis demande à `ReaderFactory` le lecteur de son format.
 `ExcelReader` importe `pyspark.pandas` dans `read()` : lire un CSV ne doit pas le charger.
 
+## La couche staging dbt
+
+`make dbt-codegen` écrit, pour chaque source qui a `storage.staging_path: staging/` et
+`reader.columns_type`, la table dbt, le modèle `stg_<table>__current` et son contrat dans
+`transform/models/staging/generated/`. Il lit `config/`, `examples/config/` et
+`PIPELINE_CONFIG_ROOT`. Commitez le résultat : `make check` échoue s'il n'est pas à jour.
+
+- Sans `columns_type`, ou avec un autre `staging_path`, la source est ignorée avec un
+  avertissement.
+- `dbt: {generate: false}` : la table dbt reste déclarée, vous écrivez le modèle (hors de
+  `generated/`).
+- La table doit s'écrire `[A-Za-z0-9_]+` ; les noms de colonnes ne contiennent ni accolade ni `"`.
+
 ## Ajouter une source
 
 1. Créez `config/sources/<nom>.yaml`, avec des motifs qui ne recouvrent ceux d'aucune autre source

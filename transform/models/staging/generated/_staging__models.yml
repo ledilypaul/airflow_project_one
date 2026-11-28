@@ -1,0 +1,197 @@
+# Généré par scripts/generate_dbt_staging.py (`make dbt-codegen`) : ne pas modifier.
+version: 2
+models:
+- name: stg_movies__current
+  description: 'État courant de staging/movies : un seul instantané par fichier source. lake_ingested_at : TIMESTAMP sans fuseau, en UTC.'
+  config:
+    contract:
+      enforced: true
+  data_tests:
+  - one_snapshot_per_source_file
+  columns:
+  - name: id
+    quote: true
+    data_type: INTEGER
+  - name: title
+    quote: true
+    data_type: VARCHAR
+  - name: vote_average
+    quote: true
+    data_type: FLOAT
+  - name: vote_count
+    quote: true
+    data_type: INTEGER
+  - name: status
+    quote: true
+    data_type: VARCHAR
+  - name: release_date
+    quote: true
+    data_type: DATE
+  - name: revenue
+    quote: true
+    data_type: FLOAT
+  - name: runtime
+    quote: true
+    data_type: INTEGER
+  - name: adult
+    quote: true
+    data_type: BOOLEAN
+  - name: backdrop_path
+    quote: true
+    data_type: VARCHAR
+  - name: budget
+    quote: true
+    data_type: INTEGER
+  - name: homepage
+    quote: true
+    data_type: VARCHAR
+  - name: imdb_db
+    quote: true
+    data_type: VARCHAR
+  - name: original_language
+    quote: true
+    data_type: VARCHAR
+  - name: original_title
+    quote: true
+    data_type: VARCHAR
+  - name: overview
+    quote: true
+    data_type: VARCHAR
+  - name: popularity
+    quote: true
+    data_type: FLOAT
+  - name: poster_path
+    quote: true
+    data_type: VARCHAR
+  - name: tagline
+    quote: true
+    data_type: VARCHAR
+  - name: production_companies
+    quote: true
+    data_type: VARCHAR
+  - name: production_countries
+    quote: true
+    data_type: VARCHAR
+  - name: spoken_languages
+    quote: true
+    data_type: VARCHAR
+  - name: keywords
+    quote: true
+    data_type: VARCHAR
+  - name: release_year
+    quote: true
+    data_type: INTEGER
+  - name: Director
+    quote: true
+    data_type: VARCHAR
+  - name: AverageRating
+    quote: true
+    data_type: FLOAT
+  - name: Poster_Link
+    quote: true
+    data_type: VARCHAR
+  - name: Certificate
+    quote: true
+    data_type: VARCHAR
+  - name: IMDB_Rating
+    quote: true
+    data_type: FLOAT
+  - name: Metascore
+    quote: true
+    data_type: FLOAT
+  - name: Star1
+    quote: true
+    data_type: VARCHAR
+  - name: Star2
+    quote: true
+    data_type: VARCHAR
+  - name: Star3
+    quote: true
+    data_type: VARCHAR
+  - name: Star4
+    quote: true
+    data_type: VARCHAR
+  - name: Writer
+    quote: true
+    data_type: VARCHAR
+  - name: Director_of_Photography
+    quote: true
+    data_type: VARCHAR
+  - name: Producer
+    quote: true
+    data_type: VARCHAR
+  - name: Music_Composer
+    quote: true
+    data_type: VARCHAR
+  - name: genre_list
+    quote: true
+    data_type: VARCHAR
+  - name: Cast_list
+    quote: true
+    data_type: VARCHAR
+  - name: overview_sentiment
+    quote: true
+    data_type: VARCHAR
+  - name: all_combined_keywords
+    quote: true
+    data_type: VARCHAR
+  - name: lake_file_id
+    quote: true
+    data_type: BIGINT
+    data_tests:
+    - not_null
+  - name: lake_ingested_at
+    quote: true
+    data_type: TIMESTAMP
+    data_tests:
+    - not_null
+  - name: lake_run_id
+    quote: true
+    data_type: VARCHAR
+    data_tests:
+    - not_null
+  - name: lake_source_file
+    quote: true
+    data_type: VARCHAR
+    data_tests:
+    - not_null
+- name: stg_orders__current
+  description: 'État courant de staging/orders : un seul instantané par fichier source. lake_ingested_at : TIMESTAMP sans fuseau, en UTC.'
+  config:
+    contract:
+      enforced: true
+  data_tests:
+  - one_snapshot_per_source_file
+  columns:
+  - name: order_id
+    quote: true
+    data_type: INTEGER
+  - name: customer
+    quote: true
+    data_type: VARCHAR
+  - name: amount
+    quote: true
+    data_type: DOUBLE
+  - name: order_date
+    quote: true
+    data_type: DATE
+  - name: lake_file_id
+    quote: true
+    data_type: BIGINT
+    data_tests:
+    - not_null
+  - name: lake_ingested_at
+    quote: true
+    data_type: TIMESTAMP
+    data_tests:
+    - not_null
+  - name: lake_run_id
+    quote: true
+    data_type: VARCHAR
+    data_tests:
+    - not_null
+  - name: lake_source_file
+    quote: true
+    data_type: VARCHAR
+    data_tests:
+    - not_null

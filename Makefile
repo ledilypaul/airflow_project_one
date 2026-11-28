@@ -177,7 +177,7 @@ IMAGE_TAG ?= dev
 IMAGE := $(IMAGE_REPOSITORY):$(IMAGE_TAG)
 
 .PHONY: help install lint fmt test check db-port-check db-up db-down \
-	airflow-init airflow demo spark-job transform-sync dbt-parse dbt-build \
+	airflow-init airflow demo spark-job transform-sync dbt-codegen dbt-parse dbt-build \
 	lineage-jar lineage-show lineage-transport lineage-clean \
 	lineage-up lineage-down metrics-env observability-up observability-down \
 	k8s-tools kind-up kind-down image kind-load k8s-chart k8s-install \
@@ -210,6 +210,7 @@ test: dbt-parse ## Run the test suite (includes the DAG import check; generates 
 check: ## CI order: both uv.lock up to date, then lint, then tests
 	$(UV) lock --check
 	$(UV) --directory transform lock --check
+	$(UV) run python scripts/generate_dbt_staging.py --check
 	@$(MAKE) --no-print-directory lint
 	@$(MAKE) --no-print-directory test
 
@@ -319,10 +320,13 @@ api-trigger: ## Start a run: make api-trigger DAG=<dag_id> [CONF='{"run_id": "..
 transform-sync: ## Create/update transform/.venv (dbt-core, dbt-duckdb) from transform/uv.lock
 	$(UV) --directory transform sync --locked
 
-dbt-parse: transform-sync ## Write transform/target/manifest.json (transform_dag is rendered from it)
+dbt-codegen: ## Generate the dbt staging layer from the reading configs
+	$(UV) run python scripts/generate_dbt_staging.py
+
+dbt-parse: transform-sync dbt-codegen ## Write transform/target/manifest.json (transform_dag is rendered from it)
 	$(DBT) parse $(DBT_FLAGS)
 
-dbt-build: transform-sync ## dbt build outside Airflow (LAKE_ROOT, DBT_DUCKDB_PATH overridable)
+dbt-build: transform-sync dbt-codegen ## dbt build outside Airflow (LAKE_ROOT, DBT_DUCKDB_PATH overridable)
 	$(DBT) build $(DBT_FLAGS)
 
 ##@ Lineage (OpenLineage, P2-5)

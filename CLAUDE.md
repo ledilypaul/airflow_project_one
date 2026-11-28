@@ -286,11 +286,12 @@ Two files with the same name in one run are both marked `failed`, because their 
   - `lake_ingested_at` (INT96) is read back as a `TIMESTAMP` without time zone, in UTC.
 - **Models.**
   - `stg_movies__current` / `stg_orders__current` = `latest_snapshot` (`qualify lake_file_id = max(lake_file_id) over (partition by lake_source_file)`).
-  - `stg_movies__current` and `stg_orders__current` have an enforced contract (columns and types of their source, aligned on the `columns_type` of `imdb.yaml` / `orders.yaml`), because `union_by_name` widens a column to the widest type of every snapshot, old ones included. A test checks that every `lake_staging` table has a `columns_type`.
+  - Every `stg_<table>__current` has an enforced contract (the columns and types of `reader.columns_type`, then the technical ones), because `union_by_name` widens a column to the widest type of every snapshot, old ones included.
   - `mart_movies__by_release_year_language` is an example mart.
   - Everything is a table.
 - **Empty table.** Models read through the `lake_staging()` macro, not `source()`. When a staging table has no file yet (no orders read), the macro returns an empty relation typed by the columns declared in the source, instead of DuckDB's empty-glob error.
-  - `movies` and `orders` declare all the `columns_type` columns of `imdb.yaml` / `orders.yaml` (a test checks names, order and types), then the technical ones.
+  - Every source table declares all the `columns_type` columns, then the technical ones.
+- **Generated staging (P5-4).** `scripts/generate_dbt_staging.py` (`make dbt-codegen`, run by `dbt-parse` and `dbt-build`) writes `transform/models/staging/generated/` (source tables, `stg_<table>__current.sql`, contracts) from `config/`, `examples/config/` and `PIPELINE_CONFIG_ROOT`, for each source with `staging_path: staging/` and `columns_type` (others are skipped with a warning). `dbt: {generate: false}` keeps the source table only. Never edit the files; commit them: `make check` and CI run `--check`. It never rewrites an unchanged file (the stale-manifest check compares mtimes).
 
 ### Lineage (OpenLineage, P2-5)
 
