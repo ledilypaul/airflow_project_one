@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from pipeline.config.models import SourceConfig
 from pipeline.config.registry import ConfigError, default_config_root, load_source_config
 from pipeline.config.types import resolve_column_type
 
@@ -30,7 +31,7 @@ TECHNICAL_COLUMNS = (
     ("lake_source_file", "VARCHAR"),
 )
 # A table name becomes a model name, a file name and a piece of SQL.
-_TABLE_RE = re.compile(r"[A-Za-z0-9_]+")
+_TABLE_RE = re.compile(r"\w+", re.ASCII)
 # dbt renders YAML strings with Jinja, and the name is quoted in the SQL.
 _FORBIDDEN_IN_COLUMN = ("{", "}", '"')
 
@@ -57,41 +58,48 @@ def config_roots() -> list[Path]:
     return list(dict.fromkeys(root.resolve() for root in roots))
 
 
+def _skip_reason(config: SourceConfig) -> str | None:
+    if config.reader.columns_type is None:
+        return "pas de reader.columns_type, aucun contrat possible"
+    if config.staging_target != f"staging/{config.table}":
+        # shortcut: the dbt source glob is `staging/<table>` ; add a
+        # per-table external_location if another staging_path is needed.
+        return "staging_path autre que staging/, non généré"
+    return None
+
+
+def _table_entry(path: Path, config: SourceConfig) -> tuple:
+    """(columns, generate_model) of a source, refused if dbt cannot take its names."""
+    if not _TABLE_RE.fullmatch(config.table):
+        raise ConfigError(f"{path} : table {config.table!r} : `[A-Za-z0-9_]+` requis par dbt")
+    bad = [c for c in config.reader.columns_type if any(x in c for x in _FORBIDDEN_IN_COLUMN)]
+    if bad:
+        raise ConfigError(f'{path} : colonnes {bad} : `{{`, `}}` et `"` refusés par dbt')
+    columns = tuple(
+        (name, resolve_column_type(col_type).duckdb)
+        for name, col_type in config.reader.columns_type.items()
+    )
+    return columns + TECHNICAL_COLUMNS, config.dbt.generate
+
+
 def staging_tables(roots: list[Path]) -> tuple[dict[str, tuple], list[str]]:
     """({table: (columns, generate_model)}, warnings)."""
     tables: dict[str, tuple] = {}
     warnings: list[str] = []
-    for root in roots:
-        for path in sorted((root / "sources").glob("*.y*ml")):
-            config = load_source_config(path)
-            if config.storage.staging_path is None:
-                continue
-            table = config.table
-            if config.reader.columns_type is None:
-                warnings.append(f"{path} : pas de reader.columns_type, aucun contrat possible")
-                continue
-            if config.staging_target != f"staging/{table}":
-                # shortcut: the dbt source glob is `staging/<table>` ; add a
-                # per-table external_location if another staging_path is needed.
-                warnings.append(f"{path} : staging_path autre que staging/, non généré")
-                continue
-            if not _TABLE_RE.fullmatch(table):
-                raise ConfigError(f"{path} : table {table!r} : `[A-Za-z0-9_]+` requis par dbt")
-            bad = [
-                c for c in config.reader.columns_type if any(x in c for x in _FORBIDDEN_IN_COLUMN)
-            ]
-            if bad:
-                raise ConfigError(f'{path} : colonnes {bad} : `{{`, `}}` et `"` refusés par dbt')
-            columns = tuple(
-                (name, resolve_column_type(col_type).duckdb)
-                for name, col_type in config.reader.columns_type.items()
+    paths = [path for root in roots for path in sorted((root / "sources").glob("*.y*ml"))]
+    for path in paths:
+        config = load_source_config(path)
+        if config.storage.staging_path is None:
+            continue
+        if reason := _skip_reason(config):
+            warnings.append(f"{path} : {reason}")
+            continue
+        entry = _table_entry(path, config)
+        if tables.setdefault(config.table, entry) != entry:
+            raise ConfigError(
+                f"{path} : la table {config.table!r} est partagée avec une source dont les "
+                "colonnes ou `dbt.generate` diffèrent"
             )
-            entry = (columns + TECHNICAL_COLUMNS, config.dbt.generate)
-            if tables.setdefault(table, entry) != entry:
-                raise ConfigError(
-                    f"{path} : la table {table!r} est partagée avec une source dont les "
-                    "colonnes ou `dbt.generate` diffèrent"
-                )
     return tables, warnings
 
 

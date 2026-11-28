@@ -47,7 +47,7 @@ jobs:
 
       # P5-4 : avant `make dbt-parse`, qui réécrirait les modèles générés.
       - name: Check that the generated dbt staging layer is up to date
-        run: uv run python scripts/generate_dbt_staging.py --check
+        run: .venv/bin/python scripts/generate_dbt_staging.py --check
 
       # transform_dag est rendu depuis transform/target/manifest.json
       # (LoadMode.DBT_MANIFEST) : sans lui, son import échoue et
