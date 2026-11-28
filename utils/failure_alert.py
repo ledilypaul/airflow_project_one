@@ -34,20 +34,14 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from utils.exit_codes import MEANINGS
+
 log = logging.getLogger(__name__)
 
 EVENT = "airflow_failure"
 
-# Exit codes of pipeline/jobs/ingest.py (`EXIT_*`). Duplicated: the
-# job imports pyspark, which a callback must not load. A test keeps them equal.
-JOB_EXIT_CODES: dict[int, str] = {
-    1: "at least one file failed (read or write error, quality engine error, or mixed causes)",
-    2: "invalid --run-id",
-    3: "no file_list row for the run id",
-    4: "parent process gone (watchdog), no status written",
-    5: "invalid reading config or LAKE_ROOT, every file of the run marked failed",
-    6: "blocking quality checks only, see file_list and quality/<table> in the lake",
-}
+# Exit codes of the ingestion jobs and their meaning (utils/exit_codes.py, no Airflow).
+JOB_EXIT_CODES: dict[int, str] = MEANINGS
 
 
 def _get(obj: Any, name: str) -> Any:
@@ -101,11 +95,13 @@ def failure_record(context: Any, *, scope: str) -> dict[str, Any]:
         record["exception_type"] = type(exception).__name__
 
     # Set by ReadFilesSparkSubmitOperator (utils/read_files_operator.py) once
-    # spark-submit has run. A bool is an int in Python, never an exit code.
-    code = _get(task, "spark_exit_code")
-    if isinstance(code, int) and not isinstance(code, bool):
-        record["spark_exit_code"] = code
-        record["spark_exit_code_meaning"] = JOB_EXIT_CODES.get(code, "unknown")
+    # spark-submit has run, and by the Polars task (utils/polars_task.py, P5-8)
+    # once its job has run. A bool is an int in Python, never an exit code.
+    for engine in ("spark", "polars"):
+        code = _get(task, f"{engine}_exit_code")
+        if isinstance(code, int) and not isinstance(code, bool):
+            record[f"{engine}_exit_code"] = code
+            record[f"{engine}_exit_code_meaning"] = JOB_EXIT_CODES.get(code, "unknown")
     return record
 
 

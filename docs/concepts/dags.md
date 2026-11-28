@@ -52,9 +52,9 @@ données.
 |---|---|
 | `list_files` | les fichiers des répertoires `listing.directories` (sinon `default_directories` de `config/pipeline.yaml`) dont le **nom** correspond à `source.patterns`, moins `listing.exclude` (motifs `fnmatch`, casse ignorée, pas de récursion) |
 | `insert_files` | écrit une ligne `pending` par fichier dans `file_list`, marquée du `dag_run_id` **et du nom de la source**, par la Connection Airflow `file_list_db` ; rend les arguments du job (`--run-id`, `--source-name`) |
-| `spark_read_files` | un `spark-submit` pour ce run, dans le pool `spark` |
+| `spark_read_files` | un `spark-submit` pour ce run, dans le pool `spark` ; pour une source `engine: polars`, `polars_read_files` lance le job Polars dans un sous-processus, dans le pool `polars` |
 | `publish_lake_staging` | émet l'Asset `lake_staging__<source>` si au moins un fichier est `processed` (seulement pour une source qui a un `staging_path`) |
-| `fail_if_spark_failed` | garde le run en échec si l'application Spark a échoué |
+| `fail_if_spark_failed` | garde le run en échec si l'application Spark a échoué (`fail_if_polars_failed` pour une source Polars) |
 
 - **Planning : celui du YAML.** `schedule` est une expression cron (UTC), un preset Airflow
   (`@daily`) ou `null` : lancement manuel (ou par l'[API REST](../exploitation/api-rest.md)).
@@ -96,8 +96,10 @@ de sortie du job. Les codes **déterministes** (2, 3, 5, 6 : voir [](job-spark.m
 **Pas de ressources Spark dans le DAG.** La mémoire et les cœurs relèvent de la Connection ou du
 `spark-defaults.conf` de chaque environnement.
 
-**Le moteur (`source.engine`) n'est pas encore consulté** : toute source est lue par Spark. Polars
-s'exécutera dans Airflow avec P5-8.
+**Le moteur (`source.engine`) choisit la tâche de lecture** (P5-8). Le job Polars tourne dans un
+sous-processus de la tâche : un manque de mémoire le tue, pas le worker. Mêmes codes de sortie, même
+règle (2, 3, 5 et 6 ne sont pas retentés), même ligne `airflow_failure` (`polars_exit_code`).
+`ingest__unmatched` prend le moteur par défaut (`PIPELINE_DEFAULT_ENGINE`).
 
 ## `transform_dag`
 

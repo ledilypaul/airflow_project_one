@@ -80,6 +80,7 @@ ORDERS_ROW = "order_id,customer,amount,order_date\n1,a,1.5,2026-01-01\n"
 DAG_TEST_SCRIPT = textwrap.dedent(
     """
     import json
+    import os
     import sys
     from datetime import timedelta
 
@@ -107,6 +108,11 @@ DAG_TEST_SCRIPT = textwrap.dedent(
         )
     PostgresHook.get_sqlalchemy_engine = lambda self, *args, **kwargs: engine
     functions_utils._file_list_engine_from_airflow_connection = lambda: engine
+    # P5-8: the Polars job is replaced by the same stub as spark-submit.
+    if os.environ.get("FAKE_POLARS_JOB"):
+        import utils.polars_task as polars_task
+
+        polars_task.job_command = lambda args: [os.environ["FAKE_POLARS_JOB"], *args]
 
     # dag.test() names its run itself (`manual__<date>`): give it the one under test.
     original = dagrun_module.get_or_create_dagrun
@@ -115,10 +121,11 @@ DAG_TEST_SCRIPT = textwrap.dedent(
     bag = DagBag(dag_folder=dag_file)
     assert not bag.import_errors, bag.import_errors
     dag = bag.dags[dag_id]
+    read_id = "polars_read_files" if "polars_read_files" in dag.task_ids else "spark_read_files"
     # dag.test() waits for retry_delay (5 min) before a retry: a regression
     # must fail fast instead. Only the retry policy is changed.
     for task in dag.tasks:
-        if keep_spark_retries and task.task_id == "spark_read_files":
+        if keep_spark_retries and task.task_id == read_id:
             # P2-6: keep the DAG's retries, retried at once.
             assert task.retries == 1, task.retries
             task.retry_delay = timedelta(0)
@@ -127,7 +134,7 @@ DAG_TEST_SCRIPT = textwrap.dedent(
 
     first = dag.test()
     tis = {ti.task_id: ti for ti in first.get_task_instances()}
-    spark = tis["spark_read_files"]
+    spark = tis[read_id]
 
     # P2-4: `lake_staging__<source>` events actually emitted by the run.
     from airflow.models.asset import AssetEvent
@@ -725,3 +732,96 @@ def test_p3_3_ingest_dag_e2e_failure_line_names_the_spark_exit_code(
     assert run_lines[0]["run_id"] == record["run_id"]
     assert run_lines[0]["reason"] == "task_failure"
     assert not [r for r in _failure_lines(tmp_path) if r.get("task_id") == "fail_if_spark_failed"]
+
+
+# ---------------------------------------------------------------------------
+# P5-8 - a Polars source and a Spark source in the same config root
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mixed_root(tmp_path, fake_spark_submit):
+    """The example sources, `orders` switched to the Polars engine; the stub
+    stands for the Polars job too."""
+    import yaml
+
+    from pipeline.config.reader_options import SPARK_TO_POLARS_OPTIONS
+
+    root = tmp_path / "config"
+    (root / "sources").mkdir(parents=True)
+    for path in (EXAMPLES_CONFIG_ROOT / "sources").glob("*.yaml"):
+        config = yaml.safe_load(path.read_text())
+        if config["source"]["name"] == "orders":
+            mapping = SPARK_TO_POLARS_OPTIONS["csv"]
+            options = config["reader"]["options"]
+            config["reader"]["options"] = {
+                mapping[k]: v for k, v in options.items() if k in mapping
+            }
+            config["source"]["engine"] = "polars"
+        (root / "sources" / path.name).write_text(yaml.safe_dump(config, sort_keys=False))
+    bin_dir, _ = fake_spark_submit
+    return {"PIPELINE_CONFIG_ROOT": str(root), "FAKE_POLARS_JOB": str(bin_dir / "spark-submit")}
+
+
+def test_p5_8_ingest_dag_e2e_polars_source(airflow_env, fake_spark_submit, tmp_path, mixed_root):
+    _, calls_file = fake_spark_submit
+    run_id = "manual__p5_8_polars"
+    states, logs = _run_dag_test(
+        airflow_env, fake_spark_submit, tmp_path, run_id, extra_env=mixed_root
+    )
+
+    assert states["state"] == "success", logs
+    assert states["spark_ti"] == [-1, "polars", "success"], logs
+    assert states["states"]["fail_if_polars_failed"] == "skipped", logs
+    assert states["lake_staging_events"] == [["publish_lake_staging", "lake_staging__orders"]]
+    (call,) = _calls(calls_file)
+    assert call["argv"] == [f"--run-id={run_id}", "--source-name=orders"]
+    assert call["config_root"] == mixed_root["PIPELINE_CONFIG_ROOT"]
+    assert call["pythonpath"] == str(PROJECT_ROOT)
+
+
+def test_p5_8_ingest_dag_e2e_spark_source_next_to_a_polars_one(
+    airflow_env, fake_spark_submit, tmp_path, mixed_root
+):
+    _, calls_file = fake_spark_submit
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        "manual__p5_8_spark",
+        dag_id="ingest__imdb_movies",
+        data_files={"imdb_1.csv": "id\n1\n"},
+        extra_env=mixed_root,
+    )
+
+    assert states["state"] == "success", logs
+    assert states["spark_ti"] == [-1, "spark", "success"], logs
+    (call,) = _calls(calls_file)
+    assert call["argv"][-1] == "--source-name=imdb_movies"
+
+
+@pytest.mark.parametrize(("exit_code", "attempts"), [(6, 1), (1, 2)], ids=["exit-6", "exit-1"])
+def test_p5_8_ingest_dag_e2e_polars_retry_rule_and_failure_line(
+    airflow_env, fake_spark_submit, tmp_path, mixed_root, exit_code, attempts
+):
+    _, calls_file = fake_spark_submit
+    states, logs = _run_dag_test(
+        airflow_env,
+        fake_spark_submit,
+        tmp_path,
+        f"manual__p5_8_exit_{exit_code}",
+        exit_code=exit_code,
+        statuses=["processed", "failed"],
+        keep_spark_retries=True,
+        extra_env=mixed_root,
+    )
+
+    assert len(_calls(calls_file)) == attempts
+    assert states["spark_tries"] == attempts, logs
+    assert states["states"]["publish_lake_staging"] == "success", logs
+    assert states["states"]["fail_if_polars_failed"] == "failed", logs
+    assert states["state"] == "failed", logs
+    (record,) = [r for r in _failure_lines(tmp_path) if r["scope"] == "task"]
+    assert record["task_id"] == "polars_read_files"
+    assert record["polars_exit_code"] == exit_code
+    assert record["try_number"] == attempts

@@ -85,8 +85,8 @@ make airflow       # génère le manifest dbt puis lance Airflow : http://localh
 
 - la Connection `file_list_db` (Postgres), construite depuis `.env` ;
 - la Connection `spark_default` (type `spark`, hôte `local[*]`) ;
-- les pools de `deploy/airflow/pools.json` : `spark` (une application Spark à la fois en local) et
-  `dbt_duckdb` (un seul écrivain DuckDB).
+- les pools de `deploy/airflow/pools.json` : `spark` (une application Spark à la fois en local),
+  `polars` (un job Polars à la fois) et `dbt_duckdb` (un seul écrivain DuckDB).
 
 Airflow tourne ici en mode `standalone` : le serveur d'API, le scheduler, le processeur de DAGs et
 le triggerer dans un seul processus. Il affiche au démarrage le mot de passe généré du compte
