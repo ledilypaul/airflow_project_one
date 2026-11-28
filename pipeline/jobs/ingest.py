@@ -6,6 +6,7 @@ described in `pipeline/jobs/read_files_job.py`, the Spark entry point.
 Imports neither an engine nor Airflow.
 """
 
+import argparse
 import logging
 import os
 import sys
@@ -413,3 +414,24 @@ def _source_file_name(file_path: str) -> str:
     """`lake_source_file` partition value: the file name, as the reading
     config matching uses it (`SourceRegistry.match`)."""
     return os.path.basename(str(file_path).rstrip("/\\"))
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the job's command line (`sys.argv[1:]` when `argv` is None).
+
+    The ingest DAG passes the run id as a single `--run-id=<value>` argument,
+    so a run id starting with `-` is not mistaken for an option (P1-4 / C-4).
+    """
+    parser = argparse.ArgumentParser(
+        description="Read files listed in the DB for a given Airflow run_id."
+    )
+    parser.add_argument(
+        "--run-id", required=True, help="dag_run_id of the ingest__<source> run to process."
+    )
+    parser.add_argument(
+        "--source-name",
+        default=None,
+        help="Only the file_list rows of this source (P5-3): the run ids of two source DAGs can "
+        "be equal. Without it, every row of the run id (make spark-job).",
+    )
+    return parser.parse_args(argv)

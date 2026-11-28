@@ -2,7 +2,9 @@
 
 `pipeline/jobs/read_files_job.py` (point d'entrée Spark ; l'orchestration, commune aux moteurs, est
 dans `pipeline/jobs/ingest.py`) lit les fichiers d'**un listing** et les écrit dans le lake. Il
-tourne dans son propre processus, lancé par `spark-submit`, et se lance aussi seul, sans Airflow :
+tourne dans son propre processus, lancé par `spark-submit`, et se lance aussi seul, sans Airflow.
+Son pendant Polars, `pipeline/jobs/polars_job.py` (P5-7), a le même contrat (zones, statuts, codes
+de sortie) et écrit le même lake ; aucun DAG ne le lance encore (P5-8).
 
 ```bash
 make spark-job RUN_ID=<dag_run_id_du_listing> SOURCE=<nom_de_la_source>

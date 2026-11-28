@@ -52,9 +52,18 @@ import logging
 from pyspark.sql import DataFrame, Observation, SparkSession, Window
 from pyspark.sql import functions as F
 
-from utils.path_utils import lake_relative_parts
-
 from .base_writer import BaseWriter
+from .lake_layout import (  # réexportés : l'API publique du writer
+    FILE_ID_COLUMN,
+    INGESTED_AT_COLUMN,
+    PARTITION_COLUMNS,
+    RUN_ID_COLUMN,
+    SOURCE_FILE_COLUMN,
+    TECHNICAL_COLUMNS,
+    check_partition_values,
+    check_write,
+    table_location,
+)
 from .lake_root import (  # réexportés : l'API publique du writer
     DEFAULT_LAKE_ROOT,
     LAKE_ROOT_ENV,
@@ -64,17 +73,17 @@ from .lake_root import (  # réexportés : l'API publique du writer
 
 log = logging.getLogger(__name__)
 
-RUN_ID_COLUMN = "lake_run_id"
-SOURCE_FILE_COLUMN = "lake_source_file"
-FILE_ID_COLUMN = "lake_file_id"
-INGESTED_AT_COLUMN = "lake_ingested_at"
-PARTITION_COLUMNS = (RUN_ID_COLUMN, SOURCE_FILE_COLUMN)
-TECHNICAL_COLUMNS = (*PARTITION_COLUMNS, FILE_ID_COLUMN, INGESTED_AT_COLUMN)
 
 WRITE_MODES = ("overwrite", "append")
 
 __all__ = [
     "DEFAULT_LAKE_ROOT",
+    "FILE_ID_COLUMN",
+    "INGESTED_AT_COLUMN",
+    "PARTITION_COLUMNS",
+    "RUN_ID_COLUMN",
+    "SOURCE_FILE_COLUMN",
+    "TECHNICAL_COLUMNS",
     "LAKE_ROOT_ENV",
     "LakeRootError",
     "ParquetLakeWriter",
@@ -138,9 +147,7 @@ class ParquetLakeWriter(BaseWriter):
         Raises:
             ValueError: `target` sortirait du lake (`..`, chemin absolu, URI).
         """
-        parts = lake_relative_parts(target)
-        root = self.lake_root if self.lake_root.endswith("/") else f"{self.lake_root}/"
-        return root + "/".join(parts)
+        return table_location(self.lake_root, target)
 
     def write(
         self,
@@ -170,17 +177,7 @@ class ParquetLakeWriter(BaseWriter):
         """
         if mode not in WRITE_MODES:
             raise ValueError(f"mode {mode!r} non supporté : {' ou '.join(WRITE_MODES)}")
-        _check_partition_values(run_id, source_file)
-        if not isinstance(file_id, int) or isinstance(file_id, bool) or file_id < 0:
-            raise ValueError(f"file_id doit être un entier >= 0 (file_list.id), pas {file_id!r}")
-        # Spark compare les noms de colonnes sans tenir compte de la casse.
-        reserved = {t.lower() for t in TECHNICAL_COLUMNS}
-        clashes = sorted(c for c in data.columns if c.lower() in reserved)
-        if clashes:
-            raise ValueError(
-                f"colonne technique déjà présente dans les données : {', '.join(clashes)} "
-                f"(réservées : {', '.join(TECHNICAL_COLUMNS)})"
-            )
+        check_write(data.columns, run_id, source_file, file_id)
 
         location = self.location(target)
         observation = Observation()
@@ -242,14 +239,8 @@ class ParquetLakeWriter(BaseWriter):
             ValueError: `target` sortirait du lake, ou `run_id`/`source_file`
                 vide (le chemin désignerait le run entier ou la table).
         """
-        _check_partition_values(run_id, source_file)
+        check_partition_values(run_id, source_file)
         return _delete_partition(spark, self.location(target), run_id, source_file)
-
-
-def _check_partition_values(run_id: str, source_file: str) -> None:
-    for name, value in (("run_id", run_id), ("source_file", source_file)):
-        if not isinstance(value, str) or not value:
-            raise ValueError(f"{name} vide ou absent ({value!r}) : la partition serait ambiguë")
 
 
 def _delete_partition(spark: SparkSession, location: str, run_id: str, source_file: str) -> bool:

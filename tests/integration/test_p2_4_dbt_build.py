@@ -536,3 +536,50 @@ def test_p2_4_dbt_build_refuses_relative_paths(dbt_executable, tmp_path, variabl
     proc = _dbt_build(tmp_path, lake_root=paths["LAKE_ROOT"], warehouse=paths["DBT_DUCKDB_PATH"])
 
     _assert_refused(proc, f"{variable}={value} est un chemin relatif")
+
+
+class _AlternatingWriter:
+    """P5-7 : un appel sur deux passe par le writer Polars, si bien que chaque
+    table du lake mélange des partitions écrites par les deux moteurs."""
+
+    def __init__(self, lake_uri: str):
+        from pipeline.engine.polars.writer import PolarsLakeWriter
+        from storage.parquet_lake_writer import ParquetLakeWriter
+
+        self.writers = [ParquetLakeWriter(lake_uri), PolarsLakeWriter(lake_uri)]
+        self.calls = 0
+
+    def write(self, data, target, **partition):
+        import polars as pl
+
+        self.calls += 1
+        if self.calls % 2:
+            return self.writers[0].write(data, target, **partition)
+        return self.writers[1].write(pl.from_arrow(data.toArrow()), target, **partition)
+
+
+def test_p5_7_lake_written_by_both_engines_builds(dbt_executable, spark, tmp_path):
+    """Contrats compris : DuckDB lit une table écrite par Spark et Polars comme une seule."""
+    from storage.parquet_lake_writer import resolve_lake_root
+
+    lake_uri = resolve_lake_root({"LAKE_ROOT": str(tmp_path / "lake")})
+    writer = _AlternatingWriter(lake_uri)
+    _write_movies(spark, writer)
+    _write_orders(spark, writer)
+    warehouse = str(tmp_path / "warehouse.duckdb")
+    _assert_ok(_dbt_build(tmp_path, lake_root=lake_uri, warehouse=warehouse))
+
+    result = _query(
+        warehouse,
+        movies=f"select {_duck_projection(MOVIE_COLUMNS, with_release_date=True)} "
+        "from stg_movies__current",
+        orders=f"select {_duck_projection(ORDER_COLUMNS, with_release_date=False)} "
+        "from stg_orders__current",
+    )
+    assert _sorted(result["movies"]) == _sorted(
+        _spark_current(spark, lake_uri, "movies", MOVIE_COLUMNS)
+    )
+    assert _sorted(result["orders"]) == _sorted(
+        _spark_current(spark, lake_uri, "orders", ORDER_COLUMNS)
+    )
+    assert {r["lake_file_id"] for r in result["movies"]} == {30, 20, 25}
